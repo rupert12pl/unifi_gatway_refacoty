@@ -37,7 +37,16 @@ def vpn_peer_identity(peer: Dict[str, Any]) -> str:
         return direct
 
     uuid = _normalize_peer_field(
-        peer, "uuid", "peer_uuid", "peer_id", "server_id", "client_id"
+        peer,
+        "uuid",
+        "peer_uuid",
+        "peer_id",
+        "server_id",
+        "client_id",
+        "remote_user_id",
+        "remoteuser_id",
+        "user_id",
+        "userid",
     )
     name = _normalize_peer_field(
         peer, "name", "peer_name", "description", "display_name"
@@ -71,7 +80,25 @@ def vpn_peer_identity(peer: Dict[str, Any]) -> str:
         return interface
     if address:
         return address
-    return "peer"
+    fingerprint_sources: List[str] = []
+    for key in sorted(peer):
+        if not isinstance(key, str) or key.startswith("_"):
+            continue
+        value = peer[key]
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, (int, float, bool)):
+            fingerprint_sources.append(f"{key}={value}")
+        elif isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                fingerprint_sources.append(f"{key}={cleaned}")
+        elif isinstance(value, list):
+            fingerprint_sources.append(f"{key}#len={len(value)}")
+    if fingerprint_sources:
+        basis = "|".join(fingerprint_sources)
+        return f"peer_{hashlib.sha1(basis.encode()).hexdigest()[:12]}"
+    return f"peer_{hashlib.sha1(str(sorted(peer.items())).encode()).hexdigest()[:12]}"
 
 _LOGGER = logging.getLogger(__name__)
 
