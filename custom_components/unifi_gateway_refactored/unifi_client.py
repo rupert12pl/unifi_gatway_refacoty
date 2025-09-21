@@ -7,7 +7,7 @@ import re
 import socket
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from urllib.parse import urlsplit
@@ -103,6 +103,88 @@ def vpn_peer_identity(peer: Dict[str, Any]) -> str:
 _LOGGER = logging.getLogger(__name__)
 
 _SERVER_FIELD_RE = re.compile(r"([A-Za-z0-9_]+)\s*:")
+
+_VPN_RECORD_KEYS = {
+    "_id",
+    "id",
+    "uuid",
+    "peer_uuid",
+    "peer_id",
+    "peerid",
+    "server_id",
+    "client_id",
+    "remote_user_id",
+    "remoteuser_id",
+    "user_id",
+    "userid",
+    "name",
+    "peer_name",
+    "display_name",
+    "description",
+    "vpn_name",
+    "vpn_type",
+    "type",
+    "role",
+    "interface",
+    "ifname",
+    "server_addr",
+    "server_address",
+    "local_ip",
+    "remote_ip",
+    "peer_addr",
+    "gateway",
+    "tunnel_ip",
+    "tunnel_network",
+    "subnet",
+    "client_subnet",
+    "client_networks",
+    "allowed_ips",
+    "peer_config",
+    "endpoint",
+    "endpoints",
+    "peer_endpoint",
+    "peer_host",
+    "peer_ip",
+    "listen_port",
+    "port",
+    "server_port",
+    "remote_port",
+    "public_ip",
+    "profile",
+    "profile_name",
+    "remote_user",
+    "remote_user_vpn",
+    "connection_name",
+    "via_vpn",
+    "network",
+    "networks",
+}
+
+_SERVER_ROLE_KEYS = {
+    "server",
+    "servers",
+    "remote_user",
+    "remote_users",
+    "remoteuser",
+    "remoteusers",
+    "wgserver",
+    "wgservers",
+    "peer",
+    "peers",
+}
+
+_CLIENT_ROLE_KEYS = {
+    "client",
+    "clients",
+    "vpnclient",
+    "vpnclients",
+    "wgclient",
+    "wgclients",
+    "tunnel",
+    "tunnels",
+    "connection",
+    "connections",
+}
 
 
 def _parse_speedtest_server_details(server: Any) -> Dict[str, Any]:
@@ -447,36 +529,88 @@ class UniFiOSClient:
                 out.append({"id": n.get("_id") or n.get("id") or name, "name": name, "type": "wan"})
         return out
 
-    def _extract_dict_records(self, data: Any) -> List[Dict[str, Any]]:
-        """Flatten arbitrarily nested mappings/lists into a list of dict records."""
+    def _flatten_vpn_records(
+        self, data: Any, role_hint: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Flatten nested VPN API responses into a list of peer dicts."""
 
-        out: List[Dict[str, Any]] = []
-        stack: List[Any] = [data]
+        records: List[Dict[str, Any]] = []
+        stack: List[Tuple[Any, Optional[str]]] = [(data, role_hint)]
         while stack:
-            current = stack.pop()
+            current, current_role = stack.pop()
             if isinstance(current, dict):
-                if any(
-                    key in current
-                    for key in (
-                        "vpn_type",
-                        "peer_name",
-                        "name",
-                        "interface",
-                        "server_addr",
-                        "local_ip",
-                        "tunnel_ip",
-                    )
-                ):
-                    # keep dict-like records while still traversing nested structures
-                    out.append(current)
-                for value in current.values():
-                    if isinstance(value, (dict, list)):
-                        stack.append(value)
+                normalized_role = current_role
+                raw_role = current.get("role")
+                if isinstance(raw_role, str) and raw_role.strip():
+                    normalized_role = raw_role.strip().lower()
+                elif isinstance(current.get("type"), str):
+                    type_hint = current["type"].strip().lower()
+                    if "client" in type_hint and not normalized_role:
+                        normalized_role = "client"
+                    elif any(token in type_hint for token in ("server", "remote", "user")) and not normalized_role:
+                        normalized_role = "server"
+                elif isinstance(current.get("vpn_type"), str):
+                    vpn_type = current["vpn_type"].strip().lower()
+                    if "client" in vpn_type and not normalized_role:
+                        normalized_role = "client"
+                    elif any(token in vpn_type for token in ("server", "remote")) and not normalized_role:
+                        normalized_role = "server"
+
+                has_scalar = any(
+                    not isinstance(value, (dict, list))
+                    and value not in (None, "", [], {})
+                    for value in current.values()
+                )
+                has_vpn_keys = any(
+                    key in current and current[key] not in (None, "", [], {})
+                    for key in _VPN_RECORD_KEYS
+                )
+                if has_vpn_keys and has_scalar:
+                    normalized = dict(current)
+                    if normalized_role and not normalized.get("role"):
+                        normalized["role"] = normalized_role
+                    records.append(normalized)
+
+                for key, value in current.items():
+                    if not isinstance(value, (dict, list)):
+                        continue
+                    next_role = normalized_role
+                    if isinstance(key, str):
+                        lowered = key.strip().lower()
+                        if lowered in _SERVER_ROLE_KEYS:
+                            next_role = "server"
+                        elif lowered in _CLIENT_ROLE_KEYS:
+                            next_role = "client"
+                    stack.append((value, next_role))
             elif isinstance(current, list):
                 for item in current:
-                    if isinstance(item, (dict, list)):
-                        stack.append(item)
-        return out
+                    stack.append((item, current_role))
+        return records
+
+    def _collect_vpn_records(
+        self, probes: List[str], role_hint: Optional[str]
+    ) -> List[Dict[str, Any]]:
+        """Collect VPN records from multiple API probes with optional role hint."""
+
+        found: List[Dict[str, Any]] = []
+        for path in probes:
+            try:
+                data = self._get(path)
+            except Exception:
+                continue
+            found.extend(self._flatten_vpn_records(data, role_hint))
+
+        uniq: Dict[str, Dict[str, Any]] = {}
+        for record in found:
+            if not isinstance(record, dict):
+                continue
+            normalized = dict(record)
+            if role_hint and not normalized.get("role"):
+                normalized["role"] = role_hint
+            peer_id = vpn_peer_identity(normalized)
+            normalized["_ha_peer_id"] = peer_id
+            uniq[peer_id] = normalized
+        return list(uniq.values())
 
     def get_vpn_servers(self) -> List[Dict[str, Any]]:
         """Return configured VPN servers (WireGuard/OpenVPN Remote User)."""
@@ -484,57 +618,33 @@ class UniFiOSClient:
             "internet/vpn/peers",
             "internet/vpn/servers",
             "internet/vpn/server",
+            "internet/vpn/site-to-site",
             "stat/vpn",
             "list/remoteuser",
             "list/vpn",
+            "rest/vpnserver",
+            "rest/vpnservers",
+            "rest/wgserver",
+            "rest/wgservers",
+            "rest/wireguard/server",
         ]
-        servers: List[Dict[str, Any]] = []
-        for path in probes:
-            try:
-                data = self._get(path)
-            except Exception:
-                continue
-            if isinstance(data, list):
-                servers.extend([d for d in data if isinstance(d, dict)])
-            elif isinstance(data, dict):
-                servers.extend(self._extract_dict_records(data))
-        uniq: Dict[str, Dict[str, Any]] = {}
-        for d in servers:
-            if not isinstance(d, dict):
-                continue
-            peer_id = vpn_peer_identity(d)
-            normalized = dict(d)
-            normalized["_ha_peer_id"] = peer_id
-            uniq[peer_id] = normalized
-        return list(uniq.values())
+        return self._collect_vpn_records(probes, "server")
 
     def get_vpn_clients(self) -> List[Dict[str, Any]]:
         """Return configured VPN client tunnels (policy-based/route-based)."""
         probes = [
             "internet/vpn/clients",
             "internet/vpn/client",
+            "internet/vpn/site-to-site",
             "stat/vpn",
             "list/vpn",
+            "rest/vpnclient",
+            "rest/vpnclients",
+            "rest/wgclient",
+            "rest/wgclients",
+            "rest/wireguard/client",
         ]
-        out: List[Dict[str, Any]] = []
-        for path in probes:
-            try:
-                data = self._get(path)
-            except Exception:
-                continue
-            if isinstance(data, list):
-                out.extend([d for d in data if isinstance(d, dict)])
-            elif isinstance(data, dict):
-                out.extend(self._extract_dict_records(data))
-        uniq: Dict[str, Dict[str, Any]] = {}
-        for d in out:
-            if not isinstance(d, dict):
-                continue
-            peer_id = vpn_peer_identity(d)
-            normalized = dict(d)
-            normalized["_ha_peer_id"] = peer_id
-            uniq[peer_id] = normalized
-        return list(uniq.values())
+        return self._collect_vpn_records(probes, "client")
 
     def instance_key(self) -> str:
         return self._iid
