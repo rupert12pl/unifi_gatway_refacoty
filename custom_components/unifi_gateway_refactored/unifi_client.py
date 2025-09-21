@@ -3,16 +3,107 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import socket
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
+from urllib.parse import urlsplit
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from urllib.parse import urlsplit
 
 _LOGGER = logging.getLogger(__name__)
+
+_SERVER_FIELD_RE = re.compile(r"([A-Za-z0-9_]+)\s*:")
+
+
+def _parse_speedtest_server_details(server: Any) -> Dict[str, Any]:
+    """Convert the server representation returned by the controller to a dict."""
+
+    if isinstance(server, dict):
+        details: Dict[str, Any] = {}
+        for key, value in server.items():
+            if not isinstance(key, str):
+                continue
+            if value in (None, ""):
+                continue
+            details[key.lower()] = value
+        return details
+
+    if isinstance(server, str):
+        matches = list(_SERVER_FIELD_RE.finditer(server))
+        if not matches:
+            return {}
+        details = {}
+        for idx, match in enumerate(matches):
+            key = match.group(1).lower()
+            start = match.end()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(server)
+            value = server[start:end].strip(" ,")
+            if value:
+                details[key] = value
+        return details
+
+    return {}
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    """Best-effort conversion of a value to float."""
+
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = value.strip().replace(",", ".")
+        if not cleaned:
+            return None
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
+def _format_speedtest_rundate(value: Any) -> Optional[str]:
+    """Convert the rundate to a human readable 24h datetime string."""
+
+    if value is None:
+        return None
+
+    timestamp: Optional[float] = None
+
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+    elif isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        iso_candidate = cleaned.replace("Z", "+00:00") if cleaned.endswith("Z") else cleaned
+        try:
+            dt_value = datetime.fromisoformat(iso_candidate)
+        except ValueError:
+            digits_only = cleaned.replace(" ", "").replace(",", "")
+            try:
+                timestamp = float(digits_only)
+            except ValueError:
+                return cleaned
+        else:
+            if dt_value.tzinfo is not None:
+                dt_value = dt_value.astimezone(timezone.utc)
+            return dt_value.strftime("%Y-%m-%d %H:%M:%S")
+
+    if timestamp is None:
+        return None
+
+    if timestamp > 1e12:
+        timestamp /= 1000.0
+
+    try:
+        dt_value = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return dt_value.strftime("%Y-%m-%d %H:%M:%S")
 
 
 class APIError(Exception):
@@ -474,9 +565,41 @@ class UniFiOSClient:
         if ping is not None:
             out["latency_ms"] = float(ping)
         if "rundate" in rec:
-            out["rundate"] = rec["rundate"]
+            formatted_rundate = _format_speedtest_rundate(rec["rundate"])
+            out["rundate"] = (
+                formatted_rundate if formatted_rundate is not None else rec["rundate"]
+            )
         if "server" in rec:
-            out["server"] = rec["server"]
+            server_raw = rec["server"]
+            out["server"] = server_raw
+            server_details = _parse_speedtest_server_details(server_raw)
+
+            def _assign(detail_key: str, source_keys: List[str], *, converter=None) -> None:
+                for key in source_keys:
+                    if key not in server_details:
+                        continue
+                    value = server_details[key]
+                    if isinstance(value, str):
+                        value = value.strip()
+                    if value in (None, ""):
+                        continue
+                    if converter is not None:
+                        converted = converter(value)
+                        if converted is not None:
+                            out[detail_key] = converted
+                        else:
+                            out[detail_key] = value
+                    else:
+                        out[detail_key] = value
+                    return
+
+            _assign("server_cc", ["cc"])
+            _assign("server_city", ["city", "name"])
+            _assign("server_country", ["country"])
+            _assign("server_lat", ["lat", "latitude"], converter=_coerce_float)
+            _assign("server_long", ["long", "lon", "lng"], converter=_coerce_float)
+            _assign("server_provider", ["provider", "sponsor"])
+            _assign("server_provider_url", ["provider_url", "url"])
         if "status" in rec:
             out["status"] = rec["status"]
         return out
