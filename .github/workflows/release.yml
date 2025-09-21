@@ -22,24 +22,26 @@ jobs:
         id: manifest
         run: |
           VERSION=$(python - <<'PY'
-import json
-from pathlib import Path
-manifest = json.loads(Path("custom_components/unifi_gateway_refactored/manifest.json").read_text())
-print(manifest["version"])
-PY
+            import json
+            from pathlib import Path
+
+            manifest = json.loads(Path("custom_components/unifi_gateway_refactored/manifest.json").read_text())
+            print(manifest["version"])
+          PY
           )
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Validate semantic version
         run: |
           python - <<'PY'
-import re
-version = "${{ steps.manifest.outputs.version }}"
-if not re.fullmatch(r"\d+\.\d+\.\d+(?:[ab]\d+)?", version):
-    raise SystemExit(
-        "Manifest version '%s' is not a valid semantic version (major.minor.patch)." % version
-    )
-PY
+            import re
+
+            version = "${{ steps.manifest.outputs.version }}"
+            if not re.fullmatch(r"\d+\.\d+\.\d+(?:[ab]\d+)?", version):
+                raise SystemExit(
+                    "Manifest version '%s' is not a valid semantic version (major.minor.patch)." % version
+                )
+          PY
 
       - name: Check if tag exists
         id: tag
