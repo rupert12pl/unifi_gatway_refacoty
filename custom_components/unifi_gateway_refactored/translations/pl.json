@@ -3,83 +3,53 @@
     "step": {
       "user": {
         "title": "Połącz z UniFi Gateway",
-        "description": "Wprowadź dane połączenia do kontrolera UniFi",
+        "description": "Wprowadź dane lokalnego administratora aplikacji UniFi Network. Podczas zapisu sprawdzimy zdrowie kontrolera i listę witryn.",
         "data": {
-          "host": "Adres hosta kontrolera",
+          "host": "Adres kontrolera (UDM IP)",
+          "username": "Nazwa użytkownika (lokalny administrator)",
+          "password": "Hasło",
+          "verify_ssl": "Weryfikuj SSL (wartość logiczna lub ścieżka do CA)"
+        }
+      },
+      "advanced": {
+        "title": "Zaawansowane opcje kontrolera",
+        "description": "Skonfiguruj dodatkowe ustawienia kontrolera przed zakończeniem konfiguracji.",
+        "data": {
           "port": "Port",
-          "api_key": "Token API",
-          "verify_ssl": "Weryfikuj SSL",
-          "use_proxy_prefix": "Użyj prefiksu proxy (/proxy/network)",
-          "site_id": "Identyfikator strony (site ID)"
+          "site_id": "Identyfikator witryny (site ID)",
+          "use_proxy_prefix": "Użyj prefiksu /proxy/network",
+          "timeout": "Limit czasu żądania HTTP (sekundy)"
         }
       }
     },
     "error": {
-      "auth": "Błąd uwierzytelniania – sprawdź token API",
-      "cannot_connect": "Nie można połączyć się z kontrolerem",
-      "unknown": "Nieznany błąd"
-    },
-    "abort": {
-      "already_configured": "Ten kontroler UniFi jest już skonfigurowany"
+      "invalid_auth": "Nieprawidłowa nazwa użytkownika lub hasło.",
+      "cannot_connect": "Nie można połączyć się z kontrolerem UniFi.",
+      "unknown": "Nieznany błąd."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Zmień opcje UniFi Gateway",
+        "title": "Opcje UniFi Gateway",
+        "description": "Zaktualizuj szczegóły połączenia lub ustawienia zaawansowane kontrolera.",
         "data": {
-          "scan_interval": "Interwał odświeżania (sekundy)",
-          "monitored_conditions": "Monitorowane warunki"
+          "host": "Adres kontrolera (UDM IP)",
+          "port": "Port",
+          "username": "Nazwa użytkownika (lokalny administrator)",
+          "password": "Hasło",
+          "site_id": "Identyfikator witryny (site ID)",
+          "verify_ssl": "Weryfikuj SSL (wartość logiczna lub ścieżka do CA)",
+          "use_proxy_prefix": "Użyj prefiksu /proxy/network",
+          "timeout": "Limit czasu żądania HTTP (sekundy)"
         }
       }
+    },
+    "error": {
+      "invalid_auth": "Nieprawidłowa nazwa użytkownika lub hasło.",
+      "cannot_connect": "Nie można połączyć się z kontrolerem UniFi.",
+      "unknown": "Nieznany błąd."
     }
   },
-  "entity": {
-    "sensor": {
-      "wan_ip": {
-        "name": "Adres IP WAN",
-        "icon": "mdi:ip-network"
-      },
-      "wan_isp": {
-        "name": "Dostawca internetu (ISP)",
-        "icon": "mdi:office-building"
-      },
-      "vpn_clients": {
-        "name": "Klienci VPN",
-        "icon": "mdi:lock"
-      },
-      "vpn_servers": {
-        "name": "Serwery VPN",
-        "icon": "mdi:server-network"
-      },
-      "wlan_clients": {
-        "name": "Klienci WLAN",
-        "icon": "mdi:wifi"
-      },
-      "lan_clients": {
-        "name": "Klienci LAN",
-        "icon": "mdi:lan"
-      },
-      "alerts": {
-        "name": "Alerty",
-        "icon": "mdi:alert"
-      },
-      "firmware": {
-        "name": "Dostępne aktualizacje firmware",
-        "icon": "mdi:database-plus"
-      },
-      "speedtest_down": {
-        "name": "Prędkość pobierania",
-        "icon": "mdi:progress-download"
-      },
-      "speedtest_up": {
-        "name": "Prędkość wysyłania",
-        "icon": "mdi:progress-upload"
-      },
-      "speedtest_ping": {
-        "name": "Opóźnienie (ping)",
-        "icon": "mdi:progress-clock"
-      }
-    }
-  }
+  "title": "UniFi Gateway (Refactored)"
 }
