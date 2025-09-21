@@ -534,6 +534,10 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
             return None
         status = record.get("status") or record.get("state")
         if isinstance(status, str):
+            normalized = status.strip().lower()
+            if normalized == "error" and self._subsystem == "vpn":
+                if self._vpn_disabled(record, data):
+                    return "DISABLED"
             return status.upper()
         return status
 
@@ -546,6 +550,8 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
             return "mdi:alert"
         if status in {"error", "critical", "down", "offline", "disconnected"}:
             return "mdi:alert-circle"
+        if status in {"disabled", "not_configured", "notconfigured"}:
+            return "mdi:power-plug-off"
         return self._default_icon
 
     @property
@@ -555,8 +561,62 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
         attrs: Dict[str, Any] = {}
         if record:
             attrs.update({k: v for k, v in record.items() if k != "subsystem"})
+            total = 0
+            total_found = False
+            for key in ("num_user", "num_guest", "num_iot", "num_it"):
+                count = _coerce_int(record.get(key))
+                if count is None:
+                    continue
+                total += count
+                total_found = True
+            if total_found:
+                attrs["num_user_total"] = total
         attrs.update(self._controller_attrs())
         return attrs
+
+    def _vpn_disabled(
+        self, record: Dict[str, Any], data: UniFiGatewayData
+    ) -> bool:
+        """Determine if VPN subsystem is simply disabled/unconfigured."""
+
+        details: list[str] = []
+        for key in (
+            "status_reason",
+            "status_message",
+            "status_detail",
+            "status_info",
+            "reason",
+            "msg",
+        ):
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                details.append(value.strip().lower())
+
+        if details:
+            combined = " ".join(details)
+            for hint in (
+                "not configured",
+                "not available",
+                "not supported",
+                "not provisioned",
+                "disabled",
+                "no vpn",
+                "teleport disabled",
+            ):
+                if hint in combined:
+                    return True
+
+        if record.get("vpn_status") in {"disabled", "off"}:
+            return True
+
+        if not (
+            data.vpn_servers
+            or data.vpn_clients
+            or getattr(data, "vpn_site_to_site", [])
+        ):
+            return True
+
+        return False
 
 
 class UniFiGatewayAlertsSensor(UniFiGatewaySensorBase):
