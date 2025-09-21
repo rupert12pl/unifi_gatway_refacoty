@@ -122,6 +122,89 @@ def _vpn_peer_id(peer: Dict[str, Any]) -> str:
     )
 
 
+def _wan_identifier_candidates(
+    link_id: str, link_name: str, link: Dict[str, Any]
+) -> set[str]:
+    candidates: set[str] = set()
+
+    def _add(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if not cleaned:
+                return
+            candidates.add(cleaned.lower())
+            candidates.add(cleaned.replace(" ", "").lower())
+        else:
+            candidates.add(str(value).strip().lower())
+
+    _add(link_id)
+    _add(link_name)
+    for key in (
+        "ifname",
+        "interface",
+        "wan_port",
+        "port",
+        "display_name",
+        "wan_name",
+        "name",
+        "id",
+    ):
+        _add(link.get(key))
+    return {value for value in candidates if value}
+
+
+def _find_wan_health_record(
+    data: Optional[UniFiGatewayData], identifiers: set[str]
+) -> Optional[Dict[str, Any]]:
+    if not data:
+        return None
+    fallback: Optional[Dict[str, Any]] = None
+    for record in data.wan_health:
+        if not isinstance(record, dict):
+            continue
+        if fallback is None:
+            fallback = record
+        for key in (
+            "id",
+            "name",
+            "ifname",
+            "wan_ifname",
+            "wan_name",
+            "interface",
+            "port",
+            "link_name",
+            "wan_port",
+        ):
+            value = record.get(key)
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in identifiers or normalized.replace(" ", "") in identifiers:
+                    return record
+            elif value is not None:
+                normalized = str(value).strip().lower()
+                if normalized in identifiers:
+                    return record
+    return fallback
+
+
+def _value_from_record(record: Optional[Dict[str, Any]], keys: Iterable[str]) -> Optional[Any]:
+    if not record:
+        return None
+    for key in keys:
+        if key not in record:
+            continue
+        value = record.get(key)
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                return cleaned
+        elif value not in (None, [], {}):
+            return value
+    return None
+
+
 class UniFiGatewaySensorBase(
     CoordinatorEntity[UniFiGatewayDataUpdateCoordinator], SensorEntity
 ):
@@ -148,6 +231,7 @@ class UniFiGatewaySensorBase(
             return {}
         return {
             "controller_ui": data.controller.get("url"),
+            "controller_api": data.controller.get("api_url"),
             "controller_site": data.controller.get("site"),
         }
 
@@ -270,6 +354,7 @@ class UniFiGatewayWanStatusSensor(UniFiGatewaySensorBase):
     ) -> None:
         self._link_id = str(link.get("id"))
         self._link_name = link.get("name") or self._link_id
+        self._identifiers = _wan_identifier_candidates(self._link_id, self._link_name, link)
         unique_id = f"unifigw_{client.instance_key()}_wan_{self._link_id}_status"
         super().__init__(coordinator, client, unique_id, f"WAN {self._link_name}")
         self._default_icon = "mdi:shield-outline"
@@ -282,6 +367,9 @@ class UniFiGatewayWanStatusSensor(UniFiGatewaySensorBase):
             if str(link.get("id")) == self._link_id:
                 return link
         return None
+
+    def _wan_health_record(self) -> Optional[Dict[str, Any]]:
+        return _find_wan_health_record(self.coordinator.data, self._identifiers)
 
     @property
     def native_value(self) -> Optional[Any]:
@@ -305,27 +393,47 @@ class UniFiGatewayWanStatusSensor(UniFiGatewaySensorBase):
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         link = self._link() or {}
-        data = self.coordinator.data
+        health = self._wan_health_record() or {}
         attrs = {
             "name": self._link_name,
             "type": link.get("type") or link.get("kind"),
-            "isp": link.get("isp") or link.get("provider"),
-            "ip": link.get("ip") or link.get("wan_ip") or link.get("ipv4"),
+            "isp": _value_from_record(
+                link,
+                ("isp", "provider", "isp_name", "organization"),
+            ),
+            "ip": _value_from_record(
+                link,
+                ("ip", "wan_ip", "ipv4", "internet_ip"),
+            ),
         }
-        if data:
-            for record in data.wan_health:
-                attrs.setdefault(
+        if not attrs.get("isp"):
+            attrs["isp"] = _value_from_record(
+                health,
+                (
                     "isp",
-                    record.get("isp")
-                    or record.get("provider")
-                    or record.get("isp_name"),
-                )
-                attrs.setdefault(
-                    "ip",
-                    record.get("wan_ip")
-                    or record.get("internet_ip")
-                    or record.get("ip"),
-                )
+                    "provider",
+                    "isp_name",
+                    "service_provider",
+                    "organization",
+                ),
+            )
+        if not attrs.get("ip"):
+            attrs["ip"] = _value_from_record(
+                health,
+                ("wan_ip", "internet_ip", "ip", "public_ip", "external_ip"),
+            )
+        attrs["gateway_ip"] = _value_from_record(
+            health,
+            ("gateway_ip", "wan_gateway", "gw_ip", "gateway"),
+        )
+        attrs["last_update"] = _value_from_record(
+            health,
+            ("datetime", "time", "last_seen", "last_update", "updated_at"),
+        )
+        attrs["uptime"] = _value_from_record(
+            health,
+            ("uptime", "uptime_status", "wan_uptime", "uptime_seconds"),
+        )
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -341,7 +449,9 @@ class UniFiGatewayWanIpSensor(UniFiGatewaySensorBase):
     ) -> None:
         self._link_id = str(link.get("id"))
         self._link_name = link.get("name") or self._link_id
+        self._identifiers = _wan_identifier_candidates(self._link_id, self._link_name, link)
         self._last_ip: Optional[str] = None
+        self._last_source: Optional[str] = None
         unique_id = f"unifigw_{client.instance_key()}_wan_{self._link_id}_ip"
         super().__init__(coordinator, client, unique_id, f"WAN {self._link_name} IP")
 
@@ -354,23 +464,59 @@ class UniFiGatewayWanIpSensor(UniFiGatewaySensorBase):
                 return link
         return None
 
+    def _wan_health_record(self) -> Optional[Dict[str, Any]]:
+        return _find_wan_health_record(self.coordinator.data, self._identifiers)
+
     @property
     def native_value(self) -> Optional[str]:
+        ip = None
+        source: Optional[str] = None
         link = self._link()
-        ip = (
-            link.get("ip")
-            or link.get("wan_ip")
-            or link.get("ipv4")
-            if link
-            else None
-        )
+        if link:
+            ip = _value_from_record(
+                link,
+                ("ip", "wan_ip", "ipv4", "internet_ip", "public_ip", "external_ip"),
+            )
+            if ip:
+                source = "link"
+        if not ip:
+            health = self._wan_health_record()
+            ip = _value_from_record(
+                health,
+                ("wan_ip", "internet_ip", "ip", "public_ip", "external_ip"),
+            )
+            if ip:
+                source = "wan_health"
         if ip:
             self._last_ip = ip
-        return ip
+            self._last_source = source or "unknown"
+            return ip
+        if self._last_ip:
+            if not self._last_source:
+                self._last_source = "cached"
+            return self._last_ip
+        return None
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        attrs = {"last_ip": self._last_ip}
+        health = self._wan_health_record() or {}
+        attrs = {
+            "last_ip": self._last_ip,
+            "source": self._last_source or ("cached" if self._last_ip else None),
+            "gateway_ip": _value_from_record(
+                health, ("gateway_ip", "wan_gateway", "gw_ip", "gateway")
+            ),
+            "subnet": _value_from_record(
+                health,
+                (
+                    "wan_ip_subnet",
+                    "wan_subnet",
+                    "subnet",
+                    "network",
+                    "tunnel_network",
+                ),
+            ),
+        }
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -386,7 +532,9 @@ class UniFiGatewayWanIspSensor(UniFiGatewaySensorBase):
     ) -> None:
         self._link_id = str(link.get("id"))
         self._link_name = link.get("name") or self._link_id
+        self._identifiers = _wan_identifier_candidates(self._link_id, self._link_name, link)
         self._last_isp: Optional[str] = None
+        self._last_source: Optional[str] = None
         unique_id = f"unifigw_{client.instance_key()}_wan_{self._link_id}_isp"
         super().__init__(coordinator, client, unique_id, f"WAN {self._link_name} ISP")
 
@@ -399,22 +547,72 @@ class UniFiGatewayWanIspSensor(UniFiGatewaySensorBase):
                 return link
         return None
 
+    def _wan_health_record(self) -> Optional[Dict[str, Any]]:
+        return _find_wan_health_record(self.coordinator.data, self._identifiers)
+
     @property
     def native_value(self) -> Optional[str]:
+        isp = None
+        source: Optional[str] = None
         link = self._link()
-        isp = link.get("isp") or link.get("provider") if link else None
+        if link:
+            isp = _value_from_record(
+                link,
+                ("isp", "provider", "isp_name", "service_provider", "organization"),
+            )
+            if isp:
+                source = "link"
+        if not isp:
+            health = self._wan_health_record()
+            isp = _value_from_record(
+                health,
+                ("isp", "provider", "isp_name", "service_provider", "organization"),
+            )
+            if isp:
+                source = "wan_health"
         if isp:
             self._last_isp = isp
-        return isp
+            self._last_source = source or "unknown"
+            return isp
+        if self._last_isp:
+            if not self._last_source:
+                self._last_source = "cached"
+            return self._last_isp
+        return None
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         link = self._link() or {}
+        health = self._wan_health_record() or {}
         attrs = {
             "last_isp": self._last_isp,
-            "organization": link.get("isp_name")
-            or link.get("isp_organization")
-            or link.get("organization"),
+            "source": self._last_source or ("cached" if self._last_isp else None),
+            "organization": _value_from_record(
+                link,
+                (
+                    "isp_name",
+                    "isp_organization",
+                    "organization",
+                    "service_provider",
+                ),
+            )
+            or _value_from_record(
+                health,
+                (
+                    "isp_name",
+                    "isp_organization",
+                    "organization",
+                    "service_provider",
+                ),
+            ),
+            "contact": _value_from_record(
+                health,
+                ("support_contact", "support_phone", "support_email"),
+            ),
+            "country": _value_from_record(
+                health,
+                ("country", "country_code", "region"),
+            ),
         }
         attrs.update(self._controller_attrs())
         return attrs
@@ -592,15 +790,42 @@ class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         record = self._record() or {}
+        clients = record.get("clients")
+        if isinstance(clients, list):
+            active_clients = len(clients)
+        else:
+            raw_count = (
+                record.get("num_clients")
+                or record.get("clients")
+                or record.get("connected_clients")
+                or record.get("client_count")
+            )
+            try:
+                active_clients = int(raw_count) if raw_count is not None else None
+            except (TypeError, ValueError):
+                active_clients = None
+        if active_clients is None:
+            active_clients = 0
         attrs = {
             "role": "server",
-            "vpn_type": record.get("vpn_type"),
-            "interface": record.get("interface"),
-            "local_ip": record.get("local_ip"),
+            "vpn_type": record.get("vpn_type") or record.get("type"),
+            "vpn_types": record.get("vpn_type") or record.get("type"),
+            "interface": record.get("interface") or record.get("ifname"),
+            "local_ip": record.get("local_ip") or record.get("server_ip"),
+            "gateway_ip": record.get("gateway_ip")
+            or record.get("wan_ip")
+            or record.get("public_ip"),
+            "subnet": record.get("subnet")
+            or record.get("tunnel_network")
+            or record.get("network"),
+            "port": record.get("port")
+            or record.get("listen_port")
+            or record.get("server_port"),
+            "active_clients": active_clients,
             "status": record.get("status") or record.get("state"),
         }
-        if isinstance(record.get("clients"), list):
-            attrs["clients"] = record["clients"]
+        if isinstance(clients, list):
+            attrs["clients"] = clients
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -655,12 +880,21 @@ class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
         record = self._record() or {}
         attrs = {
             "role": "client",
-            "server_addr": record.get("server_addr"),
+            "vpn_type": record.get("vpn_type") or record.get("type"),
+            "server_addr": record.get("server_addr")
+            or record.get("server_address")
+            or record.get("gateway"),
+            "server_address": record.get("server_addr")
+            or record.get("server_address")
+            or record.get("gateway"),
             "remote_ip": record.get("remote_ip"),
             "peer_addr": record.get("peer_addr"),
-            "tunnel_ip": record.get("tunnel_ip"),
-            "vpn_type": record.get("vpn_type"),
-            "interface": record.get("interface"),
+            "tunnel_ip": record.get("tunnel_ip") or record.get("local_ip"),
+            "interface": record.get("interface") or record.get("ifname"),
+            "port": record.get("port")
+            or record.get("server_port")
+            or record.get("remote_port"),
+            "status": record.get("status") or record.get("state"),
         }
         for key in ("subnet", "tunnel_network", "client_subnet"):
             if record.get(key):

@@ -38,6 +38,7 @@ async def async_get_config_entry_diagnostics(
             sites = client.list_sites()
             return {
                 "controller_ui": client.get_controller_url(),
+                "controller_api": client.get_controller_api_url(),
                 "site": client.get_site(),
                 "health": health,
                 "sites": sites,
@@ -62,6 +63,7 @@ async def async_get_config_entry_diagnostics(
         sites = client.list_sites()
         return {
             "controller_ui": client.get_controller_url(),
+            "controller_api": client.get_controller_api_url(),
             "site": client.get_site(),
             "health": health,
             "sites": sites,

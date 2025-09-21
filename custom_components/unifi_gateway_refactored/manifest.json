@@ -13,5 +13,7 @@
   "integration_type": "hub",
   "loggers": [
     "custom_components.unifi_gateway_refactored"
-  ]
+  ],
+  "logo": "logo.svg",
+  "icon": "icon.svg"
 }
