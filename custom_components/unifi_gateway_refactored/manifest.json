@@ -1,10 +1,10 @@
 {
   "domain": "unifi_gateway_refactored",
   "name": "UniFi Gateway (Refactored)",
-  "version": "4.1.0",
+  "version": "4.1.1",
   "config_flow": true,
-  "documentation": "https://github.com/sirkirby/unifi-network-rules",
-  "issue_tracker": "https://github.com/sirkirby/unifi-network-rules/issues",
+  "documentation": "https://github.com/rupert12pl/unifi_gatway_refacoty",
+  "issue_tracker": "https://github.com/rupert12pl/unifi_gatway_refacoty/issues",
   "iot_class": "local_polling",
   "requirements": [],
   "codeowners": [
