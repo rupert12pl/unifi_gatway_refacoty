@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import ipaddress
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -15,9 +14,6 @@ from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import UniFiOSClient, vpn_peer_identity
 
 
-_LOGGER = logging.getLogger(__name__)
-
-
 SUBSYSTEM_SENSORS: Dict[str, tuple[str, str]] = {
     "wan": ("WAN", "mdi:shield-outline"),
     "lan": ("LAN", "mdi:lan"),
@@ -29,9 +25,6 @@ SUBSYSTEM_SENSORS: Dict[str, tuple[str, str]] = {
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    _LOGGER.debug(
-        "Setting up UniFi Gateway sensors for config entry %s", entry.entry_id
-    )
     data = hass.data[DOMAIN][entry.entry_id]
     client: UniFiOSClient = data["client"]
     coordinator: UniFiGatewayDataUpdateCoordinator = data["coordinator"]
@@ -47,11 +40,6 @@ async def async_setup_entry(
     static_entities.append(UniFiGatewaySpeedtestUploadSensor(coordinator, client))
     static_entities.append(UniFiGatewaySpeedtestPingSensor(coordinator, client))
 
-    _LOGGER.debug(
-        "Adding %s static sensors for entry %s",
-        len(static_entities),
-        entry.entry_id,
-    )
     async_add_entities(static_entities)
 
     known_wan: set[str] = set()
@@ -62,15 +50,8 @@ async def async_setup_entry(
     known_vpn_site_to_site: set[str] = set()
 
     def _sync_dynamic() -> None:
-        _LOGGER.debug(
-            "Synchronizing dynamic UniFi Gateway sensors for entry %s",
-            entry.entry_id,
-        )
         coordinator_data: Optional[UniFiGatewayData] = coordinator.data
         if coordinator_data is None:
-            _LOGGER.debug(
-                "Coordinator data unavailable during sync for entry %s", entry.entry_id
-            )
             return
 
         new_entities: List[SensorEntity] = []
@@ -134,21 +115,7 @@ async def async_setup_entry(
             )
 
         if new_entities:
-            names = [
-                getattr(entity, "name", entity.__class__.__name__)
-                for entity in new_entities
-            ]
-            _LOGGER.debug(
-                "Adding %s dynamic sensors for entry %s: %s",
-                len(new_entities),
-                entry.entry_id,
-                names,
-            )
             async_add_entities(new_entities)
-        else:
-            _LOGGER.debug(
-                "No new dynamic sensors discovered for entry %s", entry.entry_id
-            )
 
     _sync_dynamic()
     entry.async_on_unload(coordinator.async_add_listener(_sync_dynamic))

@@ -56,23 +56,13 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             raise UpdateFailed(str(err)) from err
 
     def _fetch_data(self) -> UniFiGatewayData:
-        _LOGGER.debug(
-            "Starting UniFi Gateway data fetch for instance %s",
-            self.client.instance_key(),
-        )
         controller_info = {
             "url": self.client.get_controller_url(),
             "api_url": self.client.get_controller_api_url(),
             "site": self.client.get_site(),
         }
-        _LOGGER.debug(
-            "Controller context: url=%s site=%s",
-            controller_info["api_url"],
-            controller_info["site"],
-        )
 
         health = self.client.get_healthinfo() or []
-        _LOGGER.debug("Retrieved %s health records", len(health))
         health_by_subsystem: Dict[str, Dict[str, Any]] = {}
         wan_health: List[Dict[str, Any]] = []
         for record in health:
@@ -84,14 +74,9 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
 
         alerts_raw = self.client.get_alerts() or []
         alerts = [alert for alert in alerts_raw if not alert.get("archived")]
-        _LOGGER.debug(
-            "Retrieved %s active alerts (raw=%s)", len(alerts), len(alerts_raw)
-        )
         devices = self.client.get_devices() or []
-        _LOGGER.debug("Retrieved %s devices", len(devices))
 
         networks = self.client.get_networks() or []
-        _LOGGER.debug("Retrieved %s networks", len(networks))
         lan_networks: List[Dict[str, Any]] = []
         network_map: Dict[str, Dict[str, Any]] = {}
         for net in networks:
@@ -113,15 +98,10 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             if "wan" in name.lower():
                 continue
             lan_networks.append(net)
-        _LOGGER.debug("Identified %s LAN networks", len(lan_networks))
 
         wan_links_raw = self.client.get_wan_links() or []
         if not wan_links_raw:
             wan_links_raw = self._derive_wan_links_from_networks(networks)
-            _LOGGER.warning(
-                "WAN link discovery required fallback derivation; derived=%s",
-                len(wan_links_raw),
-            )
         wan_links: List[Dict[str, Any]] = []
         for link in wan_links_raw:
             link_id = link.get("id") or link.get("_id") or link.get("ifname")
@@ -134,38 +114,25 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             normalized["id"] = str(link_id)
             normalized["name"] = link_name
             wan_links.append(normalized)
-        _LOGGER.debug("Processed %s WAN link records", len(wan_links))
 
         wlans = self.client.get_wlans() or []
-        _LOGGER.debug("Retrieved %s WLAN configurations", len(wlans))
         clients = self.client.get_clients() or []
-        _LOGGER.debug("Retrieved %s clients", len(clients))
         vpn_servers = self.client.get_vpn_servers() or []
         vpn_clients = self.client.get_vpn_clients() or []
         vpn_site_to_site = self.client.get_vpn_site_to_site() or []
-        _LOGGER.debug(
-            "VPN records: servers=%s clients=%s site_to_site=%s",
-            len(vpn_servers),
-            len(vpn_clients),
-            len(vpn_site_to_site),
-        )
 
         try:
             speedtest = self.client.get_last_speedtest(cache_sec=5)
-            if speedtest:
-                _LOGGER.debug("Retrieved cached speedtest result")
-        except APIError as err:
-            _LOGGER.warning("Fetching last speedtest failed: %s", err)
+        except APIError:
             speedtest = None
 
         # fire and forget — the method is safe if controller does not support speedtests
         try:
             self.client.maybe_start_speedtest(cooldown_sec=3600)
-            _LOGGER.debug("Speedtest trigger evaluated")
-        except APIError as err:
-            _LOGGER.debug("Speedtest trigger failed: %s", err)
+        except APIError:
+            pass
 
-        data = UniFiGatewayData(
+        return UniFiGatewayData(
             controller=controller_info,
             health=health,
             health_by_subsystem=health_by_subsystem,
@@ -183,13 +150,6 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             vpn_site_to_site=vpn_site_to_site,
             speedtest=speedtest,
         )
-        _LOGGER.debug(
-            "Completed data fetch: health=%s alerts=%s devices=%s",
-            len(data.health),
-            len(data.alerts),
-            len(data.devices),
-        )
-        return data
 
     def _derive_wan_links_from_networks(
         self, networks: List[Dict[str, Any]]
