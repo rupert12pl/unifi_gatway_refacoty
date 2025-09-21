@@ -7,7 +7,7 @@ import re
 import socket
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 from urllib.parse import urlsplit
@@ -454,6 +454,7 @@ class UniFiOSClient:
 
         self._login(host, port, ssl_verify, timeout)
         self._ensure_connected()
+        self._vpn_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
 
     # ----------- auth / base detection -----------
     def _login(self, host: str, port: int, ssl_verify: bool, timeout: int):
@@ -462,6 +463,7 @@ class UniFiOSClient:
             for ep in ("/api/auth/login", "/api/login", "/auth/login"):
                 url = f"{root}{ep}"
                 try:
+                    _LOGGER.debug("Attempting UniFi OS login via endpoint %s", url)
                     r = self._session.post(
                         url,
                         json={
@@ -481,7 +483,13 @@ class UniFiOSClient:
                             self._session.headers["x-csrf-token"] = csrf
                         _LOGGER.info("Logged into UniFi OS via %s", url)
                         return
-                except requests.RequestException:
+                except requests.RequestException as err:
+                    _LOGGER.debug(
+                        "Login attempt against %s raised a transport error: %s",
+                        url,
+                        err,
+                        exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
+                    )
                     continue
         raise AuthError("Failed to authenticate with provided username/password")
 
@@ -531,6 +539,13 @@ class UniFiOSClient:
         url: str,
         payload: Optional[Dict[str, Any]] = None,
     ) -> Any:
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "UniFi request %s %s (payload=%s)",
+                method,
+                url,
+                "yes" if payload else "no",
+            )
         try:
             r = self._session.request(
                 method,
@@ -540,23 +555,38 @@ class UniFiOSClient:
                 timeout=self._timeout,
             )
         except requests.RequestException as ex:
+            _LOGGER.error("Transport error during UniFi request %s %s: %s", method, url, ex)
             raise ConnectivityError(f"Request error: {ex}") from ex
+        _LOGGER.debug(
+            "UniFi response for %s %s: HTTP %s", method, url, r.status_code
+        )
         if r.status_code in (401, 403):
+            _LOGGER.error("Authentication failed for UniFi request %s %s", method, url)
             raise AuthError(f"Auth failed at {url}")
         if r.status_code >= 400:
+            _LOGGER.error(
+                "HTTP error %s for UniFi request %s %s: %s",
+                r.status_code,
+                method,
+                url,
+                r.text[:200],
+            )
             raise APIError(f"HTTP {r.status_code}: {r.text[:200]} at {url}")
         if not r.content:
             return None
         try:
             data = r.json()
         except ValueError:
+            _LOGGER.error("Invalid JSON received from UniFi request %s %s", method, url)
             raise APIError(f"Invalid JSON from {url}")
         return data.get("data") if isinstance(data, dict) and "data" in data else data
 
     def _get(self, path: str):
+        _LOGGER.debug("GET %s", path)
         return self._request("GET", f"{self._base}/{path.lstrip('/')}")
 
     def _post(self, path: str, payload: Optional[Dict[str, Any]] = None):
+        _LOGGER.debug("POST %s", path)
         return self._request("POST", f"{self._base}/{path.lstrip('/')}", payload)
 
     # ----------- public helpers used by sensors / diagnostics -----------
@@ -572,22 +602,57 @@ class UniFiOSClient:
 
     def get_alerts(self):
         try:
-            return self._get("list/alert")
-        except APIError:
-            return self._get("list/alarm")
+            alerts = self._get("list/alert")
+            _LOGGER.debug(
+                "Fetched %s alert records from list/alert",
+                len(alerts) if isinstance(alerts, list) else "unknown",
+            )
+            return alerts
+        except APIError as err:
+            _LOGGER.warning(
+                "Fetching list/alert failed (%s); attempting legacy list/alarm endpoint",
+                err,
+            )
+            legacy_alerts = self._get("list/alarm")
+            _LOGGER.debug(
+                "Fetched %s alert records from list/alarm",
+                len(legacy_alerts)
+                if isinstance(legacy_alerts, list)
+                else "unknown",
+            )
+            return legacy_alerts
 
     def list_sites(self):
         root = self._base.split("/api/s/")[0] + "/api"
-        return self._request("GET", f"{root}/self/sites")
+        sites = self._request("GET", f"{root}/self/sites")
+        _LOGGER.debug(
+            "Controller returned %s sites", len(sites) if isinstance(sites, list) else "unknown"
+        )
+        return sites
 
     def get_networks(self) -> List[Dict[str, Any]]:
         for path in ("rest/networkconf", "list/networkconf"):
             try:
                 data = self._get(path)
                 if isinstance(data, list):
+                    _LOGGER.debug(
+                        "Fetched %s networks via %s", len(data), path
+                    )
                     return data
-            except APIError:
+                _LOGGER.debug(
+                    "Endpoint %s returned %s instead of list for networks",
+                    path,
+                    type(data).__name__,
+                )
+            except APIError as err:
+                _LOGGER.debug(
+                    "Network fetch via %s failed: %s",
+                    path,
+                    err,
+                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
+                )
                 continue
+        _LOGGER.warning("No network configuration data returned by controller")
         return []
 
     def get_wlans(self) -> List[Dict[str, Any]]:
@@ -595,9 +660,24 @@ class UniFiOSClient:
             try:
                 data = self._get(path)
                 if isinstance(data, list):
+                    _LOGGER.debug(
+                        "Fetched %s WLAN configurations via %s", len(data), path
+                    )
                     return data
-            except APIError:
+                _LOGGER.debug(
+                    "Endpoint %s returned %s instead of list for WLANs",
+                    path,
+                    type(data).__name__,
+                )
+            except APIError as err:
+                _LOGGER.debug(
+                    "WLAN fetch via %s failed: %s",
+                    path,
+                    err,
+                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
+                )
                 continue
+        _LOGGER.warning("No WLAN configuration data returned by controller")
         return []
 
     def get_clients(self) -> List[Dict[str, Any]]:
@@ -605,9 +685,24 @@ class UniFiOSClient:
             try:
                 data = self._get(path)
                 if isinstance(data, list):
+                    _LOGGER.debug(
+                        "Fetched %s clients via %s", len(data), path
+                    )
                     return data
-            except APIError:
+                _LOGGER.debug(
+                    "Endpoint %s returned %s instead of list for clients",
+                    path,
+                    type(data).__name__,
+                )
+            except APIError as err:
+                _LOGGER.debug(
+                    "Client fetch via %s failed: %s",
+                    path,
+                    err,
+                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
+                )
                 continue
+        _LOGGER.warning("No client data returned by controller")
         return []
 
     def get_wan_links(self) -> List[Dict[str, Any]]:
@@ -618,25 +713,47 @@ class UniFiOSClient:
             "list/wan",
             "stat/wan",
         ]
+        _LOGGER.debug("Attempting WAN link discovery via endpoints: %s", ", ".join(paths))
         for path in paths:
             try:
                 data = self._get(path)
-            except Exception:
+            except Exception as err:
+                _LOGGER.debug(
+                    "WAN link fetch via %s failed: %s",
+                    path,
+                    err,
+                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
+                )
                 continue
             # dict with nested lists
             if isinstance(data, dict):
                 for k in ("wans", "wan_links", "links", "interfaces"):
                     v = data.get(k)
                     if isinstance(v, list) and v:
+                        _LOGGER.debug(
+                            "WAN link data discovered via %s.%s (%s entries)",
+                            path,
+                            k,
+                            len(v),
+                        )
                         return [x for x in v if isinstance(x, dict)]
             # direct list
             if isinstance(data, list) and data:
+                _LOGGER.debug(
+                    "WAN link data discovered via %s (%s entries)",
+                    path,
+                    len(data),
+                )
                 return [x for x in data if isinstance(x, dict)]
         # fallback: derive from networks marked as WAN
         nets = []
         try:
             nets = self.get_networks() or []
-        except Exception:
+        except Exception as err:
+            _LOGGER.warning(
+                "Falling back to deriving WAN links from networks due to error: %s",
+                err,
+            )
             nets = []
         out = []
         for n in nets:
@@ -644,6 +761,12 @@ class UniFiOSClient:
             name = n.get("name") or n.get("display_name") or ""
             if "wan" in purpose or n.get("wan_network") or "wan" in (name or "").lower():
                 out.append({"id": n.get("_id") or n.get("id") or name, "name": name, "type": "wan"})
+        if out:
+            _LOGGER.debug(
+                "Derived %s WAN links from network configuration fallback", len(out)
+            )
+        else:
+            _LOGGER.error("Unable to determine WAN links from controller data")
         return out
 
     def _flatten_vpn_records(
@@ -704,157 +827,379 @@ class UniFiOSClient:
                     stack.append((item, current_role))
         return records
 
-    def _collect_vpn_records(
-        self,
-        probes: List[str],
-        role_hint: Optional[str],
-        role_filter: Optional[set[str]] = None,
-    ) -> List[Dict[str, Any]]:
-        """Collect VPN records from multiple API probes with optional role hint."""
+    def _iter_vpn_payload(
+        self, payload: Any, key_hint: Optional[str] = None
+    ) -> Iterable[Tuple[Optional[str], List[Dict[str, Any]]]]:
+        """Iterate over VPN payload segments that look like peer lists."""
 
-        found: List[Dict[str, Any]] = []
-        errors: Dict[str, Exception] = {}
-        for path in probes:
+        if payload in (None, "", [], {}):
+            return
+
+        if isinstance(payload, list):
+            peers = [item for item in payload if isinstance(item, dict)]
+            if peers:
+                yield key_hint, peers
+            return
+
+        if isinstance(payload, dict):
+            has_peer_fields = any(
+                key in payload and payload.get(key) not in (None, "", [], {})
+                for key in _VPN_RECORD_KEYS
+            )
+            if has_peer_fields and all(
+                not isinstance(value, list) for value in payload.values()
+            ):
+                yield key_hint, [payload]
+
+            for key, value in payload.items():
+                if not isinstance(value, (dict, list)):
+                    continue
+                next_hint = key if isinstance(key, str) else key_hint
+                yield from self._iter_vpn_payload(value, next_hint)
+
+    def _prepare_vpn_peer(
+        self,
+        peer: Dict[str, Any],
+        *,
+        category_hint: Optional[str],
+        source_path: str,
+    ) -> Dict[str, Any]:
+        normalized = dict(peer)
+        if source_path:
+            normalized.setdefault("_ha_source", source_path)
+        if category_hint:
+            normalized.setdefault("_ha_category_hint", category_hint)
+
+        role, category, template = _classify_vpn_record(normalized, category_hint)
+        normalized_role = role or normalized.get("role")
+        if normalized_role and not normalized.get("role"):
+            normalized["role"] = normalized_role
+        if normalized_role:
+            normalized["_ha_role"] = normalized_role
+        if category:
+            normalized["_ha_category"] = category
+        if template:
+            normalized["_ha_template"] = template
+
+        legacy_identity = vpn_peer_identity(normalized)
+        suffix = (
+            _normalize_token(category)
+            or _normalize_token(normalized_role)
+            or _normalize_token(category_hint)
+            or "vpn"
+        )
+        normalized["_ha_legacy_peer_id"] = legacy_identity
+        normalized["_ha_peer_id"] = (
+            f"{legacy_identity}::{suffix}" if suffix else legacy_identity
+        )
+        return normalized
+
+    def _normalize_vpn_payload(
+        self, payload: Any, *, path: str, default_category: Optional[str]
+    ) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        for key_hint, peers in self._iter_vpn_payload(payload, default_category):
+            category_hint = key_hint or default_category
+            for peer in peers:
+                normalized.append(
+                    self._prepare_vpn_peer(
+                        peer, category_hint=category_hint, source_path=path
+                    )
+                )
+        return normalized
+
+    @staticmethod
+    def _merge_vpn_peer(
+        existing: Dict[str, Any], incoming: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        sources: List[str] = existing.setdefault("_ha_sources", [])
+        for key in ("_ha_source", "_ha_category_hint"):
+            for value in (existing.get(key), incoming.get(key)):
+                if isinstance(value, str) and value and value not in sources:
+                    sources.append(value)
+
+        for key, value in incoming.items():
+            if key == "_ha_peer_id":
+                continue
+            if value in (None, "", [], {}):
+                continue
+            if key not in existing or existing.get(key) in (None, "", [], {}):
+                existing[key] = value
+
+        if "_ha_source" not in existing and incoming.get("_ha_source"):
+            existing["_ha_source"] = incoming["_ha_source"]
+        if incoming.get("_ha_category"):
+            existing["_ha_category"] = incoming["_ha_category"]
+        if incoming.get("_ha_role"):
+            existing["_ha_role"] = incoming["_ha_role"]
+        if incoming.get("_ha_template") and not existing.get("_ha_template"):
+            existing["_ha_template"] = incoming["_ha_template"]
+
+        return existing
+
+    @staticmethod
+    def _filter_vpn_peers(
+        peers: List[Dict[str, Any]], allowed_categories: Iterable[str]
+    ) -> List[Dict[str, Any]]:
+        allowed = {
+            _normalize_token(category)
+            for category in allowed_categories
+            if category is not None
+        }
+        if not allowed:
+            return list(peers)
+
+        filtered: List[Dict[str, Any]] = []
+        for peer in peers:
+            tokens = [
+                _normalize_token(peer.get("_ha_category")),
+                _normalize_token(peer.get("_ha_role")),
+                _normalize_token(peer.get("role")),
+                _normalize_token(peer.get("vpn_type")),
+                _normalize_token(peer.get("type")),
+                _normalize_token(peer.get("_ha_category_hint")),
+            ]
+            tokens = [token for token in tokens if token]
+            if any(
+                candidate in token or token in candidate
+                for token in tokens
+                for candidate in allowed
+            ):
+                filtered.append(peer)
+        return filtered
+
+    def get_vpn_peers(self, cache_sec: int = 5) -> List[Dict[str, Any]]:
+        """Return normalized VPN peer records from supported controller endpoints."""
+
+        now = time.time()
+        if self._vpn_cache and (now - self._vpn_cache[0]) < cache_sec:
+            return self._vpn_cache[1]
+
+        probes: List[Tuple[str, Optional[str]]] = [
+            ("list/remoteuser", "remote_user"),
+            ("stat/vpn", None),
+            ("list/vpn", None),
+            ("internet/vpn/peers", None),
+            ("internet/vpn/servers", "server"),
+            ("internet/vpn/clients", "client"),
+            ("internet/vpn/site-to-site", "site_to_site"),
+        ]
+
+        aggregated: Dict[str, Dict[str, Any]] = {}
+        probe_errors: Dict[str, Exception] = {}
+        total_candidates = 0
+
+        def _store_peer(record: Dict[str, Any]) -> None:
+            peer_id = record.get("_ha_peer_id") or vpn_peer_identity(record)
+            if peer_id in aggregated:
+                aggregated[peer_id] = self._merge_vpn_peer(aggregated[peer_id], record)
+            else:
+                record.setdefault("_ha_sources", [])
+                if (
+                    record.get("_ha_source")
+                    and record["_ha_source"] not in record["_ha_sources"]
+                ):
+                    record["_ha_sources"].append(record["_ha_source"])
+                aggregated[peer_id] = record
+
+        for path, hint in probes:
             try:
-                data = self._get(path)
-            except Exception as err:  # broad: controller versions vary widely
+                payload = self._get(path)
+            except APIError as err:
+                probe_errors[path] = err
                 _LOGGER.debug(
-                    "VPN probe %s failed during %s fetch: %s",
+                    "VPN peer probe %s failed: %s",
                     path,
-                    role_hint or "vpn",
                     err,
                     exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
                 )
-                errors[path] = err
                 continue
 
-            flattened = self._flatten_vpn_records(data, role_hint)
-            if flattened:
+            normalized = self._normalize_vpn_payload(
+                payload, path=path, default_category=hint
+            )
+            if not normalized:
                 _LOGGER.debug(
-                    "VPN probe %s returned %s candidate records for %s",
+                    "VPN peer probe %s returned no peer records (type=%s)",
                     path,
-                    len(flattened),
-                    role_hint or "vpn",
+                    type(payload).__name__,
+                )
+                continue
+
+            _LOGGER.debug(
+                "VPN peer probe %s produced %s candidate records",
+                path,
+                len(normalized),
+            )
+            total_candidates += len(normalized)
+
+            for peer in normalized:
+                _store_peer(peer)
+
+        peers = list(aggregated.values())
+
+        if not peers:
+            _LOGGER.debug(
+                "Attempting legacy VPN peer discovery fallback after %s probes",
+                len(probes),
+            )
+            fallback_sources: List[str] = []
+            fallback_candidates = 0
+            for source_path, records in self._legacy_vpn_peer_sources():
+                fallback_sources.append(source_path)
+                normalized = self._normalize_vpn_payload(
+                    records,
+                    path=f"legacy:{source_path}",
+                    default_category=None,
+                )
+                if not normalized:
+                    _LOGGER.debug(
+                        "Legacy VPN probe %s yielded no usable peer records",
+                        source_path,
+                    )
+                    continue
+                fallback_candidates += len(normalized)
+                for peer in normalized:
+                    _store_peer(peer)
+
+            peers = list(aggregated.values())
+            if peers:
+                _LOGGER.warning(
+                    "Legacy VPN discovery succeeded via %s (candidates=%s)",
+                    ", ".join(fallback_sources) or "none",
+                    fallback_candidates,
+                )
+                total_candidates += fallback_candidates
+            elif probe_errors:
+                summary = ", ".join(
+                    f"{path} ({err})" for path, err in sorted(probe_errors.items())
+                )
+                _LOGGER.error(
+                    "Controller returned no VPN peers (legacy fallback failed); "
+                    "probe errors: %s",
+                    summary,
                 )
             else:
-                _LOGGER.debug(
-                    "VPN probe %s returned no candidate records for %s (raw type=%s)",
-                    path,
-                    role_hint or "vpn",
-                    type(data).__name__,
+                _LOGGER.error(
+                    "Controller returned no VPN peers even after legacy fallback",
                 )
-            found.extend(flattened)
 
-        uniq: Dict[str, Dict[str, Any]] = {}
-        filtered_out = 0
-        for record in found:
-            if not isinstance(record, dict):
-                continue
-            normalized = dict(record)
-            if role_hint and not normalized.get("role"):
-                normalized["role"] = role_hint
-            peer_id = vpn_peer_identity(normalized)
-            role, category, template = _classify_vpn_record(normalized, role_hint)
-            normalized_role = role or normalized.get("role")
-            if normalized_role:
-                normalized["role"] = normalized_role
-            normalized["_ha_role"] = normalized_role
-            normalized["_ha_category"] = category
-            normalized["_ha_template"] = template or category
-            normalized["_ha_legacy_peer_id"] = peer_id
-            suffix = _normalize_token(category) or _normalize_token(normalized_role) or "vpn"
-            identity = f"{peer_id}::{suffix}" if suffix else peer_id
-            normalized["_ha_peer_id"] = identity
-            if role_filter:
-                allowed = {value for value in role_filter if value}
-                if normalized_role not in allowed and category not in allowed and suffix not in allowed:
-                    filtered_out += 1
-                    continue
-            uniq[identity] = normalized
-
-        if _LOGGER.isEnabledFor(logging.DEBUG):
+        if peers:
             category_counts: Dict[str, int] = {}
-            for record in uniq.values():
-                category = record.get("_ha_category") or record.get("role") or "unknown"
+            for peer in peers:
+                category = peer.get("_ha_category") or peer.get("role") or "unknown"
                 category_counts[category] = category_counts.get(category, 0) + 1
             stats = ", ".join(
                 f"{category}={count}" for category, count in sorted(category_counts.items())
             ) or "none"
             _LOGGER.debug(
-                "Collected %s VPN %s records (filtered_out=%s): %s",
-                len(uniq),
-                role_hint or "records",
-                filtered_out,
+                "Collected %s unique VPN peers (raw=%s): %s",
+                len(peers),
+                total_candidates,
                 stats,
             )
-        elif not uniq:
-            if errors:
-                error_summary = ", ".join(
-                    f"{path} ({err})" for path, err in sorted(errors.items())
-                )
-                _LOGGER.warning(
-                    "No VPN %s records discovered; probe errors: %s",
-                    role_hint or "records",
-                    error_summary,
-                )
-            else:
-                _LOGGER.info(
-                    "No VPN %s records discovered from controller probes",
-                    role_hint or "records",
-                )
 
-        return list(uniq.values())
+        self._vpn_cache = (now, peers)
+        return peers
+
+    def _legacy_vpn_peer_sources(self) -> Iterable[Tuple[str, List[Dict[str, Any]]]]:
+        """Yield raw VPN peer lists using the legacy discovery approach."""
+
+        legacy_paths = (
+            "list/remoteuser",
+            "list/vpn",
+            "stat/vpn",
+            "internet/vpn/peers",
+        )
+
+        for path in legacy_paths:
+            try:
+                payload = self._get(path)
+            except APIError as err:
+                _LOGGER.debug(
+                    "Legacy VPN probe %s failed: %s",
+                    path,
+                    err,
+                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
+                )
+                continue
+
+            peers = self._extract_legacy_vpn_peers(payload)
+            if not peers:
+                _LOGGER.debug(
+                    "Legacy VPN probe %s returned no peer records (type=%s)",
+                    path,
+                    type(payload).__name__,
+                )
+                continue
+
+            _LOGGER.debug(
+                "Legacy VPN probe %s produced %s candidate records",
+                path,
+                len(peers),
+            )
+            yield path, peers
+
+    @staticmethod
+    def _extract_legacy_vpn_peers(payload: Any) -> List[Dict[str, Any]]:
+        """Extract peer dictionaries from legacy VPN API responses."""
+
+        if payload in (None, "", [], {}):
+            return []
+
+        if isinstance(payload, list):
+            return [peer for peer in payload if isinstance(peer, dict)]
+
+        if isinstance(payload, dict):
+            if any(
+                key in payload and isinstance(payload.get(key), (str, int, float, list, dict))
+                for key in _VPN_RECORD_KEYS
+            ):
+                return [payload]
+
+            for value in payload.values():
+                if isinstance(value, list):
+                    nested = [peer for peer in value if isinstance(peer, dict)]
+                    if nested:
+                        return nested
+
+        return []
 
     def get_vpn_servers(self) -> List[Dict[str, Any]]:
         """Return configured VPN servers (WireGuard/OpenVPN Remote User)."""
-        probes = [
-            "internet/vpn/peers",
-            "internet/vpn/servers",
-            "internet/vpn/server",
-            "internet/vpn/site-to-site",
-            "stat/vpn",
-            "list/remoteuser",
-            "list/vpn",
-            "rest/vpnserver",
-            "rest/vpnservers",
-            "rest/wgserver",
-            "rest/wgservers",
-            "rest/wireguard/server",
-        ]
-        return self._collect_vpn_records(probes, "server", {"server"})
+
+        servers = self._filter_vpn_peers(
+            self.get_vpn_peers(),
+            {"server", "remote_user", "remoteuser", "peer"},
+        )
+        _LOGGER.debug("Returning %s VPN server records", len(servers))
+        if not servers:
+            _LOGGER.info("Controller reported no VPN server records")
+        return servers
 
     def get_vpn_clients(self) -> List[Dict[str, Any]]:
         """Return configured VPN client tunnels (policy-based/route-based)."""
-        probes = [
-            "internet/vpn/clients",
-            "internet/vpn/client",
-            "internet/vpn/site-to-site",
-            "stat/vpn",
-            "list/vpn",
-            "rest/vpnclient",
-            "rest/vpnclients",
-            "rest/wgclient",
-            "rest/wgclients",
-            "rest/wireguard/client",
-        ]
-        return self._collect_vpn_records(probes, "client", {"client", "teleport"})
+
+        clients = self._filter_vpn_peers(
+            self.get_vpn_peers(),
+            {"client", "teleport"},
+        )
+        _LOGGER.debug("Returning %s VPN client records", len(clients))
+        if not clients:
+            _LOGGER.info("Controller reported no VPN client records")
+        return clients
 
     def get_vpn_site_to_site(self) -> List[Dict[str, Any]]:
         """Return configured Site-to-Site tunnels (IPSec/UID)."""
 
-        probes = [
-            "internet/vpn/clients",
-            "internet/vpn/client",
-            "internet/vpn/site-to-site",
-            "stat/vpn",
-            "list/vpn",
-            "rest/vpnclient",
-            "rest/vpnclients",
-            "rest/wgclient",
-            "rest/wgclients",
-            "rest/wireguard/client",
-        ]
-        return self._collect_vpn_records(probes, "site_to_site", {"site_to_site", "uid"})
+        tunnels = self._filter_vpn_peers(
+            self.get_vpn_peers(),
+            {"site_to_site", "uid", "uid_vpn"},
+        )
+        _LOGGER.debug("Returning %s VPN site-to-site records", len(tunnels))
+        if not tunnels:
+            _LOGGER.info("Controller reported no site-to-site VPN records")
+        return tunnels
 
     def instance_key(self) -> str:
         return self._iid
