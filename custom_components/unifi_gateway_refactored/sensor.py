@@ -1021,14 +1021,19 @@ class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
             or peer.get("display_name")
         )
         self._peer_id = _vpn_peer_id(peer)
-        name = self._peer_name or f"VPN Server {self._peer_id}"
+        display_name = self._peer_name or str(self._peer_id)
         self._base_identifiers = _vpn_identifier_candidates(peer)
         if self._peer_id:
             self._base_identifiers.add(str(self._peer_id).lower())
         self._base_labels = _vpn_label_candidates(peer)
         self._base_networks = tuple(_vpn_networks(peer))
         unique_id = f"unifigw_{client.instance_key()}_vpn_server_{self._peer_id}"
-        super().__init__(coordinator, client, unique_id, f"VPN {name}")
+        super().__init__(
+            coordinator,
+            client,
+            unique_id,
+            f"VPN Server {display_name}",
+        )
 
     def _record(self) -> Optional[Dict[str, Any]]:
         data = self.coordinator.data
@@ -1147,14 +1152,19 @@ class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
             or peer.get("description")
             or peer.get("display_name")
         )
-        name = self._peer_name or f"VPN Client {self._peer_id}"
+        display_name = self._peer_name or str(self._peer_id)
         self._base_identifiers = _vpn_identifier_candidates(peer)
         if self._peer_id:
             self._base_identifiers.add(str(self._peer_id).lower())
         self._base_labels = _vpn_label_candidates(peer)
         self._base_networks = tuple(_vpn_networks(peer))
         unique_id = f"unifigw_{client.instance_key()}_vpn_client_{self._peer_id}"
-        super().__init__(coordinator, client, unique_id, f"VPN {name}")
+        super().__init__(
+            coordinator,
+            client,
+            unique_id,
+            f"VPN Client {display_name}",
+        )
 
     def _record(self) -> Optional[Dict[str, Any]]:
         data = self.coordinator.data
