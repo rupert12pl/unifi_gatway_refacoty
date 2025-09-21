@@ -201,6 +201,47 @@ def _value_from_record(record: Optional[Dict[str, Any]], keys: Iterable[str]) ->
     return None
 
 
+def _coerce_int(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        try:
+            return int(float(cleaned))
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_client_count(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, dict):
+        for key in (
+            "connected",
+            "active",
+            "num_active",
+            "num_clients",
+            "client_count",
+            "connected_clients",
+            "value",
+            "count",
+        ):
+            count = _coerce_int(value.get(key))
+            if count is not None:
+                return count
+        return len(value)
+    return _coerce_int(value)
+
+
 class UniFiGatewaySensorBase(
     CoordinatorEntity[UniFiGatewayDataUpdateCoordinator], SensorEntity
 ):
@@ -772,37 +813,31 @@ class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
         record = self._record()
         if not record:
             return None
-        raw = (
-            record.get("num_clients")
-            or record.get("clients")
-            or record.get("connected_clients")
-        )
-        if isinstance(raw, list):
-            return len(raw)
-        if raw is not None:
-            try:
-                return int(raw)
-            except (TypeError, ValueError):
-                return None
+        for key in (
+            "num_clients",
+            "connected_clients",
+            "client_count",
+            "clients",
+        ):
+            count = _extract_client_count(record.get(key))
+            if count is not None:
+                return count
         return 0
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         record = self._record() or {}
         clients = record.get("clients")
-        if isinstance(clients, list):
-            active_clients = len(clients)
-        else:
-            raw_count = (
-                record.get("num_clients")
-                or record.get("clients")
-                or record.get("connected_clients")
-                or record.get("client_count")
-            )
-            try:
-                active_clients = int(raw_count) if raw_count is not None else None
-            except (TypeError, ValueError):
-                active_clients = None
+        active_clients = _extract_client_count(clients)
+        if active_clients is None:
+            for key in (
+                "num_clients",
+                "connected_clients",
+                "client_count",
+            ):
+                active_clients = _extract_client_count(record.get(key))
+                if active_clients is not None:
+                    break
         if active_clients is None:
             active_clients = 0
         attrs = {
@@ -823,7 +858,7 @@ class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
             "active_clients": active_clients,
             "status": record.get("status") or record.get("state"),
         }
-        if isinstance(clients, list):
+        if isinstance(clients, (list, dict)):
             attrs["clients"] = clients
         attrs.update(self._controller_attrs())
         return attrs
