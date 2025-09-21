@@ -615,8 +615,8 @@ class UniFiOSClient:
             raise APIError(f"Invalid JSON from {url}", url=url)
         return data.get("data") if isinstance(data, dict) and "data" in data else data
 
-    def _candidate_api_bases(self) -> List[str]:
-        """Return API base URLs to probe for feature availability."""
+    def _vpn_api_bases(self) -> List[str]:
+        """Return API base URLs for VPN endpoint probing."""
 
         primary = self._base.rstrip("/")
         candidates: List[str] = [primary]
@@ -629,8 +629,8 @@ class UniFiOSClient:
         return candidates
 
     @staticmethod
-    def _should_retry_with_alternate_base(err: APIError) -> bool:
-        """Return True if the error indicates an unsupported endpoint variant."""
+    def _vpn_should_retry_with_alternate_base(err: APIError) -> bool:
+        """Return True if the VPN error indicates an alternate endpoint is needed."""
 
         if err.status_code not in (400, 404):
             return False
@@ -639,7 +639,7 @@ class UniFiOSClient:
             token in message for token in ("api.err.invalidobject", "api.err.notfound")
         )
 
-    def _api_request(
+    def _vpn_api_request(
         self,
         method: str,
         path: str,
@@ -647,10 +647,10 @@ class UniFiOSClient:
         *,
         expected_errors: Optional[Collection[int]] = None,
     ) -> Any:
-        """Perform an API request with fallback between legacy and v2 endpoints."""
+        """Perform a VPN API request with fallback between legacy and v2 endpoints."""
 
         normalized_path = path.lstrip("/")
-        bases = self._candidate_api_bases()
+        bases = self._vpn_api_bases()
         original_expected = set(expected_errors or ())
         fallback_statuses = {400, 404}
         combined_expected = tuple(original_expected | fallback_statuses)
@@ -668,7 +668,7 @@ class UniFiOSClient:
             except APIError as err:
                 last_error = err
                 has_alternate = index < (len(bases) - 1)
-                if has_alternate and self._should_retry_with_alternate_base(err):
+                if has_alternate and self._vpn_should_retry_with_alternate_base(err):
                     next_base = bases[index + 1]
                     _LOGGER.debug(
                         "Retrying UniFi request %s %s via alternate API base %s due to %s",
@@ -700,6 +700,23 @@ class UniFiOSClient:
             expected=False,
         ) from last_error
 
+    def _vpn_get_internet(
+        self,
+        path: str,
+        *,
+        expected_errors: Optional[Collection[int]] = None,
+    ) -> Any:
+        """Issue a GET for internet/vpn paths with UniFi v2 fallback support."""
+
+        if not path.startswith("internet/vpn/"):
+            raise ValueError(f"VPN internet endpoint expected, got {path}")
+
+        return self._vpn_api_request(
+            "GET",
+            path,
+            expected_errors=expected_errors,
+        )
+
     def _get(
         self,
         path: str,
@@ -707,9 +724,9 @@ class UniFiOSClient:
         expected_errors: Optional[Collection[int]] = None,
     ):
         _LOGGER.debug("GET %s", path)
-        return self._api_request(
+        return self._request(
             "GET",
-            path,
+            f"{self._base}/{path.lstrip('/')}",
             expected_errors=expected_errors,
         )
 
@@ -721,9 +738,9 @@ class UniFiOSClient:
         expected_errors: Optional[Collection[int]] = None,
     ):
         _LOGGER.debug("POST %s", path)
-        return self._api_request(
+        return self._request(
             "POST",
-            path,
+            f"{self._base}/{path.lstrip('/')}",
             payload,
             expected_errors=expected_errors,
         )
@@ -1128,6 +1145,14 @@ class UniFiOSClient:
         probe_errors: Dict[str, Exception] = {}
         total_candidates = 0
 
+        def _fetch_vpn_payload(path: str) -> Any:
+            if path.startswith("internet/vpn/"):
+                return self._vpn_get_internet(
+                    path,
+                    expected_errors=_VPN_EXPECTED_ERROR_CODES,
+                )
+            return self._get(path, expected_errors=_VPN_EXPECTED_ERROR_CODES)
+
         def _store_peer(record: Dict[str, Any]) -> None:
             peer_id = record.get("_ha_peer_id") or vpn_peer_identity(record)
             if peer_id in aggregated:
@@ -1143,7 +1168,7 @@ class UniFiOSClient:
 
         for path, hint in probes:
             try:
-                payload = self._get(path, expected_errors=_VPN_EXPECTED_ERROR_CODES)
+                payload = _fetch_vpn_payload(path)
             except APIError as err:
                 probe_errors[path] = err
                 _LOGGER.debug(
@@ -1273,7 +1298,16 @@ class UniFiOSClient:
 
         for path in legacy_paths:
             try:
-                payload = self._get(path, expected_errors=_VPN_EXPECTED_ERROR_CODES)
+                if path.startswith("internet/vpn/"):
+                    payload = self._vpn_get_internet(
+                        path,
+                        expected_errors=_VPN_EXPECTED_ERROR_CODES,
+                    )
+                else:
+                    payload = self._get(
+                        path,
+                        expected_errors=_VPN_EXPECTED_ERROR_CODES,
+                    )
             except APIError as err:
                 _LOGGER.debug(
                     "Legacy VPN probe %s failed: %s",
