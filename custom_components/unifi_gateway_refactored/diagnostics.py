@@ -49,8 +49,8 @@ async def async_get_config_entry_diagnostics(
     def _collect_fresh() -> Dict[str, Any]:
         client = UniFiOSClient(
             host=entry.data[CONF_HOST],
-            username=entry.data[CONF_USERNAME],
-            password=entry.data[CONF_PASSWORD],
+            username=entry.data.get(CONF_USERNAME),
+            password=entry.data.get(CONF_PASSWORD),
             port=entry.data.get(CONF_PORT, DEFAULT_PORT),
             site_id=entry.data.get(CONF_SITE_ID, DEFAULT_SITE),
             ssl_verify=entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),

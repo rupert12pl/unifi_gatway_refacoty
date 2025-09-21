@@ -9,9 +9,20 @@ from homeassistant.data_entry_flow import FlowResult
 import voluptuous as vol
 
 from .const import (
-    DOMAIN, CONF_USERNAME, CONF_PASSWORD, CONF_HOST, CONF_PORT,
-    CONF_VERIFY_SSL, CONF_USE_PROXY_PREFIX, CONF_SITE_ID, CONF_TIMEOUT,
-    DEFAULT_PORT, DEFAULT_SITE, DEFAULT_VERIFY_SSL, DEFAULT_USE_PROXY_PREFIX, DEFAULT_TIMEOUT
+    DOMAIN,
+    CONF_USERNAME,
+    CONF_PASSWORD,
+    CONF_HOST,
+    CONF_PORT,
+    CONF_VERIFY_SSL,
+    CONF_USE_PROXY_PREFIX,
+    CONF_SITE_ID,
+    CONF_TIMEOUT,
+    DEFAULT_PORT,
+    DEFAULT_SITE,
+    DEFAULT_VERIFY_SSL,
+    DEFAULT_USE_PROXY_PREFIX,
+    DEFAULT_TIMEOUT,
 )
 from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 
@@ -21,8 +32,8 @@ async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]
     def _sync():
         client = UniFiOSClient(
             host=data[CONF_HOST],
-            username=data[CONF_USERNAME],
-            password=data[CONF_PASSWORD],
+            username=data.get(CONF_USERNAME),
+            password=data.get(CONF_PASSWORD),
             port=data.get(CONF_PORT, DEFAULT_PORT),
             site_id=data.get(CONF_SITE_ID, DEFAULT_SITE),
             ssl_verify=data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
@@ -40,12 +51,36 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._cached: Dict[str, Any] = {}
 
+    @staticmethod
+    def _clean_auth_fields(user_input: Dict[str, Any]) -> Dict[str, Any]:
+        cleaned: Dict[str, Any] = {}
+        for key, value in user_input.items():
+            if key in (CONF_USERNAME, CONF_PASSWORD):
+                if value is None:
+                    continue
+                if isinstance(value, str):
+                    stripped = value.strip()
+                    if not stripped:
+                        continue
+                    cleaned[key] = stripped
+                    continue
+            cleaned[key] = value
+        return cleaned
+
+    @staticmethod
+    def _has_auth(data: Dict[str, Any]) -> bool:
+        username = data.get(CONF_USERNAME)
+        password = data.get(CONF_PASSWORD)
+        return bool(username and password)
+
     async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         if user_input is not None:
-            # store and go to advanced
-            self._cached.update(user_input)
-            return await self.async_step_advanced()
+            sanitized = self._clean_auth_fields(user_input)
+            if self._has_auth(sanitized):
+                self._cached.update(sanitized)
+                return await self.async_step_advanced()
+            errors["base"] = "missing_auth"
 
         basic_schema = vol.Schema({
             vol.Required(CONF_HOST): str,
@@ -58,7 +93,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_advanced(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         if user_input is not None:
-            self._cached.update(user_input)
+            sanitized = self._clean_auth_fields(user_input)
+            self._cached.update(sanitized)
             data = dict(self._cached)
             try:
                 await _validate(self.hass, data)
@@ -83,7 +119,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="advanced", data_schema=adv_schema, errors=errors)
 
     async def async_step_import(self, user_input: Dict[str, Any]) -> FlowResult:
-        self._cached.update(user_input)
+        sanitized = self._clean_auth_fields(user_input)
+        self._cached.update(sanitized)
         return await self.async_step_advanced()
 
     @staticmethod
@@ -97,18 +134,22 @@ class OptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         if user_input is not None:
-            merged = {**self._entry.data, **user_input}
-            try:
-                await _validate(self.hass, merged)
-                return self.async_create_entry(title="", data=user_input)
-            except AuthError:
-                errors["base"] = "invalid_auth"
-            except ConnectivityError:
-                errors["base"] = "cannot_connect"
-            except APIError:
-                errors["base"] = "unknown"
-            except Exception:
-                errors["base"] = "unknown"
+            cleaned = ConfigFlow._clean_auth_fields(user_input)
+            merged = {**self._entry.data, **cleaned}
+            if not ConfigFlow._has_auth(merged):
+                errors["base"] = "missing_auth"
+            else:
+                try:
+                    await _validate(self.hass, merged)
+                    return self.async_create_entry(title="", data=cleaned)
+                except AuthError:
+                    errors["base"] = "invalid_auth"
+                except ConnectivityError:
+                    errors["base"] = "cannot_connect"
+                except APIError:
+                    errors["base"] = "unknown"
+                except Exception:
+                    errors["base"] = "unknown"
 
         schema = vol.Schema({
             vol.Optional(CONF_HOST, default=self._entry.data.get(CONF_HOST)): str,

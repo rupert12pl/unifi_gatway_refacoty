@@ -208,8 +208,8 @@ class UniFiOSClient:
     def __init__(
         self,
         host: str,
-        username: str,
-        password: str,
+        username: str | None = None,
+        password: str | None = None,
         port: int = 443,
         site_id: str = "default",
         ssl_verify: bool = False,
@@ -250,6 +250,9 @@ class UniFiOSClient:
         self._iid = hashlib.sha1(basis.encode()).hexdigest()[:12]
 
         self._csrf: Optional[str] = None
+        if not self._username or not self._password:
+            raise AuthError("Provide username and password for UniFi controller")
+
         self._login(host, port, ssl_verify, timeout)
         self._ensure_connected()
 
@@ -262,7 +265,11 @@ class UniFiOSClient:
                 try:
                     r = self._session.post(
                         url,
-                        json={"username": self._username, "password": self._password, "rememberMe": True},
+                        json={
+                            "username": self._username,
+                            "password": self._password,
+                            "rememberMe": True,
+                        },
                         verify=ssl_verify, timeout=timeout
                     )
                     if 200 <= r.status_code < 300:
