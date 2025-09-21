@@ -615,6 +615,91 @@ class UniFiOSClient:
             raise APIError(f"Invalid JSON from {url}", url=url)
         return data.get("data") if isinstance(data, dict) and "data" in data else data
 
+    def _candidate_api_bases(self) -> List[str]:
+        """Return API base URLs to probe for feature availability."""
+
+        primary = self._base.rstrip("/")
+        candidates: List[str] = [primary]
+        marker = "/api/s/"
+        if marker in primary:
+            prefix, suffix = primary.split(marker, 1)
+            v2_candidate = f"{prefix}/v2/api/site/{suffix}".rstrip("/")
+            if v2_candidate not in candidates:
+                candidates.append(v2_candidate)
+        return candidates
+
+    @staticmethod
+    def _should_retry_with_alternate_base(err: APIError) -> bool:
+        """Return True if the error indicates an unsupported endpoint variant."""
+
+        if err.status_code not in (400, 404):
+            return False
+        message = str(err).lower()
+        return any(
+            token in message for token in ("api.err.invalidobject", "api.err.notfound")
+        )
+
+    def _api_request(
+        self,
+        method: str,
+        path: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        expected_errors: Optional[Collection[int]] = None,
+    ) -> Any:
+        """Perform an API request with fallback between legacy and v2 endpoints."""
+
+        normalized_path = path.lstrip("/")
+        bases = self._candidate_api_bases()
+        original_expected = set(expected_errors or ())
+        fallback_statuses = {400, 404}
+        combined_expected = tuple(original_expected | fallback_statuses)
+        last_error: Optional[APIError] = None
+
+        for index, base in enumerate(bases):
+            url = f"{base}/{normalized_path}"
+            try:
+                return self._request(
+                    method,
+                    url,
+                    payload,
+                    expected_errors=combined_expected,
+                )
+            except APIError as err:
+                last_error = err
+                has_alternate = index < (len(bases) - 1)
+                if has_alternate and self._should_retry_with_alternate_base(err):
+                    next_base = bases[index + 1]
+                    _LOGGER.debug(
+                        "Retrying UniFi request %s %s via alternate API base %s due to %s",
+                        method,
+                        path,
+                        next_base,
+                        err,
+                    )
+                    continue
+
+                if err.status_code in original_expected:
+                    raise err
+
+                raise APIError(
+                    str(err),
+                    status_code=err.status_code,
+                    url=err.url,
+                    expected=False,
+                ) from err
+
+        assert last_error is not None
+        if last_error.status_code in original_expected:
+            raise last_error
+
+        raise APIError(
+            str(last_error),
+            status_code=last_error.status_code,
+            url=last_error.url,
+            expected=False,
+        ) from last_error
+
     def _get(
         self,
         path: str,
@@ -622,9 +707,9 @@ class UniFiOSClient:
         expected_errors: Optional[Collection[int]] = None,
     ):
         _LOGGER.debug("GET %s", path)
-        return self._request(
+        return self._api_request(
             "GET",
-            f"{self._base}/{path.lstrip('/')}",
+            path,
             expected_errors=expected_errors,
         )
 
@@ -636,9 +721,9 @@ class UniFiOSClient:
         expected_errors: Optional[Collection[int]] = None,
     ):
         _LOGGER.debug("POST %s", path)
-        return self._request(
+        return self._api_request(
             "POST",
-            f"{self._base}/{path.lstrip('/')}",
+            path,
             payload,
             expected_errors=expected_errors,
         )
