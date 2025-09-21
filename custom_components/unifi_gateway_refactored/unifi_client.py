@@ -7,7 +7,7 @@ import re
 import socket
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Collection, Dict, Iterable, List, Optional, Tuple
 
 import requests
 from urllib.parse import urlsplit
@@ -101,6 +101,8 @@ def vpn_peer_identity(peer: Dict[str, Any]) -> str:
     return f"peer_{hashlib.sha1(str(sorted(peer.items())).encode()).hexdigest()[:12]}"
 
 _LOGGER = logging.getLogger(__name__)
+
+_VPN_EXPECTED_ERROR_CODES: Tuple[int, ...] = (400, 404)
 
 _SERVER_FIELD_RE = re.compile(r"([A-Za-z0-9_]+)\s*:")
 
@@ -394,6 +396,19 @@ def _format_speedtest_rundate(value: Any) -> Optional[str]:
 class APIError(Exception):
     """Base exception raised when the UniFi controller returns an error."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        url: Optional[str] = None,
+        expected: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.url = url
+        self.expected = expected
+
 
 class AuthError(APIError):
     """Authentication against the UniFi OS API failed."""
@@ -455,6 +470,7 @@ class UniFiOSClient:
         self._login(host, port, ssl_verify, timeout)
         self._ensure_connected()
         self._vpn_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
+        self._vpn_expected_errors_reported = False
 
     # ----------- auth / base detection -----------
     def _login(self, host: str, port: int, ssl_verify: bool, timeout: int):
@@ -538,6 +554,8 @@ class UniFiOSClient:
         method: str,
         url: str,
         payload: Optional[Dict[str, Any]] = None,
+        *,
+        expected_errors: Optional[Collection[int]] = None,
     ) -> Any:
         if _LOGGER.isEnabledFor(logging.DEBUG):
             _LOGGER.debug(
@@ -563,31 +581,67 @@ class UniFiOSClient:
         if r.status_code in (401, 403):
             _LOGGER.error("Authentication failed for UniFi request %s %s", method, url)
             raise AuthError(f"Auth failed at {url}")
-        if r.status_code >= 400:
+        status_code = r.status_code
+        expected = set(expected_errors or ())
+        if status_code in expected:
+            _LOGGER.debug(
+                "Expected HTTP %s for UniFi request %s %s", status_code, method, url
+            )
+            raise APIError(
+                f"HTTP {status_code}: {r.text[:200]} at {url}",
+                status_code=status_code,
+                url=url,
+                expected=True,
+            )
+        if status_code >= 400:
             _LOGGER.error(
                 "HTTP error %s for UniFi request %s %s: %s",
-                r.status_code,
+                status_code,
                 method,
                 url,
                 r.text[:200],
             )
-            raise APIError(f"HTTP {r.status_code}: {r.text[:200]} at {url}")
+            raise APIError(
+                f"HTTP {status_code}: {r.text[:200]} at {url}",
+                status_code=status_code,
+                url=url,
+            )
         if not r.content:
             return None
         try:
             data = r.json()
         except ValueError:
             _LOGGER.error("Invalid JSON received from UniFi request %s %s", method, url)
-            raise APIError(f"Invalid JSON from {url}")
+            raise APIError(f"Invalid JSON from {url}", url=url)
         return data.get("data") if isinstance(data, dict) and "data" in data else data
 
-    def _get(self, path: str):
+    def _get(
+        self,
+        path: str,
+        *,
+        expected_errors: Optional[Collection[int]] = None,
+    ):
         _LOGGER.debug("GET %s", path)
-        return self._request("GET", f"{self._base}/{path.lstrip('/')}")
+        return self._request(
+            "GET",
+            f"{self._base}/{path.lstrip('/')}",
+            expected_errors=expected_errors,
+        )
 
-    def _post(self, path: str, payload: Optional[Dict[str, Any]] = None):
+    def _post(
+        self,
+        path: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        expected_errors: Optional[Collection[int]] = None,
+    ):
         _LOGGER.debug("POST %s", path)
-        return self._request("POST", f"{self._base}/{path.lstrip('/')}", payload)
+        return self._request(
+            "POST",
+            f"{self._base}/{path.lstrip('/')}",
+            payload,
+            expected_errors=expected_errors,
+        )
 
     # ----------- public helpers used by sensors / diagnostics -----------
     def ping(self) -> Dict[str, Any]:
@@ -1004,7 +1058,7 @@ class UniFiOSClient:
 
         for path, hint in probes:
             try:
-                payload = self._get(path)
+                payload = self._get(path, expected_errors=_VPN_EXPECTED_ERROR_CODES)
             except APIError as err:
                 probe_errors[path] = err
                 _LOGGER.debug(
@@ -1074,20 +1128,37 @@ class UniFiOSClient:
                 )
                 total_candidates += fallback_candidates
             elif probe_errors:
+                unexpected_errors = {
+                    path: err
+                    for path, err in probe_errors.items()
+                    if not getattr(err, "expected", False)
+                }
                 summary = ", ".join(
                     f"{path} ({err})" for path, err in sorted(probe_errors.items())
                 )
-                _LOGGER.error(
-                    "Controller returned no VPN peers (legacy fallback failed); "
-                    "probe errors: %s",
-                    summary,
-                )
+                if unexpected_errors:
+                    _LOGGER.error(
+                        "Controller returned no VPN peers (legacy fallback failed); "
+                        "probe errors: %s",
+                        summary,
+                    )
+                elif not self._vpn_expected_errors_reported:
+                    _LOGGER.info(
+                        "Controller VPN APIs returned no data (%s); continuing without VPN peers",
+                        summary,
+                    )
+                    self._vpn_expected_errors_reported = True
+                else:
+                    _LOGGER.debug(
+                        "Controller VPN APIs still unavailable (%s)", summary
+                    )
             else:
-                _LOGGER.error(
+                _LOGGER.debug(
                     "Controller returned no VPN peers even after legacy fallback",
                 )
 
         if peers:
+            self._vpn_expected_errors_reported = False
             category_counts: Dict[str, int] = {}
             for peer in peers:
                 category = peer.get("_ha_category") or peer.get("role") or "unknown"
@@ -1117,7 +1188,7 @@ class UniFiOSClient:
 
         for path in legacy_paths:
             try:
-                payload = self._get(path)
+                payload = self._get(path, expected_errors=_VPN_EXPECTED_ERROR_CODES)
             except APIError as err:
                 _LOGGER.debug(
                     "Legacy VPN probe %s failed: %s",
