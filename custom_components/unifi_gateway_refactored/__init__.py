@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from functools import partial
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -52,10 +53,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "instance_hint": "sensor",
     }
 
+    client_factory = partial(UniFiOSClient, **client_kwargs)
+
     try:
-        client: UniFiOSClient = await hass.async_add_executor_job(
-            UniFiOSClient, **client_kwargs
-        )
+        client: UniFiOSClient = await hass.async_add_executor_job(client_factory)
     except AuthError as err:
         raise ConfigEntryAuthFailed("Authentication with UniFi controller failed") from err
     except ConnectivityError as err:
