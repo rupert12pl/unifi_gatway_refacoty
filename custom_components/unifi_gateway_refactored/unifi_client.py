@@ -1015,10 +1015,7 @@ class UniFiOSClient:
                 )
                 continue
 
-            normalized = self._normalize_vpn_payload(
-                payload, path=path, default_category=hint
-            )
-            if not normalized:
+        main
                 _LOGGER.debug(
                     "VPN peer probe %s returned no peer records (type=%s)",
                     path,
@@ -1164,6 +1161,43 @@ class UniFiOSClient:
                         return nested
 
         return []
+
+    def _legacy_vpn_records(self, data: Any) -> List[Dict[str, Any]]:
+        """Fallback parser for VPN records when the structured parser finds none."""
+
+        if data in (None, "", [], {}):
+            return []
+
+        records: List[Dict[str, Any]] = []
+        seen: set[int] = set()
+        stack: List[Any] = [data]
+
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                obj_id = id(current)
+                if obj_id in seen:
+                    continue
+                seen.add(obj_id)
+                has_vpn_key = any(
+                    key in current and current.get(key) not in (None, "", [], {})
+                    for key in _VPN_RECORD_KEYS
+                )
+                if has_vpn_key:
+                    records.append(current)
+                for value in current.values():
+                    if isinstance(value, (dict, list)):
+                        stack.append(value)
+            elif isinstance(current, list):
+                obj_id = id(current)
+                if obj_id in seen:
+                    continue
+                seen.add(obj_id)
+                for item in current:
+                    if isinstance(item, (dict, list)):
+                        stack.append(item)
+
+        return records
 
     def get_vpn_servers(self) -> List[Dict[str, Any]]:
         """Return configured VPN servers (WireGuard/OpenVPN Remote User)."""
