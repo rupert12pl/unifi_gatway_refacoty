@@ -3,7 +3,36 @@
     "step": {
       "user": {
         "title": "Connect to UniFi Gateway",
-        "description": "Enter local admin credentials for UniFi Network Application. We'll validate by fetching health and sites.",
+        "description": "Enter local admin credentials for the UniFi Network Application. We'll validate by fetching health and sites.",
+        "data": {
+          "host": "Host (UDM IP)",
+          "username": "Username (local admin)",
+          "password": "Password",
+          "verify_ssl": "Verify SSL (bool or CA path)"
+        }
+      },
+      "advanced": {
+        "title": "Advanced controller options",
+        "description": "Configure optional controller settings before finishing setup.",
+        "data": {
+          "port": "Port",
+          "site_id": "Site ID",
+          "use_proxy_prefix": "Use /proxy/network prefix",
+          "timeout": "HTTP timeout (seconds)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid username or password.",
+      "cannot_connect": "Cannot connect to UniFi host.",
+      "unknown": "Unknown error."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "UniFi Gateway Options",
+        "description": "Update the connection details or advanced controller settings.",
         "data": {
           "host": "Host (UDM IP)",
           "port": "Port",
@@ -20,23 +49,6 @@
       "invalid_auth": "Invalid username or password.",
       "cannot_connect": "Cannot connect to UniFi host.",
       "unknown": "Unknown error."
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "UniFi Gateway Options",
-        "data": {
-          "host": "Host (UDM IP)",
-          "port": "Port",
-          "username": "Username (local admin)",
-          "password": "Password",
-          "site_id": "Site ID",
-          "verify_ssl": "Verify SSL (bool or CA path)",
-          "use_proxy_prefix": "Use /proxy/network prefix",
-          "timeout": "HTTP timeout (seconds)"
-        }
-      }
     }
   },
   "title": "UniFi Gateway (Refactored)"
