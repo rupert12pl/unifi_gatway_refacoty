@@ -976,11 +976,7 @@ class UniFiOSClient:
                     if isinstance(item, (dict, list)):
                         stack.append(item)
 
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug(
-                "Legacy VPN parser extracted %s records", len(records)
-            )
-
+        main
         return records
 
     def get_vpn_servers(self) -> List[Dict[str, Any]]:
