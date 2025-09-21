@@ -33,6 +33,7 @@ class UniFiGatewayData:
     clients: List[Dict[str, Any]]
     vpn_servers: List[Dict[str, Any]]
     vpn_clients: List[Dict[str, Any]]
+    vpn_site_to_site: List[Dict[str, Any]]
     speedtest: Optional[Dict[str, Any]]
 
 
@@ -118,6 +119,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         clients = self.client.get_clients() or []
         vpn_servers = self.client.get_vpn_servers() or []
         vpn_clients = self.client.get_vpn_clients() or []
+        vpn_site_to_site = self.client.get_vpn_site_to_site() or []
 
         try:
             speedtest = self.client.get_last_speedtest(cache_sec=5)
@@ -145,6 +147,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             clients=clients,
             vpn_servers=vpn_servers,
             vpn_clients=vpn_clients,
+            vpn_site_to_site=vpn_site_to_site,
             speedtest=speedtest,
         )
 

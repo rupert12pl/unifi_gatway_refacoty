@@ -8,6 +8,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -27,7 +28,7 @@ from .const import (
     DOMAIN,
     PLATFORMS,
 )
-from .coordinator import UniFiGatewayDataUpdateCoordinator
+from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,6 +80,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinator": coordinator,
     }
 
+    await _async_migrate_vpn_unique_ids(hass, entry, client, coordinator.data)
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -90,3 +93,50 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if stored and entry.entry_id in stored:
             stored.pop(entry.entry_id)
     return unload_ok
+
+
+async def _async_migrate_vpn_unique_ids(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    client: UniFiOSClient,
+    data: UniFiGatewayData | None,
+) -> None:
+    """Ensure VPN entity unique IDs include the role/template suffix."""
+
+    mapping: dict[str, str] = {}
+
+    def _collect(records: list[dict[str, Any]] | None, prefix: str) -> None:
+        if not records:
+            return
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            legacy = record.get("_ha_legacy_peer_id") or record.get("_legacy_peer_id")
+            new = record.get("_ha_peer_id")
+            if not legacy or not new or legacy == new:
+                continue
+            old_uid = f"unifigw_{client.instance_key()}_{prefix}_{legacy}"
+            new_uid = f"unifigw_{client.instance_key()}_{prefix}_{new}"
+            mapping[old_uid] = new_uid
+
+    if not data:
+        return
+
+    _collect(getattr(data, "vpn_servers", None), "vpn_server")
+    _collect(getattr(data, "vpn_clients", None), "vpn_client")
+    _collect(getattr(data, "vpn_site_to_site", None), "vpn_site_to_site")
+
+    if not mapping:
+        return
+
+    registry = er.async_get(hass)
+
+    async def _migrate(entity_entry: er.RegistryEntry) -> dict[str, str] | None:
+        if entity_entry.config_entry_id != entry.entry_id:
+            return None
+        new_uid = mapping.get(entity_entry.unique_id)
+        if new_uid:
+            return {"new_unique_id": new_uid}
+        return None
+
+    await er.async_migrate_entries(hass, DOMAIN, _migrate)

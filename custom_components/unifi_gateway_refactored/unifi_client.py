@@ -160,6 +160,21 @@ _VPN_RECORD_KEYS = {
     "networks",
 }
 
+
+def _normalize_token(value: Any) -> Optional[str]:
+    """Return a slug-like lower-case token for matching categories."""
+
+    if value in (None, "", [], {}):
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    token = "".join(ch if ch.isalnum() else "_" for ch in text)
+    # collapse multiple separators
+    while "__" in token:
+        token = token.replace("__", "_")
+    return token.strip("_") or None
+
 _SERVER_ROLE_KEYS = {
     "server",
     "servers",
@@ -185,6 +200,108 @@ _CLIENT_ROLE_KEYS = {
     "connection",
     "connections",
 }
+
+
+def _classify_vpn_record(
+    record: Dict[str, Any], role_hint: Optional[str] = None
+) -> Tuple[str, str, Optional[str]]:
+    """Return the detected Home Assistant role/category/template tuple for VPN records."""
+
+    template_token = None
+    for key in (
+        "template",
+        "vpn_template",
+        "profile",
+        "profile_name",
+        "group",
+        "category",
+    ):
+        token = _normalize_token(record.get(key))
+        if token:
+            template_token = token
+            break
+
+    tokens: List[str] = []
+    if template_token:
+        tokens.append(template_token)
+    for key in ("role", "type", "vpn_type", "mode", "purpose"):
+        token = _normalize_token(record.get(key))
+        if token:
+            tokens.append(token)
+    if role_hint:
+        token = _normalize_token(role_hint)
+        if token:
+            tokens.append(token)
+
+    role: Optional[str] = None
+    category: Optional[str] = None
+
+    for token in tokens:
+        if not token:
+            continue
+        if any(
+            candidate in token
+            for candidate in (
+                "site_to_site",
+                "site-to-site",
+                "site_to-site",
+                "site2site",
+                "s2s",
+                "vpn_s2s",
+                "uid_vpn",
+                "uidvpn",
+            )
+        ):
+            category = "site_to_site"
+            role = "site_to_site"
+            break
+
+    if category is None:
+        for token in tokens:
+            if token and "teleport" in token:
+                category = "teleport"
+                role = "client"
+                break
+
+    if category is None:
+        for token in tokens:
+            if token and "uid" in token:
+                category = "uid"
+                role = "site_to_site"
+                break
+
+    if category is None:
+        for token in tokens:
+            if token and any(candidate in token for candidate in ("client", "policy", "pbr", "route")):
+                category = "client"
+                role = "client"
+                break
+
+    if category is None:
+        for token in tokens:
+            if token and any(candidate in token for candidate in ("server", "remote", "user")):
+                category = "server"
+                role = "server"
+                break
+
+    if category is None:
+        # fallback to hint if we still did not classify the record
+        token = _normalize_token(role_hint)
+        if token:
+            if token in {"server", "client", "site_to_site"}:
+                category = token
+                role = token
+            elif token == "site":
+                category = "site_to_site"
+                role = "site_to_site"
+
+    if category is None:
+        category = "client" if role_hint == "client" else "server"
+
+    if role is None:
+        role = "client" if category in {"client", "teleport"} else category
+
+    return role, category, template_token
 
 
 def _parse_speedtest_server_details(server: Any) -> Dict[str, Any]:
@@ -588,7 +705,10 @@ class UniFiOSClient:
         return records
 
     def _collect_vpn_records(
-        self, probes: List[str], role_hint: Optional[str]
+        self,
+        probes: List[str],
+        role_hint: Optional[str],
+        role_filter: Optional[set[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Collect VPN records from multiple API probes with optional role hint."""
 
@@ -608,8 +728,22 @@ class UniFiOSClient:
             if role_hint and not normalized.get("role"):
                 normalized["role"] = role_hint
             peer_id = vpn_peer_identity(normalized)
-            normalized["_ha_peer_id"] = peer_id
-            uniq[peer_id] = normalized
+            role, category, template = _classify_vpn_record(normalized, role_hint)
+            normalized_role = role or normalized.get("role")
+            if normalized_role:
+                normalized["role"] = normalized_role
+            normalized["_ha_role"] = normalized_role
+            normalized["_ha_category"] = category
+            normalized["_ha_template"] = template or category
+            normalized["_ha_legacy_peer_id"] = peer_id
+            suffix = _normalize_token(category) or _normalize_token(normalized_role) or "vpn"
+            identity = f"{peer_id}::{suffix}" if suffix else peer_id
+            normalized["_ha_peer_id"] = identity
+            if role_filter:
+                allowed = {value for value in role_filter if value}
+                if normalized_role not in allowed and category not in allowed and suffix not in allowed:
+                    continue
+            uniq[identity] = normalized
         return list(uniq.values())
 
     def get_vpn_servers(self) -> List[Dict[str, Any]]:
@@ -628,7 +762,7 @@ class UniFiOSClient:
             "rest/wgservers",
             "rest/wireguard/server",
         ]
-        return self._collect_vpn_records(probes, "server")
+        return self._collect_vpn_records(probes, "server", {"server"})
 
     def get_vpn_clients(self) -> List[Dict[str, Any]]:
         """Return configured VPN client tunnels (policy-based/route-based)."""
@@ -644,7 +778,24 @@ class UniFiOSClient:
             "rest/wgclients",
             "rest/wireguard/client",
         ]
-        return self._collect_vpn_records(probes, "client")
+        return self._collect_vpn_records(probes, "client", {"client", "teleport"})
+
+    def get_vpn_site_to_site(self) -> List[Dict[str, Any]]:
+        """Return configured Site-to-Site tunnels (IPSec/UID)."""
+
+        probes = [
+            "internet/vpn/clients",
+            "internet/vpn/client",
+            "internet/vpn/site-to-site",
+            "stat/vpn",
+            "list/vpn",
+            "rest/vpnclient",
+            "rest/vpnclients",
+            "rest/wgclient",
+            "rest/wgclients",
+            "rest/wireguard/client",
+        ]
+        return self._collect_vpn_records(probes, "site_to_site", {"site_to_site", "uid"})
 
     def instance_key(self) -> str:
         return self._iid
