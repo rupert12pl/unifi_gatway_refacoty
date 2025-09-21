@@ -47,6 +47,7 @@ async def async_setup_entry(
     known_wlan: set[str] = set()
     known_vpn_servers: set[str] = set()
     known_vpn_clients: set[str] = set()
+    known_vpn_site_to_site: set[str] = set()
 
     def _sync_dynamic() -> None:
         coordinator_data: Optional[UniFiGatewayData] = coordinator.data
@@ -102,6 +103,15 @@ async def async_setup_entry(
             known_vpn_clients.add(peer_id)
             new_entities.append(
                 UniFiGatewayVpnClientSensor(coordinator, client, peer)
+            )
+
+        for peer in getattr(coordinator_data, "vpn_site_to_site", []):
+            peer_id = _vpn_peer_id(peer)
+            if peer_id in known_vpn_site_to_site:
+                continue
+            known_vpn_site_to_site.add(peer_id)
+            new_entities.append(
+                UniFiGatewayVpnSiteToSiteSensor(coordinator, client, peer)
             )
 
         if new_entities:
@@ -1090,7 +1100,11 @@ class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
         if match_count > active_clients:
             active_clients = match_count
         attrs = {
-            "role": "server",
+            "role": record.get("_ha_role") or "server",
+            "category": record.get("_ha_category"),
+            "template": record.get("template")
+            or record.get("_ha_template")
+            or record.get("profile"),
             "vpn_type": record.get("vpn_type") or record.get("type"),
             "vpn_types": record.get("vpn_type") or record.get("type"),
             "interface": record.get("interface") or record.get("ifname"),
@@ -1207,7 +1221,11 @@ class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
         record = self._record() or {}
         matches = self._matched_clients(record)
         attrs = {
-            "role": "client",
+            "role": record.get("_ha_role") or "client",
+            "category": record.get("_ha_category"),
+            "template": record.get("template")
+            or record.get("_ha_template")
+            or record.get("profile"),
             "vpn_type": record.get("vpn_type") or record.get("type"),
             "server_addr": record.get("server_addr")
             or record.get("server_address")
@@ -1254,6 +1272,97 @@ class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
             self._base_networks,
             clients,
         )
+
+
+class UniFiGatewayVpnSiteToSiteSensor(UniFiGatewaySensorBase):
+    _attr_icon = "mdi:lan-connect"
+
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        peer: Dict[str, Any],
+    ) -> None:
+        self._peer_id = _vpn_peer_id(peer)
+        self._peer_name = (
+            peer.get("name")
+            or peer.get("peer_name")
+            or peer.get("description")
+            or peer.get("display_name")
+        )
+        display_name = self._peer_name or str(self._peer_id)
+        self._base_identifiers = _vpn_identifier_candidates(peer)
+        if self._peer_id:
+            self._base_identifiers.add(str(self._peer_id).lower())
+        self._base_labels = _vpn_label_candidates(peer)
+        self._base_networks = tuple(_vpn_networks(peer))
+        unique_id = f"unifigw_{client.instance_key()}_vpn_site_to_site_{self._peer_id}"
+        super().__init__(
+            coordinator,
+            client,
+            unique_id,
+            f"VPN Site-to-Site {display_name}",
+        )
+
+    def _record(self) -> Optional[Dict[str, Any]]:
+        data = self.coordinator.data
+        if not data:
+            return None
+        for record in getattr(data, "vpn_site_to_site", []):
+            if _vpn_peer_id(record) == self._peer_id:
+                return record
+        return None
+
+    @property
+    def native_value(self) -> Optional[str]:
+        record = self._record()
+        if not record:
+            return None
+        if isinstance(record.get("connected"), bool):
+            return "CONNECTED" if record.get("connected") else "DISCONNECTED"
+        status = record.get("status") or record.get("state")
+        if isinstance(status, str):
+            return status.upper()
+        return status
+
+    @property
+    def icon(self) -> Optional[str]:
+        status = str(self.native_value or "").upper()
+        if status in {"CONNECTED", "UP", "ONLINE", "OK"}:
+            return "mdi:lan-connect"
+        if status in {"DOWN", "DISCONNECTED", "ERROR", "FAIL"}:
+            return "mdi:lan-disconnect"
+        return self._attr_icon
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        record = self._record() or {}
+        attrs = {
+            "role": record.get("_ha_role") or "site_to_site",
+            "category": record.get("_ha_category"),
+            "template": record.get("template")
+            or record.get("_ha_template")
+            or record.get("profile"),
+            "vpn_type": record.get("vpn_type") or record.get("type"),
+            "interface": record.get("interface") or record.get("ifname"),
+            "local_ip": record.get("local_ip")
+            or record.get("server_ip")
+            or record.get("gateway"),
+            "remote_host": record.get("remote_host")
+            or record.get("remote_ip")
+            or record.get("peer_addr")
+            or record.get("server_addr"),
+            "remote_ip": record.get("remote_ip")
+            or record.get("peer_addr")
+            or record.get("server_addr"),
+            "tunnel_ip": record.get("tunnel_ip"),
+            "status": record.get("status") or record.get("state"),
+            "uptime": record.get("uptime")
+            or record.get("uptime_seconds")
+            or record.get("uptime_display"),
+        }
+        attrs.update(self._controller_attrs())
+        return attrs
 
 
 class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
