@@ -11,7 +11,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
-from .unifi_client import UniFiOSClient
+from .unifi_client import UniFiOSClient, vpn_peer_identity
 
 
 SUBSYSTEM_SENSORS: Dict[str, tuple[str, str]] = {
@@ -112,14 +112,10 @@ async def async_setup_entry(
 
 
 def _vpn_peer_id(peer: Dict[str, Any]) -> str:
-    return str(
-        peer.get("_id")
-        or peer.get("id")
-        or peer.get("name")
-        or peer.get("peer_name")
-        or peer.get("description")
-        or "peer"
-    )
+    stored = peer.get("_ha_peer_id")
+    if stored not in (None, ""):
+        return str(stored)
+    return vpn_peer_identity(peer)
 
 
 def _wan_identifier_candidates(
@@ -752,7 +748,10 @@ class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
         peer: Dict[str, Any],
     ) -> None:
         self._peer_name = (
-            peer.get("name") or peer.get("peer_name") or peer.get("description")
+            peer.get("name")
+            or peer.get("peer_name")
+            or peer.get("description")
+            or peer.get("display_name")
         )
         self._peer_id = _vpn_peer_id(peer)
         name = self._peer_name or f"VPN Server {self._peer_id}"
@@ -841,7 +840,10 @@ class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
     ) -> None:
         self._peer_id = _vpn_peer_id(peer)
         self._peer_name = (
-            peer.get("name") or peer.get("peer_name") or peer.get("description")
+            peer.get("name")
+            or peer.get("peer_name")
+            or peer.get("description")
+            or peer.get("display_name")
         )
         name = self._peer_name or f"VPN Client {self._peer_id}"
         unique_id = f"unifigw_{client.instance_key()}_vpn_client_{self._peer_id}"
