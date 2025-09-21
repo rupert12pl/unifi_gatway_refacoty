@@ -1,617 +1,761 @@
-
 from __future__ import annotations
-import logging
-from datetime import timedelta
-from typing import Any, Dict, List, Optional
 
-from homeassistant.core import HomeAssistant
+import ipaddress
+from typing import Any, Dict, Iterable, List, Optional
+
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import StateType
-from homeassistant.util import Throttle
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import (
-    CONF_USERNAME, CONF_PASSWORD, CONF_HOST, CONF_PORT, CONF_SITE_ID,
-    CONF_VERIFY_SSL, CONF_USE_PROXY_PREFIX, CONF_TIMEOUT
-)
-from .unifi_client import UniFiOSClient, APIError
+from .const import DOMAIN
+from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
+from .unifi_client import UniFiOSClient
 
-_LOGGER = logging.getLogger(__name__)
 
-SCAN_INTERVAL = timedelta(seconds=10)
-MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=10)
-
-SENSOR_WAN = "wan"
-SENSOR_LAN = "lan"
-SENSOR_WLAN = "wlan"
-SENSOR_VPN = "vpn"
-SENSOR_ALERTS = "alerts"
-SENSOR_FIRMWARE = "firmware"
-
-USG_SENSORS: Dict[str, List[str]] = {
-    SENSOR_WAN: ["WAN", "mdi:shield-outline"],
-    SENSOR_LAN: ["LAN", "mdi:lan"],
-    SENSOR_WLAN: ["WLAN", "mdi:wifi"],
-    SENSOR_VPN: ["VPN", "mdi:folder-key-network"],
-    SENSOR_ALERTS: ["Alerts", "mdi:information-outline"],
-    SENSOR_FIRMWARE: ["Firmware Upgradable", "mdi:database-plus"],
+SUBSYSTEM_SENSORS: Dict[str, tuple[str, str]] = {
+    "wan": ("WAN", "mdi:shield-outline"),
+    "lan": ("LAN", "mdi:lan"),
+    "wlan": ("WLAN", "mdi:wifi"),
+    "vpn": ("VPN", "mdi:folder-key-network"),
 }
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback):
-    client = await hass.async_add_executor_job(
-        UniFiOSClient,
-        entry.data[CONF_HOST],
-        entry.data[CONF_USERNAME],
-        entry.data[CONF_PASSWORD],
-        entry.data.get(CONF_PORT, 443),
-        entry.data.get(CONF_SITE_ID, "default"),
-        entry.data.get(CONF_VERIFY_SSL, False),
-        entry.data.get(CONF_USE_PROXY_PREFIX, True),
-        entry.data.get(CONF_TIMEOUT, 10),
-        "sensor"
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    data = hass.data[DOMAIN][entry.entry_id]
+    client: UniFiOSClient = data["client"]
+    coordinator: UniFiGatewayDataUpdateCoordinator = data["coordinator"]
+
+    static_entities: List[SensorEntity] = []
+    for subsystem, (label, icon) in SUBSYSTEM_SENSORS.items():
+        static_entities.append(
+            UniFiGatewaySubsystemSensor(coordinator, client, subsystem, label, icon)
+        )
+    static_entities.append(UniFiGatewayAlertsSensor(coordinator, client))
+    static_entities.append(UniFiGatewayFirmwareSensor(coordinator, client))
+    static_entities.append(UniFiGatewaySpeedtestDownloadSensor(coordinator, client))
+    static_entities.append(UniFiGatewaySpeedtestUploadSensor(coordinator, client))
+    static_entities.append(UniFiGatewaySpeedtestPingSensor(coordinator, client))
+
+    async_add_entities(static_entities)
+
+    known_wan: set[str] = set()
+    known_lan: set[str] = set()
+    known_wlan: set[str] = set()
+    known_vpn_servers: set[str] = set()
+    known_vpn_clients: set[str] = set()
+
+    def _sync_dynamic() -> None:
+        coordinator_data: Optional[UniFiGatewayData] = coordinator.data
+        if coordinator_data is None:
+            return
+
+        new_entities: List[SensorEntity] = []
+
+        for link in coordinator_data.wan_links:
+            link_id = str(link.get("id"))
+            if link_id in known_wan:
+                continue
+            known_wan.add(link_id)
+            new_entities.extend(
+                [
+                    UniFiGatewayWanStatusSensor(coordinator, client, link),
+                    UniFiGatewayWanIpSensor(coordinator, client, link),
+                    UniFiGatewayWanIspSensor(coordinator, client, link),
+                ]
+            )
+
+        for network in coordinator_data.lan_networks:
+            net_id = str(network.get("_id") or network.get("id") or network.get("name"))
+            if net_id in known_lan:
+                continue
+            known_lan.add(net_id)
+            new_entities.append(
+                UniFiGatewayLanClientsSensor(coordinator, client, network)
+            )
+
+        for wlan in coordinator_data.wlans:
+            ssid = wlan.get("name") or wlan.get("ssid")
+            if not ssid:
+                continue
+            if ssid in known_wlan:
+                continue
+            known_wlan.add(ssid)
+            new_entities.append(UniFiGatewayWlanClientsSensor(coordinator, client, wlan))
+
+        for peer in coordinator_data.vpn_servers:
+            peer_id = _vpn_peer_id(peer)
+            if peer_id in known_vpn_servers:
+                continue
+            known_vpn_servers.add(peer_id)
+            new_entities.append(
+                UniFiGatewayVpnServerSensor(coordinator, client, peer)
+            )
+
+        for peer in coordinator_data.vpn_clients:
+            peer_id = _vpn_peer_id(peer)
+            if peer_id in known_vpn_clients:
+                continue
+            known_vpn_clients.add(peer_id)
+            new_entities.append(
+                UniFiGatewayVpnClientSensor(coordinator, client, peer)
+            )
+
+        if new_entities:
+            async_add_entities(new_entities)
+
+    _sync_dynamic()
+    entry.async_on_unload(coordinator.async_add_listener(_sync_dynamic))
+
+
+def _vpn_peer_id(peer: Dict[str, Any]) -> str:
+    return str(
+        peer.get("_id")
+        or peer.get("id")
+        or peer.get("name")
+        or peer.get("peer_name")
+        or peer.get("description")
+        or "peer"
     )
-    entities: List[SensorEntity] = []
-    # Aggregated subsystems
-    for key, (label, _) in USG_SENSORS.items():
-        entities.append(UnifiGatewaySensor(client, label, key))
-    # Dynamic WAN links + WAN IP / ISP sensors
-    wan_links = await hass.async_add_executor_job(client.get_wan_links)
-    # WAN fallback from networks if controller returns empty
-    if not wan_links:
-        nets = await hass.async_add_executor_job(client.get_networks)
-        for n in nets or []:
-            purpose = (n.get('purpose') or n.get('role') or '').lower()
-            if 'wan' in purpose or n.get('wan_network') or 'wan' in (n.get('name') or '').lower():
-                wan_links.append({'id': n.get('_id') or n.get('id') or (n.get('name') or 'WAN'), 'name': n.get('name') or 'WAN'})
 
-    for w in wan_links or []:
-        entities.append(UnifiWanLinkSensor(client, w))
-        entities.append(UnifiWanIpSensor(client, w))
-        entities.append(UnifiWanIspSensor(client, w))
-    # Dynamic LAN (per VLAN)
-    networks = await hass.async_add_executor_job(client.get_networks)
-    for n in (networks or []):
-        name_l = (n.get('name') or '').lower()
-        purpose = (n.get('purpose') or n.get('role') or '').lower()
-        if 'vpn' in purpose or 'wan' in purpose or n.get('is_vpn') or n.get('wan_network') or 'wan' in name_l:
-            continue
-        entities.append(UnifiLanNetworkSensor(client, n))
-    # Dynamic WLAN (per SSID)
-    wlans = await hass.async_add_executor_job(client.get_wlans)
-    wlan_created = 0
-    for w in wlans or []:
-        entities.append(UnifiWlanSensor(client, w))
-        wlan_created += 1
-    _LOGGER.info("unifi_gateway_refactored: WLAN entities created: %d", wlan_created)
-    # Dynamic VPN: servers and clients
-    vpn_servers = await hass.async_add_executor_job(client.get_vpn_servers)
-    srv_created = 0
-    for idx, s_peer in enumerate(vpn_servers or [], start=1):
-        entities.append(UnifiVpnServerSensor(client, s_peer, idx))
-        srv_created += 1
-    _LOGGER.info("unifi_gateway_refactored: VPN server entities created: %d", srv_created)
-    vpn_clients = await hass.async_add_executor_job(client.get_vpn_clients)
-    cli_created = 0
-    for idx, c_peer in enumerate(vpn_clients or [], start=1):
-        entities.append(UnifiVpnClientSensor(client, c_peer, idx))
-        cli_created += 1
-    _LOGGER.info("unifi_gateway_refactored: VPN client entities created: %d", cli_created)
-        # Speedtest sensors
-    entities.append(UnifiSpeedtestDownloadSensor(client))
-    entities.append(UnifiSpeedtestUploadSensor(client))
-    entities.append(UnifiSpeedtestPingSensor(client))
-    async_add_entities(entities, True)
-    _LOGGER.info("unifi_gateway_refactored: total entities added: %d", len(entities))
 
-class UnifiGatewaySensor(SensorEntity):
-    _attr_has_entity_name = True
+class UniFiGatewaySensorBase(
+    CoordinatorEntity[UniFiGatewayDataUpdateCoordinator], SensorEntity
+):
+    """Base entity for UniFi Gateway sensors."""
 
-    def __init__(self, client: UniFiOSClient, label: str, subsystem: str):
+    _attr_should_poll = False
+
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        unique_id: str,
+        name: str,
+    ) -> None:
+        super().__init__(coordinator)
         self._client = client
-        self._label = label
-        self._subsystem = subsystem
-        self._attr_name = f"{label}"
-        self._attr_icon = USG_SENSORS[subsystem][1]
-        self._attr_unique_id = f"unifigw_{client.instance_key()}_{subsystem}"
-        self._state: StateType = None
-        self._attrs: Dict[str, Any] = {}
+        self._attr_unique_id = unique_id
+        self._attr_name = name
+        self._default_icon = getattr(self, "_attr_icon", None)
 
-    @property
-    def native_value(self) -> StateType:
-        return self._state
-
-    @property
-    def icon(self) -> str:
-        try:
-            return 'mdi:check-circle' if int(self._state or 0) > 0 else 'mdi:account-lock'
-        except Exception:
-            return 'mdi:account-lock'
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        self._attrs['role'] = getattr(self, '_role', None)
-        return self._attrs
-
-    @Throttle(MIN_TIME_BETWEEN_UPDATES)
-    def update(self) -> None:
-        try:
-            if self._subsystem == "alerts":
-                self._update_alerts()
-            elif self._subsystem == "firmware":
-                self._update_firmware()
-            else:
-                self._update_health()
-        except APIError as ex:
-            _LOGGER.error("Update failed for %s: %s", self._label, ex)
-
-    def _inject_common(self):
-        self._attrs["controller_ui"] = self._client.get_controller_url()
-        self._attrs["controller_site"] = self._client.get_site()
-
-    def _update_alerts(self):
-        alerts = self._client.get_alerts() or []
-        self._attrs = {str(i): a for i, a in enumerate(alerts, 1) if not a.get("archived")}
-        self._state = len(self._attrs)
-        self._inject_common()
-
-    def _update_firmware(self):
-        devices = self._client.get_devices() or []
-        upg = [d for d in devices if d.get("upgradable")]
-        self._state = len(upg)
-        self._attrs = {d.get("name") or d.get("mac"): d["upgradable"] for d in upg}
-        self._inject_common()
-
-    def _update_health(self):
-        subs = self._client.get_healthinfo() or []
-        match = next((s for s in subs if s.get("subsystem") == self._subsystem), None)
-        self._state = (match or {}).get("status", "UNKNOWN")
-        self._attrs = match or {}
-        self._inject_common()
-
-
-import ipaddress
-
-class UnifiWanLinkSensor(SensorEntity):
-    _attr_icon = "mdi:shield-outline"
-    def __init__(self, client: UniFiOSClient, link: Dict[str, Any]):
-        self._last_ip = None
-        self._last_isp = None
-        self._client = client
-        self._link = link
-        self._name = link.get("name") or link.get("display_name") or link.get("id") or "WAN"
-        self._id = link.get("id") or self._name
-        self._attr_name = f"WAN {self._name}"
-        self._attr_unique_id = f"unifigw_{client.instance_key()}_wan_{self._id}_status"
-        self._state: StateType = None
-        self._attrs: Dict[str, Any] = {}
-
-    @property
-    def native_value(self) -> StateType:
-        return self._state
-
-    @property
-    def icon(self) -> str:
-        try:
-            return 'mdi:check-circle' if int(self._state or 0) > 0 else 'mdi:account-lock'
-        except Exception:
-            return 'mdi:account-lock'
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        return self._attrs
-
-    @Throttle(MIN_TIME_BETWEEN_UPDATES)
-    def update(self) -> None:
-        links = self._client.get_wan_links() or []
-        me = None
-        for l in links:
-            lid = l.get("id") or l.get("name") or self._id
-            if str(lid) == str(self._id) or (l.get("name") == self._name):
-                me = l; break
-        status = (me or {}).get("status") or (me or {}).get("state") or "UNKNOWN"
-        self._state = str(status).upper()
-                # health fallback for WAN
-        hi = []
-        try:
-            hi = self._client.get_healthinfo() or []
-        except Exception:
-            hi = []
-        isp_h = None; ip_h = None
-        for sub in hi:
-            if (sub.get("subsystem") in ("wan","www","internet")):
-                isp_h = isp_h or sub.get("isp") or sub.get("provider") or sub.get("isp_name")
-                ip_h = ip_h or sub.get("wan_ip") or sub.get("internet_ip") or sub.get("ip")
-        self._attrs = {
-            "name": self._name,
-            "type": (me or {}).get("type") or (me or {}).get("kind"),
-            "isp": (me or {}).get("isp") or (me or {}).get("provider") or isp_h,
-            "ip": (me or {}).get("ip") or (me or {}).get("wan_ip") or (me or {}).get("ipv4") or ip_h,
+    def _controller_attrs(self) -> Dict[str, Any]:
+        data = self.coordinator.data
+        if not data:
+            return {}
+        return {
+            "controller_ui": data.controller.get("url"),
+            "controller_site": data.controller.get("site"),
         }
 
-class UnifiWanIpSensor(SensorEntity):
+
+class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        subsystem: str,
+        label: str,
+        icon: str,
+    ) -> None:
+        unique_id = f"unifigw_{client.instance_key()}_{subsystem}"
+        super().__init__(coordinator, client, unique_id, label)
+        self._subsystem = subsystem
+        self._attr_icon = icon
+        self._default_icon = icon
+
+    @property
+    def native_value(self) -> Optional[Any]:
+        data = self.coordinator.data
+        if not data:
+            return None
+        record = data.health_by_subsystem.get(self._subsystem)
+        if not record:
+            return None
+        status = record.get("status") or record.get("state")
+        if isinstance(status, str):
+            return status.upper()
+        return status
+
+    @property
+    def icon(self) -> Optional[str]:
+        status = str(self.native_value or "").lower()
+        if status in {"ok", "online", "up", "healthy", "connected"}:
+            return "mdi:check-circle"
+        if status in {"warning", "notice", "degraded"}:
+            return "mdi:alert"
+        if status in {"error", "critical", "down", "offline", "disconnected"}:
+            return "mdi:alert-circle"
+        return self._default_icon
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        data = self.coordinator.data
+        record = data.health_by_subsystem.get(self._subsystem) if data else None
+        attrs: Dict[str, Any] = {}
+        if record:
+            attrs.update({k: v for k, v in record.items() if k != "subsystem"})
+        attrs.update(self._controller_attrs())
+        return attrs
+
+
+class UniFiGatewayAlertsSensor(UniFiGatewaySensorBase):
+    _attr_icon = "mdi:information-outline"
+
+    def __init__(
+        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+    ) -> None:
+        unique_id = f"unifigw_{client.instance_key()}_alerts"
+        super().__init__(coordinator, client, unique_id, "Alerts")
+
+    @property
+    def native_value(self) -> Optional[int]:
+        data = self.coordinator.data
+        if not data:
+            return None
+        return len(data.alerts)
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        data = self.coordinator.data
+        attrs = {"alerts": data.alerts if data else []}
+        attrs.update(self._controller_attrs())
+        return attrs
+
+
+class UniFiGatewayFirmwareSensor(UniFiGatewaySensorBase):
+    _attr_icon = "mdi:database-plus"
+
+    def __init__(
+        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+    ) -> None:
+        unique_id = f"unifigw_{client.instance_key()}_firmware"
+        super().__init__(coordinator, client, unique_id, "Firmware Upgradable")
+
+    @property
+    def native_value(self) -> Optional[int]:
+        data = self.coordinator.data
+        if not data:
+            return None
+        return len([dev for dev in data.devices if dev.get("upgradable")])
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        data = self.coordinator.data
+        upgradable = [
+            {
+                "name": dev.get("name") or dev.get("mac"),
+                "model": dev.get("model"),
+                "version": dev.get("version"),
+            }
+            for dev in (data.devices if data else [])
+            if dev.get("upgradable")
+        ]
+        attrs = {"devices": upgradable}
+        attrs.update(self._controller_attrs())
+        return attrs
+
+
+class UniFiGatewayWanStatusSensor(UniFiGatewaySensorBase):
+    _attr_icon = "mdi:shield-outline"
+
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        link: Dict[str, Any],
+    ) -> None:
+        self._link_id = str(link.get("id"))
+        self._link_name = link.get("name") or self._link_id
+        unique_id = f"unifigw_{client.instance_key()}_wan_{self._link_id}_status"
+        super().__init__(coordinator, client, unique_id, f"WAN {self._link_name}")
+        self._default_icon = "mdi:shield-outline"
+
+    def _link(self) -> Optional[Dict[str, Any]]:
+        data = self.coordinator.data
+        if not data:
+            return None
+        for link in data.wan_links:
+            if str(link.get("id")) == self._link_id:
+                return link
+        return None
+
+    @property
+    def native_value(self) -> Optional[Any]:
+        link = self._link()
+        if not link:
+            return None
+        status = link.get("status") or link.get("state")
+        if isinstance(status, str):
+            return status.upper()
+        return status
+
+    @property
+    def icon(self) -> Optional[str]:
+        status = str(self.native_value or "").lower()
+        if status in {"up", "ok", "connected", "online"}:
+            return "mdi:check-circle"
+        if status in {"down", "error", "fail", "disconnected", "offline"}:
+            return "mdi:alert-circle"
+        return self._default_icon
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        link = self._link() or {}
+        data = self.coordinator.data
+        attrs = {
+            "name": self._link_name,
+            "type": link.get("type") or link.get("kind"),
+            "isp": link.get("isp") or link.get("provider"),
+            "ip": link.get("ip") or link.get("wan_ip") or link.get("ipv4"),
+        }
+        if data:
+            for record in data.wan_health:
+                attrs.setdefault(
+                    "isp",
+                    record.get("isp")
+                    or record.get("provider")
+                    or record.get("isp_name"),
+                )
+                attrs.setdefault(
+                    "ip",
+                    record.get("wan_ip")
+                    or record.get("internet_ip")
+                    or record.get("ip"),
+                )
+        attrs.update(self._controller_attrs())
+        return attrs
+
+
+class UniFiGatewayWanIpSensor(UniFiGatewaySensorBase):
     _attr_icon = "mdi:ip"
-    def __init__(self, client: UniFiOSClient, link: Dict[str, Any]):
-        self._last_ip = None
-        self._client = client
-        self._name = link.get("name") or link.get("display_name") or link.get("id") or "WAN"
-        self._id = link.get("id") or self._name
-        self._attr_name = f"WAN {self._name} IP"
-        self._attr_unique_id = f"unifigw_{client.instance_key()}_wan_{self._id}_ip"
-        self._state: StateType = None
-        self._attrs: Dict[str, Any] = {}
+
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        link: Dict[str, Any],
+    ) -> None:
+        self._link_id = str(link.get("id"))
+        self._link_name = link.get("name") or self._link_id
+        self._last_ip: Optional[str] = None
+        unique_id = f"unifigw_{client.instance_key()}_wan_{self._link_id}_ip"
+        super().__init__(coordinator, client, unique_id, f"WAN {self._link_name} IP")
+
+    def _link(self) -> Optional[Dict[str, Any]]:
+        data = self.coordinator.data
+        if not data:
+            return None
+        for link in data.wan_links:
+            if str(link.get("id")) == self._link_id:
+                return link
+        return None
 
     @property
-    def native_value(self) -> StateType:
-        return self._state
-
-    @Throttle(MIN_TIME_BETWEEN_UPDATES)
-    def update(self) -> None:
-        links = self._client.get_wan_links() or []
-        me = None
-        for l in links:
-            lid = l.get("id") or l.get("name") or self._id
-            if str(lid) == str(self._id) or (l.get("name") == self._name):
-                me = l; break
-        ip = (me or {}).get("ip") or (me or {}).get("wan_ip") or (me or {}).get("ipv4")
-        if ip and ip != getattr(self, "_last_ip", None):
+    def native_value(self) -> Optional[str]:
+        link = self._link()
+        ip = (
+            link.get("ip")
+            or link.get("wan_ip")
+            or link.get("ipv4")
+            if link
+            else None
+        )
+        if ip:
             self._last_ip = ip
-        self._attrs = {"last_ip": getattr(self, "_last_ip", None)}
-        self._state = ip
-
-        me = None
-        for l in links:
-            lid = l.get("id") or l.get("name") or self._id
-            if str(lid) == str(self._id) or (l.get("name") == self._name):
-                me = l; break
-        ip = (me or {}).get("ip") or (me or {}).get("wan_ip") or (me or {}).get("ipv4")
-        self._state = ip
+        return ip
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        return self._attrs
+        attrs = {"last_ip": self._last_ip}
+        attrs.update(self._controller_attrs())
+        return attrs
 
-class UnifiWanIspSensor(SensorEntity):
+
+class UniFiGatewayWanIspSensor(UniFiGatewaySensorBase):
     _attr_icon = "mdi:domain"
-    def __init__(self, client: UniFiOSClient, link: Dict[str, Any]):
-        self._last_isp = None
-        self._client = client
-        self._name = link.get("name") or link.get("display_name") or link.get("id") or "WAN"
-        self._id = link.get("id") or self._name
-        self._attr_name = f"WAN {self._name} ISP"
-        self._attr_unique_id = f"unifigw_{client.instance_key()}_wan_{self._id}_isp"
-        self._state: StateType = None
-        self._attrs: Dict[str, Any] = {}
+
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        link: Dict[str, Any],
+    ) -> None:
+        self._link_id = str(link.get("id"))
+        self._link_name = link.get("name") or self._link_id
+        self._last_isp: Optional[str] = None
+        unique_id = f"unifigw_{client.instance_key()}_wan_{self._link_id}_isp"
+        super().__init__(coordinator, client, unique_id, f"WAN {self._link_name} ISP")
+
+    def _link(self) -> Optional[Dict[str, Any]]:
+        data = self.coordinator.data
+        if not data:
+            return None
+        for link in data.wan_links:
+            if str(link.get("id")) == self._link_id:
+                return link
+        return None
 
     @property
-    def native_value(self) -> StateType:
-        return self._state
-
-    @Throttle(MIN_TIME_BETWEEN_UPDATES)
-    def update(self) -> None:
-        links = self._client.get_wan_links() or []
-        me = None
-        for l in links:
-            lid = l.get("id") or l.get("name") or self._id
-            if str(lid) == str(self._id) or (l.get("name") == self._name):
-                me = l; break
-        isp = (me or {}).get("isp") or (me or {}).get("provider")
-        if isp and isp != getattr(self, "_last_isp", None):
+    def native_value(self) -> Optional[str]:
+        link = self._link()
+        isp = link.get("isp") or link.get("provider") if link else None
+        if isp:
             self._last_isp = isp
-        self._attrs = {"last_isp": getattr(self, "_last_isp", None), "isp_organization": (me or {}).get("isp_name") or (me or {}).get("isp_organization") or (me or {}).get("organization")}
-        self._state = isp
-
-        me = None
-        for l in links:
-            lid = l.get("id") or l.get("name") or self._id
-            if str(lid) == str(self._id) or (l.get("name") == self._name):
-                me = l; break
-        isp = (me or {}).get("isp") or (me or {}).get("provider")
-        self._state = isp
+        return isp
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        return self._attrs
+        link = self._link() or {}
+        attrs = {
+            "last_isp": self._last_isp,
+            "organization": link.get("isp_name")
+            or link.get("isp_organization")
+            or link.get("organization"),
+        }
+        attrs.update(self._controller_attrs())
+        return attrs
 
-class UnifiLanNetworkSensor(SensorEntity):
+
+class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
     _attr_icon = "mdi:lan"
     _attr_native_unit_of_measurement = "clients"
     _attr_state_class = SensorStateClass.MEASUREMENT
-    def __init__(self, client: UniFiOSClient, net: Dict[str, Any]):
-        self._client = client
-        self._net = net
-        self._net_id = net.get("_id") or net.get("id")
-        self._name = net.get("name") or f"VLAN-{net.get('vlan')}"
-        self._subnet = net.get("subnet") or net.get("ip_subnet") or net.get("cidr")
-        self._ipnet = None
-        if self._subnet:
+
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        network: Dict[str, Any],
+    ) -> None:
+        self._network = network
+        self._network_id = str(network.get("_id") or network.get("id") or network.get("name"))
+        self._network_name = network.get("name") or f"VLAN {network.get('vlan')}"
+        self._subnet = (
+            network.get("subnet")
+            or network.get("ip_subnet")
+            or network.get("cidr")
+        )
+        self._ip_network = _to_ip_network(self._subnet)
+        unique_id = (
+            f"unifigw_{client.instance_key()}_lan_{self._network_id}_clients"
+        )
+        super().__init__(
+            coordinator,
+            client,
+            unique_id,
+            f"LAN {self._network_name}",
+        )
+
+    def _matches_client(self, client: Dict[str, Any]) -> bool:
+        if str(client.get("network_id")) == self._network_id:
+            return True
+        if (
+            client.get("network")
+            and client.get("network").lower() == self._network_name.lower()
+        ):
+            return True
+        if self._ip_network and client.get("ip"):
             try:
-                self._ipnet = ipaddress.ip_network(self._subnet, strict=False)
-            except Exception:
-                self._ipnet = None
-        self._attr_name = f"LAN {self._name}"
-        self._attr_unique_id = f"unifigw_{client.instance_key()}_lan_{self._net_id or self._name}_clients"
-        self._state: StateType = 0
-        self._attrs: Dict[str, Any] = {}
+                if ipaddress.ip_address(client["ip"]) in self._ip_network:
+                    return True
+            except ValueError:
+                return False
+        return False
+
+    def _clients(self) -> Iterable[Dict[str, Any]]:
+        data = self.coordinator.data
+        return data.clients if data else []
 
     @property
-    def native_value(self) -> StateType:
-        return self._state
-
-    @Throttle(MIN_TIME_BETWEEN_UPDATES)
-    def update(self) -> None:
-        cnt = 0
-        clients = self._client.get_clients() or []
-        for c in clients:
-            if self._net_id and c.get("network_id") == self._net_id:
-                cnt += 1; continue
-            if c.get("network") == self._name:
-                cnt += 1; continue
-            if self._ipnet and c.get("ip"):
-                try:
-                    if ipaddress.ip_address(c["ip"]) in self._ipnet:
-                        cnt += 1; continue
-                except Exception:
-                    pass
-        self._state = cnt
-        # Build attributes
-        leases = 0
-        clients = self._client.get_clients() or []
-        if getattr(self, "_ipnet", None):
-            import ipaddress
-            for c in clients:
-                ip = c.get("ip")
-                if not ip:
-                    continue
-                try:
-                    if ipaddress.ip_address(ip) in self._ipnet:
-                        leases += 1
-                except Exception:
-                    continue
-        self._attrs = {
-            "network_id": getattr(self, "_net_id", None),
-            "name": getattr(self, "_name", None),
-            "vlan_id": getattr(self, "_net", {}).get("vlan") if hasattr(self, "_net") else None,
-            "subnet": getattr(self, "_subnet", None) if hasattr(self, "_subnet") else getattr(self, "_subnet_str", None),
-            "ip_leases": leases,
-        }
+    def native_value(self) -> Optional[int]:
+        return sum(1 for client in self._clients() if self._matches_client(client))
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        return self._attrs
+        leases = sum(
+            1
+            for client in self._clients()
+            if self._matches_client(client) and client.get("ip")
+        )
+        attrs = {
+            "network_id": self._network_id,
+            "subnet": self._subnet,
+            "vlan_id": self._network.get("vlan"),
+            "ip_leases": leases,
+        }
+        attrs.update(self._controller_attrs())
+        return attrs
 
-class UnifiWlanSensor(SensorEntity):
+
+class UniFiGatewayWlanClientsSensor(UniFiGatewaySensorBase):
     _attr_icon = "mdi:wifi"
     _attr_native_unit_of_measurement = "clients"
     _attr_state_class = SensorStateClass.MEASUREMENT
-    def __init__(self, client: UniFiOSClient, wlan: Dict[str, Any]):
-        self._client = client
+
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        wlan: Dict[str, Any],
+    ) -> None:
         self._wlan = wlan
         self._ssid = wlan.get("name") or wlan.get("ssid") or "WLAN"
-        self._attr_name = f"WLAN {self._ssid}"
-        self._attr_unique_id = f"unifigw_{client.instance_key()}_wlan_{self._ssid}_clients"
-        self._state: StateType = 0
-        self._attrs: Dict[str, Any] = {}
+        unique_id = f"unifigw_{client.instance_key()}_wlan_{self._ssid}_clients"
+        super().__init__(coordinator, client, unique_id, f"WLAN {self._ssid}")
+
+    def _clients(self) -> Iterable[Dict[str, Any]]:
+        data = self.coordinator.data
+        return data.clients if data else []
 
     @property
-    def native_value(self) -> StateType:
-        return self._state
-
-    @Throttle(MIN_TIME_BETWEEN_UPDATES)
-    def update(self) -> None:
-        cnt = 0
-        clients = self._client.get_clients() or []
-        for c in clients:
-            ssid = c.get("essid") or c.get("wifi_network") or c.get("ap_essid")
+    def native_value(self) -> Optional[int]:
+        count = 0
+        for client in self._clients():
+            ssid = (
+                client.get("essid")
+                or client.get("wifi_network")
+                or client.get("ap_essid")
+            )
             if ssid == self._ssid:
-                cnt += 1
-        self._state = cnt
-        netmap = {};
-        try:
-            if hasattr(self._client, 'get_network_map'):
-                netmap = self._client.get_network_map()
-            else:
-                nets = self._client.get_networks() or []
-                netmap = {str(n.get('_id') or n.get('id')): n for n in nets}
-        except Exception:
-            netmap = {}
-        net_name = self._wlan.get("network") or (self._wlan.get("networkconf_id") and (netmap.get(str(self._wlan.get("networkconf_id"))) or {}).get("name"))
-        vlan_id = (netmap.get(str(self._wlan.get("networkconf_id"))) or {}).get("vlan")
-        security = self._wlan.get("security") or self._wlan.get("x_security") or self._wlan.get("wpa_mode")
-        self._attrs = {"network": net_name, "vlan_id": vlan_id, "security": security}
+                count += 1
+        return count
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        return self._attrs
+        data = self.coordinator.data
+        net_id = self._wlan.get("networkconf_id")
+        netmap = data.network_map if data else {}
+        network = netmap.get(str(net_id)) if net_id else None
+        attrs = {
+            "network": network.get("name") if network else self._wlan.get("network"),
+            "vlan_id": network.get("vlan") if network else None,
+            "security": self._wlan.get("security")
+            or self._wlan.get("x_security")
+            or self._wlan.get("wpa_mode"),
+            "enabled": self._wlan.get("enabled", True),
+        }
+        attrs.update(self._controller_attrs())
+        return attrs
 
-class UnifiVpnServerSensor(SensorEntity):
+
+class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
     _attr_icon = "mdi:account-lock"
     _attr_native_unit_of_measurement = "clients"
     _attr_state_class = SensorStateClass.MEASUREMENT
-    def __init__(self, client: UniFiOSClient, peer: Dict[str, Any], idx: int):
-        self._client = client
-        self._peer = peer
-        name = peer.get("name") or peer.get("peer_name") or peer.get("description") or f"VPN-Server-{idx}"
-        self._name = name
-        self._attr_name = f"VPN {name}"
-        self._role = 'server'
-        self._attr_unique_id = f"unifigw_{client.instance_key()}_vpn_server_{peer.get('_id') or peer.get('id') or idx}"
-        self._state: StateType = 0
-        self._attrs: Dict[str, Any] = {}
+
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        peer: Dict[str, Any],
+    ) -> None:
+        self._peer_name = (
+            peer.get("name") or peer.get("peer_name") or peer.get("description")
+        )
+        self._peer_id = _vpn_peer_id(peer)
+        name = self._peer_name or f"VPN Server {self._peer_id}"
+        unique_id = f"unifigw_{client.instance_key()}_vpn_server_{self._peer_id}"
+        super().__init__(coordinator, client, unique_id, f"VPN {name}")
+
+    def _record(self) -> Optional[Dict[str, Any]]:
+        data = self.coordinator.data
+        if not data:
+            return None
+        for record in data.vpn_servers:
+            if _vpn_peer_id(record) == self._peer_id:
+                return record
+        return None
 
     @property
-    def native_value(self) -> StateType:
-        return self._state
-
-    @property
-    def icon(self) -> str:
-        try:
-            return 'mdi:check-circle' if int(self._state or 0) > 0 else 'mdi:account-lock'
-        except Exception:
-            return 'mdi:account-lock'
+    def native_value(self) -> Optional[int]:
+        record = self._record()
+        if not record:
+            return None
+        raw = (
+            record.get("num_clients")
+            or record.get("clients")
+            or record.get("connected_clients")
+        )
+        if isinstance(raw, list):
+            return len(raw)
+        if raw is not None:
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+        return 0
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        self._attrs['role'] = getattr(self, '_role', None)
-        return self._attrs
-
-    @Throttle(MIN_TIME_BETWEEN_UPDATES)
-    def update(self) -> None:
-        peers = self._client.get_vpn_servers() or []
-        me = None
-        for p in peers:
-            pname = p.get("name") or p.get("peer_name") or p.get("description")
-            if pname == self._name:
-                me = p; break
-        cnt = 0
-        if me is not None:
-            raw = me.get("num_clients") or me.get("clients") or me.get("connected_clients")
-            if isinstance(raw, list):
-                cnt = len(raw)
-                self._attrs["clients"] = raw
-            elif raw is not None:
-                cnt = int(raw)
-            # include some typical fields
-            self._attrs.update({k: me.get(k) for k in ("vpn_type","interface","local_ip","status","state") if k in me})
-        self._state = cnt
+        record = self._record() or {}
+        attrs = {
+            "role": "server",
+            "vpn_type": record.get("vpn_type"),
+            "interface": record.get("interface"),
+            "local_ip": record.get("local_ip"),
+            "status": record.get("status") or record.get("state"),
+        }
+        if isinstance(record.get("clients"), list):
+            attrs["clients"] = record["clients"]
+        attrs.update(self._controller_attrs())
+        return attrs
 
 
-class UnifiVpnClientSensor(SensorEntity):
+class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
     _attr_icon = "mdi:lock"
 
-    def __init__(self, client: UniFiOSClient, peer: Dict[str, Any], idx: int):
-        self._client = client
-        self._peer = peer
-        name = peer.get("name") or peer.get("peer_name") or peer.get("description") or f"VPN-Client-{idx}"
-        self._name = name
-        self._attr_name = f"VPN {name}"
-        self._role = "client"
-        self._attr_unique_id = f"unifigw_{client.instance_key()}_vpn_client_{peer.get('_id') or peer.get('id') or idx}"
-        self._state: StateType = "UNKNOWN"
-        self._attrs: Dict[str, Any] = {}
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        peer: Dict[str, Any],
+    ) -> None:
+        self._peer_id = _vpn_peer_id(peer)
+        self._peer_name = (
+            peer.get("name") or peer.get("peer_name") or peer.get("description")
+        )
+        name = self._peer_name or f"VPN Client {self._peer_id}"
+        unique_id = f"unifigw_{client.instance_key()}_vpn_client_{self._peer_id}"
+        super().__init__(coordinator, client, unique_id, f"VPN {name}")
+
+    def _record(self) -> Optional[Dict[str, Any]]:
+        data = self.coordinator.data
+        if not data:
+            return None
+        for record in data.vpn_clients:
+            if _vpn_peer_id(record) == self._peer_id:
+                return record
+        return None
 
     @property
-    def native_value(self) -> StateType:
-        return self._state
+    def native_value(self) -> Optional[str]:
+        record = self._record()
+        if not record:
+            return None
+        if isinstance(record.get("connected"), bool):
+            return "CONNECTED" if record.get("connected") else "DISCONNECTED"
+        status = record.get("status") or record.get("state")
+        return status.upper() if isinstance(status, str) else status
 
     @property
-    def icon(self) -> str:
-        s = (self._state or "").upper()
-        if s in ("CONNECTED","UP","OK","ONLINE"):
+    def icon(self) -> Optional[str]:
+        status = str(self.native_value or "").upper()
+        if status in {"CONNECTED", "UP", "ONLINE", "OK"}:
             return "mdi:check-circle"
-        if s in ("ERROR","DOWN","DISCONNECTED","FAIL"):
+        if status in {"DOWN", "DISCONNECTED", "ERROR", "FAIL"}:
             return "mdi:alert-circle"
-        return "mdi:lock"
+        return self._attr_icon
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        self._attrs["role"] = "client"
-        return self._attrs
+        record = self._record() or {}
+        attrs = {
+            "role": "client",
+            "server_addr": record.get("server_addr"),
+            "remote_ip": record.get("remote_ip"),
+            "peer_addr": record.get("peer_addr"),
+            "tunnel_ip": record.get("tunnel_ip"),
+            "vpn_type": record.get("vpn_type"),
+            "interface": record.get("interface"),
+        }
+        for key in ("subnet", "tunnel_network", "client_subnet"):
+            if record.get(key):
+                attrs["subnet"] = record.get(key)
+                break
+        attrs.update(self._controller_attrs())
+        return attrs
 
-    def update(self) -> None:
-        me = self._peer
-        status = "UNKNOWN"
-        if me is not None:
-            if isinstance(me.get("connected"), bool):
-                status = "CONNECTED" if me.get("connected") else "DISCONNECTED"
-            status = (me.get("status") or me.get("state") or status) or status
-            status = str(status).upper()
-            # attributes
-            self._attrs.update({k: me.get(k) for k in ("name","server_addr","remote_ip","peer_addr","tunnel_ip","vpn_type","interface") if k in me})
-            for k in ("subnet","tunnel_network","client_subnet"):
-                if me.get(k):
-                    self._attrs["subnet"] = me.get(k)
-                    break
-        self._state = status
 
-class UnifiSpeedtestBase(SensorEntity):
-    async def async_added_to_hass(self) -> None:
-        # trigger first measurement schedule (no more than once per hour)
-        if hasattr(self._client, 'maybe_start_speedtest'):
-            try:
-                await self.hass.async_add_executor_job(self._client.maybe_start_speedtest, 3600)
-            except Exception:
-                pass
-
+class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, client: UniFiOSClient, kind: str):
-        self._client = client
-        self._kind = kind  # 'down'|'up'|'ping'
-        self._attr_name = f"Speedtest {'Download' if kind=='down' else ('Upload' if kind=='up' else 'Ping')}"
-        self._attr_unique_id = f"unifigw_{client.instance_key()}_speedtest_{kind}"
-        self._state: StateType = None
-        self._attrs: Dict[str, Any] = {}
-
-    @property
-    def native_value(self) -> StateType:
-        return self._state
-
-    @property
-    def icon(self) -> str:
-        return "mdi:progress-download" if self._kind=='down' else ("mdi:progress-upload" if self._kind=='up' else "mdi:progress-clock")
-
-    @property
-    def native_unit_of_measurement(self) -> Optional[str]:
-        return "Mbps" if self._kind in ("down","up") else "ms"
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        kind: str,
+        label: str,
+    ) -> None:
+        unique_id = f"unifigw_{client.instance_key()}_speedtest_{kind}"
+        super().__init__(coordinator, client, unique_id, label)
+        self._kind = kind
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        return self._attrs
-
-    @Throttle(MIN_TIME_BETWEEN_UPDATES)
-    def update(self) -> None:
-        # Guard if client doesn't have speedtest helpers yet
-        if not hasattr(self._client, 'get_last_speedtest') or not hasattr(self._client, 'maybe_start_speedtest') or not hasattr(self._client, 'now'):
-            self._state = None
-            self._attrs = {}
-            return
-        rec = self._client.get_last_speedtest(cache_sec=20)
-        now = self._client.now()
-        if rec is None:
-            try:
-                self._client.maybe_start_speedtest(3600)
-                rec = self._client.get_last_speedtest(cache_sec=1)
-            except Exception:
-                rec = None
-        stale = True
-        if rec and isinstance(rec, dict) and rec.get('rundate'):
-            stale = (now - (rec['rundate']/1000.0)) > 3600  # > 1h
-        # autorun no more than hourly
-        if stale:
-            self._client.maybe_start_speedtest(cooldown_sec=3600)
-            rec = self._client.get_last_speedtest(cache_sec=20)
-
-        # fill state
-        self._attrs = {
-            "source": rec.get("source") if rec else None,
-            "rundate": rec.get("rundate") if rec else None,
-            "server": rec.get("server") if rec else None,
-            "status": rec.get("status") if rec else None,
+        data = self.coordinator.data
+        record = data.speedtest if data else None
+        attrs = {
+            "source": record.get("source") if record else None,
+            "rundate": record.get("rundate") if record else None,
+            "server": record.get("server") if record else None,
+            "status": record.get("status") if record else None,
         }
-        if not rec:
-            self._state = None
-            return
-        if self._kind == "down":
-            val = rec.get("download_mbps")
-        elif self._kind == "up":
-            val = rec.get("upload_mbps")
-        else:
-            val = rec.get("latency_ms")
-        self._state = None if val is None else (round(float(val), 2) if self._kind!="ping" else round(float(val),1))
+        attrs.update(self._controller_attrs())
+        return attrs
 
 
-class UnifiSpeedtestDownloadSensor(UnifiSpeedtestBase):
-    def __init__(self, client: UniFiOSClient):
-        super().__init__(client, "down")
+class UniFiGatewaySpeedtestDownloadSensor(UniFiGatewaySpeedtestSensor):
+    _attr_icon = "mdi:progress-download"
+    _attr_native_unit_of_measurement = "Mbps"
+
+    def __init__(
+        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+    ) -> None:
+        super().__init__(coordinator, client, "down", "Speedtest Download")
+
+    @property
+    def native_value(self) -> Optional[float]:
+        data = self.coordinator.data
+        record = data.speedtest if data else None
+        if record and record.get("download_mbps") is not None:
+            return round(float(record["download_mbps"]), 2)
+        return None
 
 
-class UnifiSpeedtestUploadSensor(UnifiSpeedtestBase):
-    def __init__(self, client: UniFiOSClient):
-        super().__init__(client, "up")
+class UniFiGatewaySpeedtestUploadSensor(UniFiGatewaySpeedtestSensor):
+    _attr_icon = "mdi:progress-upload"
+    _attr_native_unit_of_measurement = "Mbps"
+
+    def __init__(
+        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+    ) -> None:
+        super().__init__(coordinator, client, "up", "Speedtest Upload")
+
+    @property
+    def native_value(self) -> Optional[float]:
+        data = self.coordinator.data
+        record = data.speedtest if data else None
+        if record and record.get("upload_mbps") is not None:
+            return round(float(record["upload_mbps"]), 2)
+        return None
 
 
-class UnifiSpeedtestPingSensor(UnifiSpeedtestBase):
-    def __init__(self, client: UniFiOSClient):
-        super().__init__(client, "ping")
+class UniFiGatewaySpeedtestPingSensor(UniFiGatewaySpeedtestSensor):
+    _attr_icon = "mdi:progress-clock"
+    _attr_native_unit_of_measurement = "ms"
+
+    def __init__(
+        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+    ) -> None:
+        super().__init__(coordinator, client, "ping", "Speedtest Ping")
+
+    @property
+    def native_value(self) -> Optional[float]:
+        data = self.coordinator.data
+        record = data.speedtest if data else None
+        if record and record.get("latency_ms") is not None:
+            return round(float(record["latency_ms"]), 1)
+        return None
+
+
+def _to_ip_network(value: Optional[str]):
+    if not value:
+        return None
+    try:
+        return ipaddress.ip_network(value, strict=False)
+    except ValueError:
+        return None

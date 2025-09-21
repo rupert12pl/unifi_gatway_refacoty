@@ -1,6 +1,8 @@
 
+from homeassistant.const import Platform
+
 DOMAIN = "unifi_gateway_refactored"
-PLATFORMS = ["sensor"]
+PLATFORMS = [Platform.SENSOR]
 
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"

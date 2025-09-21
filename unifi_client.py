@@ -1,8 +1,10 @@
 
 from __future__ import annotations
+
 import hashlib
 import logging
 import socket
+import time
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -11,11 +13,18 @@ from urllib3.util.retry import Retry
 
 _LOGGER = logging.getLogger(__name__)
 
-class APIError(Exception): ...
-class AuthError(APIError): ...
-class ConnectivityError(APIError): ...
 
-import time
+class APIError(Exception):
+    """Base exception raised when the UniFi controller returns an error."""
+
+
+class AuthError(APIError):
+    """Authentication against the UniFi OS API failed."""
+
+
+class ConnectivityError(APIError):
+    """The controller could not be reached."""
+
 
 class UniFiOSClient:
     def __init__(
@@ -38,9 +47,15 @@ class UniFiOSClient:
         self._password = password
 
         self._session = requests.Session()
-        retries = Retry(total=5, connect=5, read=3, backoff_factor=0.4,
-                        status_forcelist=(429, 500, 502, 503, 504),
-                        allowed_methods=("GET","POST"), raise_on_status=False)
+        retries = Retry(
+            total=5,
+            connect=5,
+            read=3,
+            backoff_factor=0.4,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=("GET", "POST"),
+            raise_on_status=False,
+        )
         self._session.mount("https://", HTTPAdapter(max_retries=retries))
         self._session.headers.update({"Accept": "application/json"})
 
@@ -72,7 +87,11 @@ class UniFiOSClient:
                         verify=ssl_verify, timeout=timeout
                     )
                     if 200 <= r.status_code < 300:
-                        csrf = r.headers.get("x-csrf-token") or r.headers.get("X-CSRF-Token") or r.cookies.get("csrf_token")
+                        csrf = (
+                            r.headers.get("x-csrf-token")
+                            or r.headers.get("X-CSRF-Token")
+                            or r.cookies.get("csrf_token")
+                        )
                         if csrf:
                             self._session.headers["x-csrf-token"] = csrf
                         _LOGGER.info("Logged into UniFi OS via %s", url)
@@ -119,9 +138,20 @@ class UniFiOSClient:
                         continue
 
     # ----------- http helpers -----------
-    def _request(self, method: str, url: str, payload: Optional[Dict[str, Any]] = None):
+    def _request(
+        self,
+        method: str,
+        url: str,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Any:
         try:
-            r = self._session.request(method, url, json=payload, verify=self._ssl_verify, timeout=self._timeout)
+            r = self._session.request(
+                method,
+                url,
+                json=payload,
+                verify=self._ssl_verify,
+                timeout=self._timeout,
+            )
         except requests.RequestException as ex:
             raise ConnectivityError(f"Request error: {ex}") from ex
         if r.status_code in (401, 403):
@@ -138,6 +168,9 @@ class UniFiOSClient:
 
     def _get(self, path: str):
         return self._request("GET", f"{self._base}/{path.lstrip('/')}")
+
+    def _post(self, path: str, payload: Optional[Dict[str, Any]] = None):
+        return self._request("POST", f"{self._base}/{path.lstrip('/')}", payload)
 
     # ----------- public helpers used by sensors / diagnostics -----------
     def ping(self) -> Dict[str, Any]:
@@ -285,6 +318,7 @@ class UniFiOSClient:
                 continue
             uniq[name] = d
         return list(uniq.values())
+
     def instance_key(self) -> str:
         return self._iid
 
@@ -294,29 +328,28 @@ class UniFiOSClient:
     def get_site(self) -> str:
         return self._site
 
+    def get_network_map(self) -> Dict[str, Dict[str, Any]]:
+        """Map networkconf_id -> metadata for quick lookups from WLANs/clients."""
 
-def get_network_map(self) -> Dict[str, Dict[str, Any]]:
-    """Map networkconf_id -> {name, vlan, subnet, id} for quick lookups from WLANs/clients."""
-    nets = self.get_networks() or []
-    out: Dict[str, Dict[str, Any]] = {}
-    for n in nets:
-        nid = n.get("_id") or n.get("id")
-        if not nid:
-            continue
-        out[str(nid)] = {
-            "id": nid,
-            "name": n.get("name"),
-            "vlan": n.get("vlan"),
-            "subnet": n.get("subnet") or n.get("ip_subnet") or n.get("cidr"),
-            "purpose": n.get("purpose") or n.get("role"),
-        }
-    return out
+        nets = self.get_networks() or []
+        out: Dict[str, Dict[str, Any]] = {}
+        for n in nets:
+            nid = n.get("_id") or n.get("id")
+            if not nid:
+                continue
+            out[str(nid)] = {
+                "id": nid,
+                "name": n.get("name"),
+                "vlan": n.get("vlan"),
+                "subnet": n.get("subnet") or n.get("ip_subnet") or n.get("cidr"),
+                "purpose": n.get("purpose") or n.get("role"),
+            }
+        return out
 
     def now(self) -> float:
         return time.time()
 
-
-# ---- Speedtest helpers (base-relative) ----
+    # ---- Speedtest helpers (base-relative) ----
     def get_gateway_mac(self) -> Optional[str]:
         try:
             devs = self.get_devices()
@@ -366,13 +399,25 @@ def get_network_map(self) -> Dict[str, Dict[str, Any]]:
                 return self._post("internet/speedtest/status", {})
 
     def get_speedtest_history(self, start_ms: Optional[int] = None, end_ms: Optional[int] = None):
-        import time
         if end_ms is None:
             end_ms = int(time.time() * 1000)
         if start_ms is None:
-            start_ms = end_ms - 7*24*60*60*1000
+            start_ms = end_ms - 7 * 24 * 60 * 60 * 1000
         try:
-            return self._post("stat/report/archive.speedtest", {"attrs":["xput_download","xput_upload","latency","rundate","server"],"start":start_ms,"end":end_ms})
+            return self._post(
+                "stat/report/archive.speedtest",
+                {
+                    "attrs": [
+                        "xput_download",
+                        "xput_upload",
+                        "latency",
+                        "rundate",
+                        "server",
+                    ],
+                    "start": start_ms,
+                    "end": end_ms,
+                },
+            )
         except Exception:
             data = self._get("internet/speedtest/results")
             return data if isinstance(data, list) else []
@@ -382,16 +427,21 @@ def get_network_map(self) -> Dict[str, Dict[str, Any]]:
         dl = rec.get("xput_download", rec.get("download", rec.get("xput_down")))
         ul = rec.get("xput_upload", rec.get("upload", rec.get("xput_up")))
         ping = rec.get("latency", rec.get("ping", rec.get("speedtest_ping")))
-        if dl is not None: out["download_mbps"] = float(dl)
-        if ul is not None: out["upload_mbps"] = float(ul)
-        if ping is not None: out["latency_ms"] = float(ping)
-        if "rundate" in rec: out["rundate"] = rec["rundate"]
-        if "server" in rec: out["server"] = rec["server"]
-        if "status" in rec: out["status"] = rec["status"]
+        if dl is not None:
+            out["download_mbps"] = float(dl)
+        if ul is not None:
+            out["upload_mbps"] = float(ul)
+        if ping is not None:
+            out["latency_ms"] = float(ping)
+        if "rundate" in rec:
+            out["rundate"] = rec["rundate"]
+        if "server" in rec:
+            out["server"] = rec["server"]
+        if "status" in rec:
+            out["status"] = rec["status"]
         return out
 
     def get_last_speedtest(self, cache_sec: int = 20) -> Optional[Dict[str, Any]]:
-        import time
         now = time.time()
         if getattr(self, "_st_cache", None) and (now - self._st_cache[0]) < cache_sec:
             return self._st_cache[1]
@@ -400,23 +450,31 @@ def get_network_map(self) -> Dict[str, Dict[str, Any]]:
             st = self.get_speedtest_status()
             rec = st[0] if isinstance(st, list) and st else (st if isinstance(st, dict) else None)
             if rec:
-                out = self._normalize_speedtest_record(rec); out["source"]="status"
-                self._st_cache = (now, out); return out
+                out = self._normalize_speedtest_record(rec)
+                out["source"] = "status"
+                self._st_cache = (now, out)
+                return out
         except Exception:
             pass
         try:
             hist = self.get_speedtest_history()
             if isinstance(hist, list) and hist:
-                latest = sorted([r for r in hist if isinstance(r, dict)], key=lambda r: r.get("rundate", 0), reverse=True)
+                latest = sorted(
+                    [r for r in hist if isinstance(r, dict)],
+                    key=lambda r: r.get("rundate", 0),
+                    reverse=True,
+                )
                 if latest:
-                    out = self._normalize_speedtest_record(latest[0]); out["source"]="history"
-                    self._st_cache = (now, out); return out
+                    out = self._normalize_speedtest_record(latest[0])
+                    out["source"] = "history"
+                    self._st_cache = (now, out)
+                    return out
         except Exception:
             pass
-        self._st_cache = (now, None); return None
+        self._st_cache = (now, None)
+        return None
 
     def maybe_start_speedtest(self, cooldown_sec: int = 3600) -> None:
-        import time
         now = time.time()
         last = getattr(self, "_st_last_trigger", 0.0)
         if now - last < cooldown_sec:
