@@ -1,0 +1,71 @@
+name: Create release from manifest version
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - custom_components/unifi_gateway_refactored/manifest.json
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Tag and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from manifest
+        id: manifest
+        run: |
+          VERSION=$(python - <<'PY'
+import json
+from pathlib import Path
+manifest = json.loads(Path("custom_components/unifi_gateway_refactored/manifest.json").read_text())
+print(manifest["version"])
+PY
+          )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Validate semantic version
+        run: |
+          python - <<'PY'
+import re
+version = "${{ steps.manifest.outputs.version }}"
+if not re.fullmatch(r"\d+\.\d+\.\d+(?:[ab]\d+)?", version):
+    raise SystemExit(
+        "Manifest version '%s' is not a valid semantic version (major.minor.patch)." % version
+    )
+PY
+
+      - name: Check if tag exists
+        id: tag
+        run: |
+          if git rev-parse "${VERSION}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          VERSION: ${{ steps.manifest.outputs.version }}
+
+      - name: Create GitHub release
+        if: steps.tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.manifest.outputs.version }}
+          name: ${{ steps.manifest.outputs.version }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.tag.outputs.exists }}" = "true" ]; then
+            echo "Tag ${{ steps.manifest.outputs.version }} already exists, skipping release." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Created release ${{ steps.manifest.outputs.version }}." >> "$GITHUB_STEP_SUMMARY"
+          fi
