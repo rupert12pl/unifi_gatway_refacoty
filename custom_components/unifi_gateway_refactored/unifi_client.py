@@ -1015,7 +1015,13 @@ class UniFiOSClient:
                 )
                 continue
 
-        main
+            normalized = self._normalize_vpn_payload(
+                payload,
+                path=path,
+                default_category=hint,
+            )
+
+            if not normalized:
                 _LOGGER.debug(
                     "VPN peer probe %s returned no peer records (type=%s)",
                     path,
