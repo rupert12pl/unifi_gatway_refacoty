@@ -713,14 +713,40 @@ class UniFiOSClient:
         """Collect VPN records from multiple API probes with optional role hint."""
 
         found: List[Dict[str, Any]] = []
+        errors: Dict[str, Exception] = {}
         for path in probes:
             try:
                 data = self._get(path)
-            except Exception:
+            except Exception as err:  # broad: controller versions vary widely
+                _LOGGER.debug(
+                    "VPN probe %s failed during %s fetch: %s",
+                    path,
+                    role_hint or "vpn",
+                    err,
+                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
+                )
+                errors[path] = err
                 continue
-            found.extend(self._flatten_vpn_records(data, role_hint))
+
+            flattened = self._flatten_vpn_records(data, role_hint)
+            if flattened:
+                _LOGGER.debug(
+                    "VPN probe %s returned %s candidate records for %s",
+                    path,
+                    len(flattened),
+                    role_hint or "vpn",
+                )
+            else:
+                _LOGGER.debug(
+                    "VPN probe %s returned no candidate records for %s (raw type=%s)",
+                    path,
+                    role_hint or "vpn",
+                    type(data).__name__,
+                )
+            found.extend(flattened)
 
         uniq: Dict[str, Dict[str, Any]] = {}
+        filtered_out = 0
         for record in found:
             if not isinstance(record, dict):
                 continue
@@ -742,8 +768,41 @@ class UniFiOSClient:
             if role_filter:
                 allowed = {value for value in role_filter if value}
                 if normalized_role not in allowed and category not in allowed and suffix not in allowed:
+                    filtered_out += 1
                     continue
             uniq[identity] = normalized
+
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            category_counts: Dict[str, int] = {}
+            for record in uniq.values():
+                category = record.get("_ha_category") or record.get("role") or "unknown"
+                category_counts[category] = category_counts.get(category, 0) + 1
+            stats = ", ".join(
+                f"{category}={count}" for category, count in sorted(category_counts.items())
+            ) or "none"
+            _LOGGER.debug(
+                "Collected %s VPN %s records (filtered_out=%s): %s",
+                len(uniq),
+                role_hint or "records",
+                filtered_out,
+                stats,
+            )
+        elif not uniq:
+            if errors:
+                error_summary = ", ".join(
+                    f"{path} ({err})" for path, err in sorted(errors.items())
+                )
+                _LOGGER.warning(
+                    "No VPN %s records discovered; probe errors: %s",
+                    role_hint or "records",
+                    error_summary,
+                )
+            else:
+                _LOGGER.info(
+                    "No VPN %s records discovered from controller probes",
+                    role_hint or "records",
+                )
+
         return list(uniq.values())
 
     def get_vpn_servers(self) -> List[Dict[str, Any]]:
