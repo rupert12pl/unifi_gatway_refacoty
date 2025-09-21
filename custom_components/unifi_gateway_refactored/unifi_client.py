@@ -12,6 +12,65 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib.parse import urlsplit
 
+
+def _normalize_peer_field(peer: Dict[str, Any], *keys: str) -> Optional[str]:
+    for key in keys:
+        value = peer.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                return cleaned
+            continue
+        return str(value)
+    return None
+
+
+def vpn_peer_identity(peer: Dict[str, Any]) -> str:
+    """Return a stable identifier for a VPN peer/server/client record."""
+
+    direct = _normalize_peer_field(peer, "_id", "id")
+    if direct:
+        return direct
+
+    uuid = _normalize_peer_field(
+        peer, "uuid", "peer_uuid", "peer_id", "server_id", "client_id"
+    )
+    name = _normalize_peer_field(
+        peer, "name", "peer_name", "description", "display_name"
+    )
+    interface = _normalize_peer_field(peer, "interface", "ifname")
+    address = _normalize_peer_field(
+        peer,
+        "server_addr",
+        "server_address",
+        "local_ip",
+        "remote_ip",
+        "peer_addr",
+        "gateway",
+        "tunnel_ip",
+        "tunnel_network",
+    )
+
+    if uuid and name:
+        return f"{name}_{uuid}"
+    if uuid:
+        return uuid
+    if name and interface:
+        return f"{name}_{interface}"
+    if name and address:
+        return f"{name}_{address}"
+    if interface and address:
+        return f"{interface}_{address}"
+    if name:
+        return name
+    if interface:
+        return interface
+    if address:
+        return address
+    return "peer"
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -314,13 +373,14 @@ class UniFiOSClient:
                 servers.extend([d for d in data if isinstance(d, dict)])
             elif isinstance(data, dict):
                 servers.extend(self._extract_dict_records(data))
-        # De-dup & add friendly name
-        uniq = {}
+        uniq: Dict[str, Dict[str, Any]] = {}
         for d in servers:
-            name = d.get("name") or d.get("peer_name") or d.get("description")
-            if not name:
+            if not isinstance(d, dict):
                 continue
-            uniq[name] = d
+            peer_id = vpn_peer_identity(d)
+            normalized = dict(d)
+            normalized["_ha_peer_id"] = peer_id
+            uniq[peer_id] = normalized
         return list(uniq.values())
 
     def get_vpn_clients(self) -> List[Dict[str, Any]]:
@@ -341,13 +401,14 @@ class UniFiOSClient:
                 out.extend([d for d in data if isinstance(d, dict)])
             elif isinstance(data, dict):
                 out.extend(self._extract_dict_records(data))
-        # unique by name/id
-        uniq = {}
+        uniq: Dict[str, Dict[str, Any]] = {}
         for d in out:
-            name = d.get("name") or d.get("peer_name") or d.get("description") or d.get("id")
-            if not name:
+            if not isinstance(d, dict):
                 continue
-            uniq[name] = d
+            peer_id = vpn_peer_identity(d)
+            normalized = dict(d)
+            normalized["_ha_peer_id"] = peer_id
+            uniq[peer_id] = normalized
         return list(uniq.values())
 
     def instance_key(self) -> str:
