@@ -729,12 +729,20 @@ class UniFiOSClient:
                 continue
 
             flattened = self._flatten_vpn_records(data, role_hint)
+            fallback_used = False
+            if not flattened:
+                legacy_records = self._legacy_vpn_records(data)
+                if legacy_records:
+                    flattened = legacy_records
+                    fallback_used = True
+
             if flattened:
                 _LOGGER.debug(
-                    "VPN probe %s returned %s candidate records for %s",
+                    "VPN probe %s returned %s candidate records for %s%s",
                     path,
                     len(flattened),
                     role_hint or "vpn",
+                    " via legacy parser" if fallback_used else "",
                 )
             else:
                 _LOGGER.debug(
@@ -804,6 +812,43 @@ class UniFiOSClient:
                 )
 
         return list(uniq.values())
+
+    def _legacy_vpn_records(self, data: Any) -> List[Dict[str, Any]]:
+        """Fallback parser for VPN records when the structured parser finds none."""
+
+        if data in (None, "", [], {}):
+            return []
+
+        records: List[Dict[str, Any]] = []
+        seen: set[int] = set()
+        stack: List[Any] = [data]
+
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                obj_id = id(current)
+                if obj_id in seen:
+                    continue
+                seen.add(obj_id)
+                has_vpn_key = any(
+                    key in current and current.get(key) not in (None, "", [], {})
+                    for key in _VPN_RECORD_KEYS
+                )
+                if has_vpn_key:
+                    records.append(current)
+                for value in current.values():
+                    if isinstance(value, (dict, list)):
+                        stack.append(value)
+            elif isinstance(current, list):
+                obj_id = id(current)
+                if obj_id in seen:
+                    continue
+                seen.add(obj_id)
+                for item in current:
+                    if isinstance(item, (dict, list)):
+                        stack.append(item)
+
+        return records
 
     def get_vpn_servers(self) -> List[Dict[str, Any]]:
         """Return configured VPN servers (WireGuard/OpenVPN Remote User)."""
