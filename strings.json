@@ -1,0 +1,43 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to UniFi Gateway",
+        "description": "Enter local admin credentials for UniFi Network Application. We'll validate by fetching health and sites.",
+        "data": {
+          "host": "Host (UDM IP)",
+          "port": "Port",
+          "username": "Username (local admin)",
+          "password": "Password",
+          "site_id": "Site ID",
+          "verify_ssl": "Verify SSL (bool or CA path)",
+          "use_proxy_prefix": "Use /proxy/network prefix",
+          "timeout": "HTTP timeout (seconds)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid username or password.",
+      "cannot_connect": "Cannot connect to UniFi host.",
+      "unknown": "Unknown error."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "UniFi Gateway Options",
+        "data": {
+          "host": "Host (UDM IP)",
+          "port": "Port",
+          "username": "Username (local admin)",
+          "password": "Password",
+          "site_id": "Site ID",
+          "verify_ssl": "Verify SSL (bool or CA path)",
+          "use_proxy_prefix": "Use /proxy/network prefix",
+          "timeout": "HTTP timeout (seconds)"
+        }
+      }
+    }
+  },
+  "title": "UniFi Gateway (Refactored)"
+}

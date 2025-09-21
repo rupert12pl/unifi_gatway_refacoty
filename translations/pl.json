@@ -1,0 +1,85 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Połącz z UniFi Gateway",
+        "description": "Wprowadź dane połączenia do kontrolera UniFi",
+        "data": {
+          "host": "Adres hosta kontrolera",
+          "port": "Port",
+          "api_key": "Token API",
+          "verify_ssl": "Weryfikuj SSL",
+          "use_proxy_prefix": "Użyj prefiksu proxy (/proxy/network)",
+          "site_id": "Identyfikator strony (site ID)"
+        }
+      }
+    },
+    "error": {
+      "auth": "Błąd uwierzytelniania – sprawdź token API",
+      "cannot_connect": "Nie można połączyć się z kontrolerem",
+      "unknown": "Nieznany błąd"
+    },
+    "abort": {
+      "already_configured": "Ten kontroler UniFi jest już skonfigurowany"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Zmień opcje UniFi Gateway",
+        "data": {
+          "scan_interval": "Interwał odświeżania (sekundy)",
+          "monitored_conditions": "Monitorowane warunki"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "wan_ip": {
+        "name": "Adres IP WAN",
+        "icon": "mdi:ip-network"
+      },
+      "wan_isp": {
+        "name": "Dostawca internetu (ISP)",
+        "icon": "mdi:office-building"
+      },
+      "vpn_clients": {
+        "name": "Klienci VPN",
+        "icon": "mdi:lock"
+      },
+      "vpn_servers": {
+        "name": "Serwery VPN",
+        "icon": "mdi:server-network"
+      },
+      "wlan_clients": {
+        "name": "Klienci WLAN",
+        "icon": "mdi:wifi"
+      },
+      "lan_clients": {
+        "name": "Klienci LAN",
+        "icon": "mdi:lan"
+      },
+      "alerts": {
+        "name": "Alerty",
+        "icon": "mdi:alert"
+      },
+      "firmware": {
+        "name": "Dostępne aktualizacje firmware",
+        "icon": "mdi:database-plus"
+      },
+      "speedtest_down": {
+        "name": "Prędkość pobierania",
+        "icon": "mdi:progress-download"
+      },
+      "speedtest_up": {
+        "name": "Prędkość wysyłania",
+        "icon": "mdi:progress-upload"
+      },
+      "speedtest_ping": {
+        "name": "Opóźnienie (ping)",
+        "icon": "mdi:progress-clock"
+      }
+    }
+  }
+}
