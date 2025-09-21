@@ -930,6 +930,17 @@ class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
             "server": record.get("server") if record else None,
             "status": record.get("status") if record else None,
         }
+        if record:
+            for key in (
+                "server_cc",
+                "server_city",
+                "server_country",
+                "server_lat",
+                "server_long",
+                "server_provider",
+                "server_provider_url",
+            ):
+                attrs[key] = record.get(key)
         attrs.update(self._controller_attrs())
         return attrs
 
