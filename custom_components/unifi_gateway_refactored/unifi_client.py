@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from urllib.parse import urlsplit
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class UniFiOSClient:
         self._site = site_id
         self._username = username
         self._password = password
+        self._port = port
 
         self._session = requests.Session()
         retries = Retry(
@@ -114,6 +116,7 @@ class UniFiOSClient:
                 try:
                     self._request("GET", f"{base_api}/stat/health")
                     self._base = base_api
+                    self._port = po
                     _LOGGER.info("Autodetected base: %s", self._base)
                     return
                 except APIError:
@@ -132,6 +135,7 @@ class UniFiOSClient:
                         self._request("GET", f"{base_api}/stat/health")
                         self._site = candidate
                         self._base = base_api
+                        self._port = po
                         _LOGGER.info("Autodetected via sites: %s (site=%s)", self._base, self._site)
                         return
                     except APIError:
@@ -259,6 +263,37 @@ class UniFiOSClient:
                 out.append({"id": n.get("_id") or n.get("id") or name, "name": name, "type": "wan"})
         return out
 
+    def _extract_dict_records(self, data: Any) -> List[Dict[str, Any]]:
+        """Flatten arbitrarily nested mappings/lists into a list of dict records."""
+
+        out: List[Dict[str, Any]] = []
+        stack: List[Any] = [data]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                if any(
+                    key in current
+                    for key in (
+                        "vpn_type",
+                        "peer_name",
+                        "name",
+                        "interface",
+                        "server_addr",
+                        "local_ip",
+                        "tunnel_ip",
+                    )
+                ):
+                    # keep dict-like records while still traversing nested structures
+                    out.append(current)
+                for value in current.values():
+                    if isinstance(value, (dict, list)):
+                        stack.append(value)
+            elif isinstance(current, list):
+                for item in current:
+                    if isinstance(item, (dict, list)):
+                        stack.append(item)
+        return out
+
     def get_vpn_servers(self) -> List[Dict[str, Any]]:
         """Return configured VPN servers (WireGuard/OpenVPN Remote User)."""
         probes = [
@@ -278,9 +313,7 @@ class UniFiOSClient:
             if isinstance(data, list):
                 servers.extend([d for d in data if isinstance(d, dict)])
             elif isinstance(data, dict):
-                for v in data.values():
-                    if isinstance(v, list):
-                        servers.extend([d for d in v if isinstance(d, dict)])
+                servers.extend(self._extract_dict_records(data))
         # De-dup & add friendly name
         uniq = {}
         for d in servers:
@@ -307,9 +340,7 @@ class UniFiOSClient:
             if isinstance(data, list):
                 out.extend([d for d in data if isinstance(d, dict)])
             elif isinstance(data, dict):
-                for k, v in data.items():
-                    if isinstance(v, list):
-                        out.extend([d for d in v if isinstance(d, dict)])
+                out.extend(self._extract_dict_records(data))
         # unique by name/id
         uniq = {}
         for d in out:
@@ -323,6 +354,15 @@ class UniFiOSClient:
         return self._iid
 
     def get_controller_url(self):
+        parts = urlsplit(self._base)
+        hostname = parts.hostname or self._host
+        port = parts.port or self._port
+        netloc = hostname
+        if port and port not in (443, None):
+            netloc = f"{hostname}:{port}"
+        return f"{parts.scheme}://{netloc}/login?redirect=%2Fdashboard"
+
+    def get_controller_api_url(self):
         return self._base.split("/api", 1)[0].rstrip("/")
 
     def get_site(self) -> str:

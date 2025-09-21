@@ -57,6 +57,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
     def _fetch_data(self) -> UniFiGatewayData:
         controller_info = {
             "url": self.client.get_controller_url(),
+            "api_url": self.client.get_controller_api_url(),
             "site": self.client.get_site(),
         }
 
