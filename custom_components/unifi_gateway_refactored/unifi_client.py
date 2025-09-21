@@ -462,7 +462,6 @@ class UniFiOSClient:
             for ep in ("/api/auth/login", "/api/login", "/auth/login"):
                 url = f"{root}{ep}"
                 try:
-                    _LOGGER.debug("Attempting UniFi OS login via endpoint %s", url)
                     r = self._session.post(
                         url,
                         json={
@@ -482,13 +481,7 @@ class UniFiOSClient:
                             self._session.headers["x-csrf-token"] = csrf
                         _LOGGER.info("Logged into UniFi OS via %s", url)
                         return
-                except requests.RequestException as err:
-                    _LOGGER.debug(
-                        "Login attempt against %s raised a transport error: %s",
-                        url,
-                        err,
-                        exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-                    )
+                except requests.RequestException:
                     continue
         raise AuthError("Failed to authenticate with provided username/password")
 
@@ -538,13 +531,6 @@ class UniFiOSClient:
         url: str,
         payload: Optional[Dict[str, Any]] = None,
     ) -> Any:
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug(
-                "UniFi request %s %s (payload=%s)",
-                method,
-                url,
-                "yes" if payload else "no",
-            )
         try:
             r = self._session.request(
                 method,
@@ -554,38 +540,23 @@ class UniFiOSClient:
                 timeout=self._timeout,
             )
         except requests.RequestException as ex:
-            _LOGGER.error("Transport error during UniFi request %s %s: %s", method, url, ex)
             raise ConnectivityError(f"Request error: {ex}") from ex
-        _LOGGER.debug(
-            "UniFi response for %s %s: HTTP %s", method, url, r.status_code
-        )
         if r.status_code in (401, 403):
-            _LOGGER.error("Authentication failed for UniFi request %s %s", method, url)
             raise AuthError(f"Auth failed at {url}")
         if r.status_code >= 400:
-            _LOGGER.error(
-                "HTTP error %s for UniFi request %s %s: %s",
-                r.status_code,
-                method,
-                url,
-                r.text[:200],
-            )
             raise APIError(f"HTTP {r.status_code}: {r.text[:200]} at {url}")
         if not r.content:
             return None
         try:
             data = r.json()
         except ValueError:
-            _LOGGER.error("Invalid JSON received from UniFi request %s %s", method, url)
             raise APIError(f"Invalid JSON from {url}")
         return data.get("data") if isinstance(data, dict) and "data" in data else data
 
     def _get(self, path: str):
-        _LOGGER.debug("GET %s", path)
         return self._request("GET", f"{self._base}/{path.lstrip('/')}")
 
     def _post(self, path: str, payload: Optional[Dict[str, Any]] = None):
-        _LOGGER.debug("POST %s", path)
         return self._request("POST", f"{self._base}/{path.lstrip('/')}", payload)
 
     # ----------- public helpers used by sensors / diagnostics -----------
@@ -601,57 +572,22 @@ class UniFiOSClient:
 
     def get_alerts(self):
         try:
-            alerts = self._get("list/alert")
-            _LOGGER.debug(
-                "Fetched %s alert records from list/alert",
-                len(alerts) if isinstance(alerts, list) else "unknown",
-            )
-            return alerts
-        except APIError as err:
-            _LOGGER.warning(
-                "Fetching list/alert failed (%s); attempting legacy list/alarm endpoint",
-                err,
-            )
-            legacy_alerts = self._get("list/alarm")
-            _LOGGER.debug(
-                "Fetched %s alert records from list/alarm",
-                len(legacy_alerts)
-                if isinstance(legacy_alerts, list)
-                else "unknown",
-            )
-            return legacy_alerts
+            return self._get("list/alert")
+        except APIError:
+            return self._get("list/alarm")
 
     def list_sites(self):
         root = self._base.split("/api/s/")[0] + "/api"
-        sites = self._request("GET", f"{root}/self/sites")
-        _LOGGER.debug(
-            "Controller returned %s sites", len(sites) if isinstance(sites, list) else "unknown"
-        )
-        return sites
+        return self._request("GET", f"{root}/self/sites")
 
     def get_networks(self) -> List[Dict[str, Any]]:
         for path in ("rest/networkconf", "list/networkconf"):
             try:
                 data = self._get(path)
                 if isinstance(data, list):
-                    _LOGGER.debug(
-                        "Fetched %s networks via %s", len(data), path
-                    )
                     return data
-                _LOGGER.debug(
-                    "Endpoint %s returned %s instead of list for networks",
-                    path,
-                    type(data).__name__,
-                )
-            except APIError as err:
-                _LOGGER.debug(
-                    "Network fetch via %s failed: %s",
-                    path,
-                    err,
-                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-                )
+            except APIError:
                 continue
-        _LOGGER.warning("No network configuration data returned by controller")
         return []
 
     def get_wlans(self) -> List[Dict[str, Any]]:
@@ -659,24 +595,9 @@ class UniFiOSClient:
             try:
                 data = self._get(path)
                 if isinstance(data, list):
-                    _LOGGER.debug(
-                        "Fetched %s WLAN configurations via %s", len(data), path
-                    )
                     return data
-                _LOGGER.debug(
-                    "Endpoint %s returned %s instead of list for WLANs",
-                    path,
-                    type(data).__name__,
-                )
-            except APIError as err:
-                _LOGGER.debug(
-                    "WLAN fetch via %s failed: %s",
-                    path,
-                    err,
-                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-                )
+            except APIError:
                 continue
-        _LOGGER.warning("No WLAN configuration data returned by controller")
         return []
 
     def get_clients(self) -> List[Dict[str, Any]]:
@@ -684,24 +605,9 @@ class UniFiOSClient:
             try:
                 data = self._get(path)
                 if isinstance(data, list):
-                    _LOGGER.debug(
-                        "Fetched %s clients via %s", len(data), path
-                    )
                     return data
-                _LOGGER.debug(
-                    "Endpoint %s returned %s instead of list for clients",
-                    path,
-                    type(data).__name__,
-                )
-            except APIError as err:
-                _LOGGER.debug(
-                    "Client fetch via %s failed: %s",
-                    path,
-                    err,
-                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-                )
+            except APIError:
                 continue
-        _LOGGER.warning("No client data returned by controller")
         return []
 
     def get_wan_links(self) -> List[Dict[str, Any]]:
@@ -712,47 +618,25 @@ class UniFiOSClient:
             "list/wan",
             "stat/wan",
         ]
-        _LOGGER.debug("Attempting WAN link discovery via endpoints: %s", ", ".join(paths))
         for path in paths:
             try:
                 data = self._get(path)
-            except Exception as err:
-                _LOGGER.debug(
-                    "WAN link fetch via %s failed: %s",
-                    path,
-                    err,
-                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-                )
+            except Exception:
                 continue
             # dict with nested lists
             if isinstance(data, dict):
                 for k in ("wans", "wan_links", "links", "interfaces"):
                     v = data.get(k)
                     if isinstance(v, list) and v:
-                        _LOGGER.debug(
-                            "WAN link data discovered via %s.%s (%s entries)",
-                            path,
-                            k,
-                            len(v),
-                        )
                         return [x for x in v if isinstance(x, dict)]
             # direct list
             if isinstance(data, list) and data:
-                _LOGGER.debug(
-                    "WAN link data discovered via %s (%s entries)",
-                    path,
-                    len(data),
-                )
                 return [x for x in data if isinstance(x, dict)]
         # fallback: derive from networks marked as WAN
         nets = []
         try:
             nets = self.get_networks() or []
-        except Exception as err:
-            _LOGGER.warning(
-                "Falling back to deriving WAN links from networks due to error: %s",
-                err,
-            )
+        except Exception:
             nets = []
         out = []
         for n in nets:
@@ -760,12 +644,6 @@ class UniFiOSClient:
             name = n.get("name") or n.get("display_name") or ""
             if "wan" in purpose or n.get("wan_network") or "wan" in (name or "").lower():
                 out.append({"id": n.get("_id") or n.get("id") or name, "name": name, "type": "wan"})
-        if out:
-            _LOGGER.debug(
-                "Derived %s WAN links from network configuration fallback", len(out)
-            )
-        else:
-            _LOGGER.error("Unable to determine WAN links from controller data")
         return out
 
     def _flatten_vpn_records(
@@ -866,12 +744,6 @@ class UniFiOSClient:
                     role_hint or "vpn",
                     " via legacy parser" if fallback_used else "",
                 )
-                if fallback_used:
-                    _LOGGER.warning(
-                        "VPN probe %s required legacy parser fallback for %s records",
-                        path,
-                        role_hint or "vpn",
-                    )
             else:
                 _LOGGER.debug(
                     "VPN probe %s returned no candidate records for %s (raw type=%s)",
@@ -976,7 +848,6 @@ class UniFiOSClient:
                     if isinstance(item, (dict, list)):
                         stack.append(item)
 
-        main
         return records
 
     def get_vpn_servers(self) -> List[Dict[str, Any]]:
@@ -995,11 +866,7 @@ class UniFiOSClient:
             "rest/wgservers",
             "rest/wireguard/server",
         ]
-        servers = self._collect_vpn_records(probes, "server", {"server"})
-        _LOGGER.debug("Returning %s VPN server records", len(servers))
-        if not servers:
-            _LOGGER.warning("Controller returned no VPN server records")
-        return servers
+        return self._collect_vpn_records(probes, "server", {"server"})
 
     def get_vpn_clients(self) -> List[Dict[str, Any]]:
         """Return configured VPN client tunnels (policy-based/route-based)."""
@@ -1015,11 +882,7 @@ class UniFiOSClient:
             "rest/wgclients",
             "rest/wireguard/client",
         ]
-        clients = self._collect_vpn_records(probes, "client", {"client", "teleport"})
-        _LOGGER.debug("Returning %s VPN client records", len(clients))
-        if not clients:
-            _LOGGER.warning("Controller returned no VPN client records")
-        return clients
+        return self._collect_vpn_records(probes, "client", {"client", "teleport"})
 
     def get_vpn_site_to_site(self) -> List[Dict[str, Any]]:
         """Return configured Site-to-Site tunnels (IPSec/UID)."""
@@ -1036,13 +899,7 @@ class UniFiOSClient:
             "rest/wgclients",
             "rest/wireguard/client",
         ]
-        tunnels = self._collect_vpn_records(
-            probes, "site_to_site", {"site_to_site", "uid"}
-        )
-        _LOGGER.debug("Returning %s VPN site-to-site records", len(tunnels))
-        if not tunnels:
-            _LOGGER.warning("Controller returned no site-to-site VPN records")
-        return tunnels
+        return self._collect_vpn_records(probes, "site_to_site", {"site_to_site", "uid"})
 
     def instance_key(self) -> str:
         return self._iid
