@@ -36,11 +36,13 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.data.setdefault(DOMAIN, {})
+    _LOGGER.debug("Initialized UniFi Gateway integration domain store")
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
+    _LOGGER.debug("Starting setup for UniFi Gateway entry %s", entry.entry_id)
 
     client_kwargs: dict[str, Any] = {
         "host": entry.data[CONF_HOST],
@@ -66,10 +68,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         client: UniFiOSClient = await hass.async_add_executor_job(client_factory)
     except AuthError as err:
+        _LOGGER.error("Authentication failed while setting up entry %s: %s", entry.entry_id, err)
         raise ConfigEntryAuthFailed("Authentication with UniFi controller failed") from err
     except ConnectivityError as err:
+        _LOGGER.error("Connectivity issue while setting up entry %s: %s", entry.entry_id, err)
         raise ConfigEntryNotReady(f"Cannot connect to UniFi controller: {err}") from err
     except APIError as err:
+        _LOGGER.error("Controller error while setting up entry %s: %s", entry.entry_id, err)
         raise ConfigEntryNotReady(f"UniFi controller error: {err}") from err
 
     coordinator = UniFiGatewayDataUpdateCoordinator(hass, client)
@@ -80,18 +85,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinator": coordinator,
     }
 
+    _LOGGER.debug(
+        "UniFi Gateway entry %s setup complete; scheduling platform forwards",
+        entry.entry_id,
+    )
+
     await _async_migrate_vpn_unique_ids(hass, entry, client, coordinator.data)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    _LOGGER.info("UniFi Gateway entry %s fully initialized", entry.entry_id)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    _LOGGER.debug("Unloading UniFi Gateway entry %s", entry.entry_id)
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         stored = hass.data.get(DOMAIN)
         if stored and entry.entry_id in stored:
             stored.pop(entry.entry_id)
+        _LOGGER.debug("UniFi Gateway entry %s unloaded", entry.entry_id)
     return unload_ok
 
 
@@ -127,6 +140,7 @@ async def _async_migrate_vpn_unique_ids(
     _collect(getattr(data, "vpn_site_to_site", None), "vpn_site_to_site")
 
     if not mapping:
+        _LOGGER.debug("No VPN unique ID migrations required for entry %s", entry.entry_id)
         return
 
     registry = er.async_get(hass)
@@ -140,3 +154,8 @@ async def _async_migrate_vpn_unique_ids(
         return None
 
     await er.async_migrate_entries(hass, DOMAIN, _migrate)
+    _LOGGER.info(
+        "Migrated %s VPN entities to new unique IDs for entry %s",
+        len(mapping),
+        entry.entry_id,
+    )
