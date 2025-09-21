@@ -242,6 +242,232 @@ def _extract_client_count(value: Any) -> Optional[int]:
     return _coerce_int(value)
 
 
+def _normalize_vpn_label(value: Any) -> Optional[str]:
+    if value in (None, "", [], {}):
+        return None
+    cleaned = str(value).strip().lower()
+    if not cleaned:
+        return None
+    if any(ch in cleaned for ch in ".:/"):
+        return cleaned
+    normalized = "".join(ch for ch in cleaned if ch.isalnum())
+    return normalized or None
+
+
+def _vpn_identifier_candidates(peer: Dict[str, Any]) -> set[str]:
+    identifiers: set[str] = set()
+    for key in (
+        "_id",
+        "id",
+        "uuid",
+        "peer_uuid",
+        "peer_id",
+        "peerid",
+        "server_id",
+        "client_id",
+        "remote_user_id",
+        "remoteuser_id",
+        "user_id",
+        "userid",
+    ):
+        value = peer.get(key)
+        if value in (None, "", [], {}):
+            continue
+        identifiers.add(str(value).strip().lower())
+    return identifiers
+
+
+def _vpn_label_candidates(peer: Dict[str, Any]) -> set[str]:
+    labels: set[str] = set()
+    for key in (
+        "name",
+        "peer_name",
+        "description",
+        "display_name",
+        "vpn_name",
+        "remote_user_vpn",
+        "profile",
+        "profile_name",
+        "interface",
+        "ifname",
+        "gateway",
+        "server_addr",
+        "server_address",
+    ):
+        label = _normalize_vpn_label(peer.get(key))
+        if label:
+            labels.add(label)
+    return labels
+
+
+def _vpn_network_strings(value: Any) -> List[str]:
+    if value in (None, "", [], {}):
+        return []
+    if isinstance(value, str):
+        raw = value.replace(";", ",").replace("|", ",")
+        parts = [part.strip() for part in raw.split(",") if part.strip()]
+        if len(parts) == 1:
+            # also attempt to split on whitespace for strings like "10.0.0.0/24 10.0.1.0/24"
+            parts = [part.strip() for part in raw.split() if part.strip()]
+        return parts
+    if isinstance(value, (list, tuple, set)):
+        out: List[str] = []
+        for item in value:
+            out.extend(_vpn_network_strings(item))
+        return out
+    if isinstance(value, dict):
+        out: List[str] = []
+        for item in value.values():
+            out.extend(_vpn_network_strings(item))
+        return out
+    return [str(value)]
+
+
+def _vpn_networks(
+    peer: Dict[str, Any],
+) -> List[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    networks: List[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    seen: set[str] = set()
+    for key in (
+        "tunnel_network",
+        "tunnel_networks",
+        "client_subnet",
+        "client_networks",
+        "subnet",
+        "subnets",
+        "network",
+        "networks",
+        "allowed_ips",
+    ):
+        for candidate in _vpn_network_strings(peer.get(key)):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            network = _to_ip_network(candidate)
+            if network:
+                networks.append(network)
+    return networks
+
+
+def _vpn_client_identifier_candidates(client: Dict[str, Any]) -> set[str]:
+    identifiers: set[str] = set()
+    for key in (
+        "peer_id",
+        "peerid",
+        "remote_user_id",
+        "remoteuser_id",
+        "user_id",
+        "userid",
+        "server_id",
+        "client_id",
+        "id",
+        "_id",
+        "uuid",
+    ):
+        value = client.get(key)
+        if value in (None, "", [], {}):
+            continue
+        identifiers.add(str(value).strip().lower())
+    return identifiers
+
+
+def _vpn_client_labels(client: Dict[str, Any]) -> set[str]:
+    labels: set[str] = set()
+    for key in (
+        "vpn_name",
+        "remote_user_vpn",
+        "tunnel",
+        "gateway",
+        "via_vpn",
+        "network",
+        "profile",
+        "profile_name",
+        "connection_name",
+        "remote_user",
+        "remoteuser",
+    ):
+        label = _normalize_vpn_label(client.get(key))
+        if label:
+            labels.add(label)
+    connection = client.get("connection") or client.get("connectivity") or client.get("type")
+    if isinstance(connection, str) and "vpn" in connection.lower():
+        label = _normalize_vpn_label(connection)
+        if label:
+            labels.add(label)
+    return labels
+
+
+def _client_ip_addresses(client: Dict[str, Any]) -> List[str]:
+    ips: List[str] = []
+    for key in (
+        "ip",
+        "last_known_ip",
+        "wan_ip",
+        "remote_ip",
+        "vpn_ip",
+        "tunnel_ip",
+    ):
+        value = client.get(key)
+        if isinstance(value, str) and value:
+            ips.append(value)
+    return ips
+
+
+def _match_clients_for_peer(
+    peer: Dict[str, Any],
+    base_identifiers: set[str],
+    base_labels: set[str],
+    base_networks: Iterable[ipaddress.IPv4Network | ipaddress.IPv6Network],
+    clients: Iterable[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    identifiers = set(base_identifiers)
+    identifiers.update(_vpn_identifier_candidates(peer))
+    labels = set(base_labels)
+    labels.update(_vpn_label_candidates(peer))
+    networks: List[ipaddress.IPv4Network | ipaddress.IPv6Network] = list(
+        base_networks
+    )
+    existing: set[str] = {str(net) for net in networks}
+    for network in _vpn_networks(peer):
+        key = str(network)
+        if key in existing:
+            continue
+        existing.add(key)
+        networks.append(network)
+
+    matches: List[Dict[str, Any]] = []
+    for client in clients:
+        client_ids = _vpn_client_identifier_candidates(client)
+        if identifiers.intersection(client_ids):
+            matches.append(client)
+            continue
+        client_labels = _vpn_client_labels(client)
+        if client_labels and labels:
+            for candidate in client_labels:
+                if any(
+                    candidate == label
+                    or candidate in label
+                    or label in candidate
+                    for label in labels
+                ):
+                    matches.append(client)
+                    break
+            else:
+                pass
+            if client in matches:
+                continue
+        if networks:
+            for ip_value in _client_ip_addresses(client):
+                try:
+                    address = ipaddress.ip_address(ip_value)
+                except ValueError:
+                    continue
+                if any(address in network for network in networks):
+                    matches.append(client)
+                    break
+    return matches
+
+
 class UniFiGatewaySensorBase(
     CoordinatorEntity[UniFiGatewayDataUpdateCoordinator], SensorEntity
 ):
@@ -796,6 +1022,11 @@ class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
         )
         self._peer_id = _vpn_peer_id(peer)
         name = self._peer_name or f"VPN Server {self._peer_id}"
+        self._base_identifiers = _vpn_identifier_candidates(peer)
+        if self._peer_id:
+            self._base_identifiers.add(str(self._peer_id).lower())
+        self._base_labels = _vpn_label_candidates(peer)
+        self._base_networks = tuple(_vpn_networks(peer))
         unique_id = f"unifigw_{client.instance_key()}_vpn_server_{self._peer_id}"
         super().__init__(coordinator, client, unique_id, f"VPN {name}")
 
@@ -811,8 +1042,9 @@ class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
     @property
     def native_value(self) -> Optional[int]:
         record = self._record()
-        if not record:
+        if not record and not self.coordinator.data:
             return None
+        record = record or {}
         for key in (
             "num_clients",
             "connected_clients",
@@ -821,12 +1053,22 @@ class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
         ):
             count = _extract_client_count(record.get(key))
             if count is not None:
+                if count > 0:
+                    return count
+                fallback_matches = self._matched_clients(record)
+                if fallback_matches:
+                    return len(fallback_matches)
                 return count
-        return 0
+        fallback_matches = self._matched_clients(record)
+        if fallback_matches:
+            return len(fallback_matches)
+        return 0 if record else None
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         record = self._record() or {}
+        matches = self._matched_clients(record)
+        match_count = len(matches)
         clients = record.get("clients")
         active_clients = _extract_client_count(clients)
         if active_clients is None:
@@ -840,6 +1082,8 @@ class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
                     break
         if active_clients is None:
             active_clients = 0
+        if match_count > active_clients:
+            active_clients = match_count
         attrs = {
             "role": "server",
             "vpn_type": record.get("vpn_type") or record.get("type"),
@@ -860,8 +1104,31 @@ class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
         }
         if isinstance(clients, (list, dict)):
             attrs["clients"] = clients
+        if matches:
+            attrs["matched_clients"] = [
+                {
+                    "name": client.get("name")
+                    or client.get("hostname")
+                    or client.get("user")
+                    or client.get("mac"),
+                    "ip": client.get("ip") or client.get("last_known_ip"),
+                    "mac": client.get("mac"),
+                }
+                for client in matches
+            ]
         attrs.update(self._controller_attrs())
         return attrs
+
+    def _matched_clients(self, record: Dict[str, Any]) -> List[Dict[str, Any]]:
+        data = self.coordinator.data
+        clients = data.clients if data else []
+        return _match_clients_for_peer(
+            record,
+            self._base_identifiers,
+            self._base_labels,
+            self._base_networks,
+            clients,
+        )
 
 
 class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
@@ -881,6 +1148,11 @@ class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
             or peer.get("display_name")
         )
         name = self._peer_name or f"VPN Client {self._peer_id}"
+        self._base_identifiers = _vpn_identifier_candidates(peer)
+        if self._peer_id:
+            self._base_identifiers.add(str(self._peer_id).lower())
+        self._base_labels = _vpn_label_candidates(peer)
+        self._base_networks = tuple(_vpn_networks(peer))
         unique_id = f"unifigw_{client.instance_key()}_vpn_client_{self._peer_id}"
         super().__init__(coordinator, client, unique_id, f"VPN {name}")
 
@@ -897,11 +1169,19 @@ class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
     def native_value(self) -> Optional[str]:
         record = self._record()
         if not record:
+            matches = self._matched_clients({})
+            if matches:
+                return "CONNECTED"
             return None
         if isinstance(record.get("connected"), bool):
             return "CONNECTED" if record.get("connected") else "DISCONNECTED"
         status = record.get("status") or record.get("state")
-        return status.upper() if isinstance(status, str) else status
+        if isinstance(status, str):
+            return status.upper()
+        matches = self._matched_clients(record)
+        if matches:
+            return "CONNECTED"
+        return status
 
     @property
     def icon(self) -> Optional[str]:
@@ -915,6 +1195,7 @@ class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         record = self._record() or {}
+        matches = self._matched_clients(record)
         attrs = {
             "role": "client",
             "vpn_type": record.get("vpn_type") or record.get("type"),
@@ -937,8 +1218,32 @@ class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
             if record.get(key):
                 attrs["subnet"] = record.get(key)
                 break
+        if matches:
+            attrs["matched_clients"] = [
+                {
+                    "name": client.get("name")
+                    or client.get("hostname")
+                    or client.get("user")
+                    or client.get("mac"),
+                    "ip": client.get("ip") or client.get("last_known_ip"),
+                    "mac": client.get("mac"),
+                }
+                for client in matches
+            ]
+            attrs["active_clients"] = len(matches)
         attrs.update(self._controller_attrs())
         return attrs
+
+    def _matched_clients(self, record: Dict[str, Any]) -> List[Dict[str, Any]]:
+        data = self.coordinator.data
+        clients = data.clients if data else []
+        return _match_clients_for_peer(
+            record,
+            self._base_identifiers,
+            self._base_labels,
+            self._base_networks,
+            clients,
+        )
 
 
 class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):

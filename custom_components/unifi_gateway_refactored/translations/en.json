@@ -23,8 +23,9 @@
       }
     },
     "error": {
-      "invalid_auth": "Invalid username or password.",
+      "invalid_auth": "Invalid credentials.",
       "cannot_connect": "Cannot connect to UniFi host.",
+      "missing_auth": "Provide a username and password.",
       "unknown": "Unknown error."
     }
   },
@@ -46,8 +47,9 @@
       }
     },
     "error": {
-      "invalid_auth": "Invalid username or password.",
+      "invalid_auth": "Invalid credentials.",
       "cannot_connect": "Cannot connect to UniFi host.",
+      "missing_auth": "Provide a username and password.",
       "unknown": "Unknown error."
     }
   },

@@ -43,15 +43,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     client_kwargs: dict[str, Any] = {
         "host": entry.data[CONF_HOST],
-        "username": entry.data[CONF_USERNAME],
-        "password": entry.data[CONF_PASSWORD],
         "port": entry.data.get(CONF_PORT, DEFAULT_PORT),
         "site_id": entry.data.get(CONF_SITE_ID, DEFAULT_SITE),
         "ssl_verify": entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
-        "use_proxy_prefix": entry.data.get(CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX),
+        "use_proxy_prefix": entry.data.get(
+            CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX
+        ),
         "timeout": entry.data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
         "instance_hint": "sensor",
     }
+
+    username = entry.data.get(CONF_USERNAME)
+    password = entry.data.get(CONF_PASSWORD)
+    if username:
+        client_kwargs["username"] = username
+    if password:
+        client_kwargs["password"] = password
 
     client_factory = partial(UniFiOSClient, **client_kwargs)
 
