@@ -84,6 +84,11 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 health_by_subsystem[subsystem] = record
             if subsystem in {"wan", "www", "internet"}:
                 wan_health.append(record)
+        if not wan_health and health:
+            # Some controllers omit WAN-specific subsystem entries; keep full
+            # health payload as a fallback so sensors can surface something
+            # meaningful instead of reporting missing data entirely.
+            wan_health = list(health)
 
         alerts_raw = self.client.get_alerts() or []
         alerts = [alert for alert in alerts_raw if not alert.get("archived")]

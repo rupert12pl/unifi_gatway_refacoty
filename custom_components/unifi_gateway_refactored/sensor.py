@@ -1661,7 +1661,7 @@ class UniFiGatewayVpnSiteToSiteSensor(UniFiGatewaySensorBase):
 
     @property
     def icon(self) -> Optional[str]:
-        return _vpn_icon_for_state(self.native_value, self._attr_icon)
+        return _vpn_icon_for_state(self.native_value, self._default_icon)
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
