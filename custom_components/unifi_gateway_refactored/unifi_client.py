@@ -615,8 +615,8 @@ class UniFiOSClient:
             raise APIError(f"Invalid JSON from {url}", url=url)
         return data.get("data") if isinstance(data, dict) and "data" in data else data
 
-    def _vpn_api_bases(self) -> List[str]:
-        """Return API base URLs for VPN endpoint probing."""
+    def _api_bases(self) -> List[str]:
+        """Return primary and v2 API base URLs for the configured site."""
 
         primary = self._base.rstrip("/")
         candidates: List[str] = [primary]
@@ -628,16 +628,24 @@ class UniFiOSClient:
                 candidates.append(v2_candidate)
         return candidates
 
+    def _vpn_api_bases(self) -> List[str]:
+        """Return API base URLs for VPN endpoint probing."""
+
+        return self._api_bases()
+
     @staticmethod
     def _vpn_should_retry_with_alternate_base(err: APIError) -> bool:
         """Return True if the VPN error indicates an alternate endpoint is needed."""
 
         if err.status_code not in (400, 404):
             return False
-        message = str(err).lower()
-        return any(
-            token in message for token in ("api.err.invalidobject", "api.err.notfound")
-        )
+
+        # Some controllers reply with a variety of 400/404 errors when a VPN
+        # endpoint is only exposed via the alternate API base. The response body
+        # differs between versions (e.g. api.err.Invalid, api.err.InvalidObject,
+        # api.err.NotFound), so rely on the status code itself instead of the
+        # message payload to decide whether to try the next base.
+        return True
 
     def _vpn_api_request(
         self,
@@ -757,26 +765,53 @@ class UniFiOSClient:
         return self._get("stat/device")
 
     def get_alerts(self):
-        try:
-            alerts = self._get("list/alert")
-            _LOGGER.debug(
-                "Fetched %s alert records from list/alert",
-                len(alerts) if isinstance(alerts, list) else "unknown",
-            )
-            return alerts
-        except APIError as err:
+        path = "list/alert"
+        bases = self._api_bases()
+        last_error: Optional[APIError] = None
+
+        for index, base in enumerate(bases):
+            url = f"{base}/{path}"
+            try:
+                alerts = self._request(
+                    "GET",
+                    url,
+                    expected_errors=(400, 404),
+                )
+            except APIError as err:
+                last_error = err
+                has_alternate = index < (len(bases) - 1)
+                if has_alternate and err.status_code in (400, 404):
+                    _LOGGER.debug(
+                        "Fetching %s via %s failed (%s); trying alternate API base",
+                        path,
+                        base,
+                        err,
+                    )
+                    continue
+                break
+            else:
+                _LOGGER.debug(
+                    "Fetched %s alert records from %s",
+                    len(alerts) if isinstance(alerts, list) else "unknown",
+                    path,
+                )
+                return alerts
+
+        if last_error is not None:
             _LOGGER.warning(
-                "Fetching list/alert failed (%s); attempting legacy list/alarm endpoint",
-                err,
+                "Fetching %s failed (%s); attempting legacy list/alarm endpoint",
+                path,
+                last_error,
             )
-            legacy_alerts = self._get("list/alarm")
-            _LOGGER.debug(
-                "Fetched %s alert records from list/alarm",
-                len(legacy_alerts)
-                if isinstance(legacy_alerts, list)
-                else "unknown",
-            )
-            return legacy_alerts
+
+        legacy_alerts = self._get("list/alarm")
+        _LOGGER.debug(
+            "Fetched %s alert records from list/alarm",
+            len(legacy_alerts)
+            if isinstance(legacy_alerts, list)
+            else "unknown",
+        )
+        return legacy_alerts
 
     def list_sites(self):
         root = self._base.split("/api/s/")[0] + "/api"
