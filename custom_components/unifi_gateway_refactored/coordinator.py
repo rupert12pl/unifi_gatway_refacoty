@@ -56,16 +56,9 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
     async def _async_update_data(self) -> UniFiGatewayData:
         client = self._client
 
-        vpn_servers: List[Dict[str, Any]] = []
-        vpn_clients: List[Dict[str, Any]] = []
-        vpn_site_to_site: List[Dict[str, Any]] = []
-        vpn_remote_users: List[Dict[str, Any]] = []
-        vpn_fetch_errors: List[str] = []
-
         try:
-            # --- VPN: wymuś natychmiastowy probe (bez cache) ---
-            await self.hass.async_add_executor_job(
-                self._client.get_vpn_peers, 0
+            vpn_peers = await self.hass.async_add_executor_job(
+                client.get_vpn_peers, 0
             )
         except Exception as err:  # pragma: no cover - defensive guard
             _LOGGER.debug(
@@ -73,117 +66,79 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 err,
                 exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
             )
+            vpn_peers = []
 
-        try:
-            vpn_servers = await self.hass.async_add_executor_job(
-                self._client.get_vpn_servers
-            )
-        except Exception as err:  # pragma: no cover - defensive guard
-            vpn_fetch_errors.append(str(err))
-            _LOGGER.warning(
-                "Fetching VPN servers failed during update: %s",
-                err,
-                exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-            )
+        peers_list = list(vpn_peers or [])
+        vpn_servers = list(client.get_vpn_servers(peers_list))
+        vpn_clients = list(client.get_vpn_clients(peers_list))
+        vpn_site_to_site = list(client.get_vpn_site_to_site(peers_list))
+        vpn_remote_users = list(client.get_vpn_remote_users(peers_list))
 
+        vpn_summary_raw: Dict[str, Any]
         try:
-            vpn_clients = await self.hass.async_add_executor_job(
-                self._client.get_vpn_clients
-            )
+            vpn_summary_raw = client.vpn_probe_summary()
         except Exception as err:  # pragma: no cover - defensive guard
-            vpn_fetch_errors.append(str(err))
-            _LOGGER.warning(
-                "Fetching VPN clients failed during update: %s",
-                err,
-                exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-            )
-
-        try:
-            vpn_site_to_site = await self.hass.async_add_executor_job(
-                self._client.get_vpn_site_to_site
-            )
-        except Exception as err:  # pragma: no cover - defensive guard
-            vpn_fetch_errors.append(str(err))
-            _LOGGER.warning(
-                "Fetching VPN site-to-site records failed during update: %s",
-                err,
-                exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-            )
-
-        try:
-            vpn_remote_users = await self.hass.async_add_executor_job(
-                self._client.get_vpn_remote_users
-            )
-        except Exception as err:  # pragma: no cover - defensive guard
-            vpn_fetch_errors.append(str(err))
-            _LOGGER.warning(
-                "Fetching VPN remote users failed during update: %s",
-                err,
-                exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-            )
-
-        try:
-            vpn_summary = await self.hass.async_add_executor_job(
-                self._client.vpn_probe_summary
-            )
-        except Exception as err:  # pragma: no cover - defensive guard
-            vpn_summary = {}
             _LOGGER.debug(
                 "Fetching VPN probe summary failed: %s",
                 err,
                 exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
             )
+            vpn_summary_raw = {}
 
+        vpn_errors_raw: Dict[str, Any]
         try:
-            vpn_errors = await self.hass.async_add_executor_job(
-                self._client.vpn_probe_errors
-            )
+            vpn_errors_raw = client.vpn_probe_errors()
         except Exception as err:  # pragma: no cover - defensive guard
-            vpn_errors = []
             _LOGGER.debug(
                 "Fetching VPN probe errors failed: %s",
                 err,
                 exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
             )
+            vpn_errors_raw = {}
 
-        vpn_servers = list(vpn_servers or [])
-        vpn_clients = list(vpn_clients or [])
-        vpn_site_to_site = list(vpn_site_to_site or [])
-        vpn_remote_users = list(vpn_remote_users or [])
-
-        if isinstance(vpn_errors, tuple):
-            vpn_errors = list(vpn_errors)
-        elif not isinstance(vpn_errors, list):
-            vpn_errors = [vpn_errors] if vpn_errors not in (None, "", [], {}) else []
-
-        if not isinstance(vpn_summary, dict):
-            try:
-                vpn_summary = dict(vpn_summary or {})
-            except (TypeError, ValueError):  # pragma: no cover - defensive guard
-                vpn_summary = {}
-
-        vpn_diag = {
+        vpn_summary = dict(vpn_summary_raw or {})
+        vpn_errors = dict(vpn_errors_raw or {})
+        vpn_counts = {
+            "servers": len(vpn_servers),
+            "clients": len(vpn_clients),
+            "site_to_site": len(vpn_site_to_site),
+            "remote_users": len(vpn_remote_users),
+            "peers": len(peers_list),
+        }
+        api_bases = client.get_vpn_api_bases()
+        vpn_diag: Dict[str, Any] = {
             "summary": vpn_summary,
             "errors": vpn_errors,
             "controller_api": client.get_controller_api_url(),
             "site": client.get_site(),
-            "counts": {
-                "servers": len(vpn_servers),
-                "clients": len(vpn_clients),
-                "site_to_site": len(vpn_site_to_site),
-            },
+            "api_bases": api_bases,
+            "counts": vpn_counts,
         }
 
-        vpn_fetch_error = "; ".join(e for e in vpn_fetch_errors if e)
-        if vpn_fetch_error:
-            vpn_diag["fetch_errors"] = {"exception": vpn_fetch_error}
+        total_peers = vpn_counts["servers"] + vpn_counts["clients"] + vpn_counts["site_to_site"]
+        if total_peers == 0:
+            _LOGGER.warning(
+                "VPN discovery returned no peers. counts=%s, controller_api=%s, site=%s, api_bases=%s, probe_errors=%s",
+                vpn_counts,
+                vpn_diag["controller_api"],
+                vpn_diag["site"],
+                api_bases,
+                vpn_summary.get("probe_errors"),
+            )
+        else:
+            _LOGGER.info(
+                "VPN discovery: servers=%d clients=%d site_to_site=%d summary=%s",
+                vpn_counts["servers"],
+                vpn_counts["clients"],
+                vpn_counts["site_to_site"],
+                vpn_summary,
+            )
 
         _LOGGER.debug(
-            "VPN fetched: servers=%d clients=%d s2s=%d diag=%s",
-            len(vpn_servers),
-            len(vpn_clients),
-            len(vpn_site_to_site),
-            vpn_diag.get("summary"),
+            "VPN probe diagnostics: counts=%s errors=%s summary=%s",
+            vpn_counts,
+            vpn_errors,
+            vpn_summary,
         )
 
         try:
@@ -193,7 +148,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 vpn_clients,
                 vpn_site_to_site,
                 vpn_diag,
-                vpn_fetch_error,
+                None,
                 vpn_remote_users,
                 vpn_summary,
             )
@@ -462,7 +417,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             "diagnostics": dict(vpn_diag),
         }
 
-        _LOGGER.info(
+        _LOGGER.debug(
             "VPN discovery summary for %s (api=%s, site=%s): %s",
             self._client.instance_key(),
             controller_api_url,
