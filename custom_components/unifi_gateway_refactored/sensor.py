@@ -496,6 +496,7 @@ async def async_setup_entry(
 
     _sync_dynamic()
     entry.async_on_unload(coordinator.async_add_listener(_sync_dynamic))
+    # Wymuś pierwszy refresh – po nim _sync_dynamic() dołoży encje per-peer
     await coordinator.async_request_refresh()
 
 
