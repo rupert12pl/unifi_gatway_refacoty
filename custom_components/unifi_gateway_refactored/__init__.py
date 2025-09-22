@@ -53,7 +53,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX
         ),
         "timeout": entry.data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
-        "instance_hint": entry.entry_id,  # stabilizes entity unique_ids across base changes
     }
 
     username = entry.data.get(CONF_USERNAME)
@@ -62,6 +61,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         client_kwargs["username"] = username
     if password:
         client_kwargs["password"] = password
+
+    client_kwargs["instance_hint"] = entry.entry_id
 
     client_factory = partial(UniFiOSClient, **client_kwargs)
 
