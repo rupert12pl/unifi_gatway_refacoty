@@ -128,12 +128,6 @@ async def async_setup_entry(
         vpn_servers = coordinator_data.vpn_servers
         vpn_clients = coordinator_data.vpn_clients
         vpn_site_to_site = getattr(coordinator_data, "vpn_site_to_site", [])
-        if not (vpn_servers or vpn_clients or vpn_site_to_site):
-            _LOGGER.info(
-                "No VPN peers reported by coordinator for %s; subsystem will show DISABLED. Last diagnostics: %s",
-                entry.entry_id,
-                getattr(coordinator_data, "vpn_diagnostics", None),
-            )
         vpn_summary = {
             "servers": len(vpn_servers),
             "clients": len(vpn_clients),
@@ -144,6 +138,12 @@ async def async_setup_entry(
             entry.entry_id,
             vpn_summary,
         )
+        if not (vpn_servers or vpn_clients or vpn_site_to_site):
+            _LOGGER.info(
+                "No VPN peers for entry %s; subsystem will show DISABLED. Diagnostics=%s",
+                entry.entry_id,
+                getattr(coordinator_data, "vpn_diagnostics", None),
+            )
         diagnostics = getattr(coordinator_data, "vpn_diagnostics", None)
         if diagnostics:
             _LOGGER.debug(
