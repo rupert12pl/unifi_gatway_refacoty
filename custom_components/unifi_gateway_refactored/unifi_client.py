@@ -218,6 +218,169 @@ _CLIENT_ROLE_KEYS = {
 }
 
 
+def _coerce_int(value: Any) -> Optional[int]:
+    """Best-effort conversion of controller payload values to int."""
+
+    if value in (None, "", [], {}):
+        return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        try:
+            return int(float(cleaned))
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_count(value: Any) -> Optional[int]:
+    """Return the numeric count for client/session containers."""
+
+    if value in (None, ""):
+        return None
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, dict):
+        for key in (
+            "client_count",
+            "connected_clients",
+            "connected_count",
+            "connected",
+            "active",
+            "num_clients",
+            "num_client",
+            "num_users",
+            "num_active",
+            "count",
+            "value",
+        ):
+            count = _coerce_int(value.get(key))
+            if count is not None:
+                return count
+        return None
+    return _coerce_int(value)
+
+
+def _first_value(data: Dict[str, Any], *keys: str) -> Optional[Any]:
+    """Return the first non-empty value from ``data`` for ``keys``."""
+
+    for key in keys:
+        value = data.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                return cleaned
+            continue
+        if isinstance(value, list):
+            flattened = [
+                str(item).strip()
+                for item in value
+                if item not in (None, "", [], {})
+            ]
+            if flattened:
+                return ", ".join(flattened)
+            continue
+        return value
+    return None
+
+
+def _normalize_state_value(value: Any) -> Optional[str]:
+    """Convert controller state fields to CONNECTED/DISCONNECTED/ERROR tokens."""
+
+    if value in (None, "", [], {}):
+        return None
+    if isinstance(value, bool):
+        return "CONNECTED" if value else "DISCONNECTED"
+    if isinstance(value, (int, float)):
+        return "CONNECTED" if value else "DISCONNECTED"
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if not token:
+            return None
+        mapping = {
+            "connected": "CONNECTED",
+            "up": "CONNECTED",
+            "online": "CONNECTED",
+            "ok": "CONNECTED",
+            "established": "CONNECTED",
+            "ready": "CONNECTED",
+            "disconnected": "DISCONNECTED",
+            "down": "DISCONNECTED",
+            "offline": "DISCONNECTED",
+            "inactive": "DISCONNECTED",
+            "not_connected": "DISCONNECTED",
+            "error": "ERROR",
+            "failed": "ERROR",
+            "fail": "ERROR",
+            "critical": "ERROR",
+        }
+        if token in mapping:
+            return mapping[token]
+        if any(part in token for part in ("error", "fail", "fault")):
+            return "ERROR"
+        if any(part in token for part in ("connect", "online", "establish", "up")):
+            return "CONNECTED"
+        if any(part in token for part in ("discon", "down", "offline", "inactive")):
+            return "DISCONNECTED"
+        return token.upper()
+    return str(value).upper()
+
+
+def _peer_clients(record: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    """Return embedded client/session payloads if present."""
+
+    for key in (
+        "clients",
+        "sessions",
+        "active_sessions",
+        "connected_clients",
+        "users",
+        "connected_users",
+    ):
+        value = record.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            nested = value.get("data") or value.get("items") or value.get("list")
+            if isinstance(nested, list):
+                return nested
+    return None
+
+
+def _derive_peer_state(record: Dict[str, Any], client_count: Optional[int]) -> Optional[str]:
+    """Determine the normalized connection state for a VPN peer."""
+
+    for key in (
+        "_ha_state",
+        "state",
+        "status",
+        "connection_state",
+        "connection_status",
+    ):
+        state = _normalize_state_value(record.get(key))
+        if state:
+            return state
+
+    for key in ("connected", "is_connected", "up", "enabled_state"):
+        normalized = _normalize_state_value(record.get(key))
+        if normalized:
+            return normalized
+
+    if record.get("error") or record.get("error_code") or record.get("last_error"):
+        return "ERROR"
+
+    if client_count is not None:
+        return "CONNECTED" if client_count > 0 else "DISCONNECTED"
+
+    return None
+
 def _classify_vpn_record(
     record: Dict[str, Any], role_hint: Optional[str] = None
 ) -> Tuple[str, str, Optional[str]]:
@@ -1187,6 +1350,151 @@ class UniFiOSClient:
                 filtered.append(peer)
         return filtered
 
+    @staticmethod
+    def _finalize_vpn_peer(peer: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich peer metadata with normalized attributes and derived values."""
+
+        normalized = dict(peer)
+
+        name = _first_value(
+            normalized,
+            "vpn_name",
+            "name",
+            "peer_name",
+            "display_name",
+            "description",
+            "remote_user",
+            "user",
+            "username",
+            "connection_name",
+            "profile_name",
+            "profile",
+        )
+        if name:
+            normalized.setdefault("vpn_name", name)
+            normalized.setdefault("name", name)
+
+        interface = _first_value(normalized, "interface", "ifname")
+        if interface:
+            normalized.setdefault("interface", interface)
+
+        public_ip = _first_value(
+            normalized,
+            "public_ip",
+            "wan_ip",
+            "gateway",
+            "server_addr",
+            "server_address",
+            "peer_addr",
+            "peer_ip",
+            "remote_ip",
+        )
+        if public_ip:
+            normalized.setdefault("public_ip", public_ip)
+
+        tunnel = _first_value(
+            normalized,
+            "tunnel_subnet",
+            "tunnel_network",
+            "client_subnet",
+            "ip_subnet",
+            "subnet",
+            "network",
+        )
+        if not tunnel:
+            allowed = normalized.get("allowed_ips")
+            if isinstance(allowed, list):
+                flattened = [
+                    str(item).strip()
+                    for item in allowed
+                    if item not in (None, "", [], {})
+                ]
+                if flattened:
+                    tunnel = ", ".join(flattened)
+        if not tunnel:
+            client_networks = normalized.get("client_networks")
+            if isinstance(client_networks, list):
+                flattened = [
+                    str(item).strip()
+                    for item in client_networks
+                    if item not in (None, "", [], {})
+                ]
+                if flattened:
+                    tunnel = ", ".join(flattened)
+        if tunnel:
+            normalized.setdefault("tunnel_subnet", tunnel)
+
+        clients = _peer_clients(normalized)
+        if clients is not None and not normalized.get("clients"):
+            normalized["clients"] = clients
+
+        client_count: Optional[int] = None
+        for key in (
+            "client_count",
+            "connected_clients",
+            "sessions",
+            "active_sessions",
+            "clients",
+            "users",
+            "num_clients",
+            "num_users",
+        ):
+            candidate = normalized.get(key)
+            client_count = _extract_count(candidate)
+            if client_count is not None:
+                break
+        if client_count is None:
+            client_count = 0
+        normalized["client_count"] = client_count
+
+        state = _derive_peer_state(normalized, client_count)
+        if state:
+            normalized["_ha_state"] = state
+            normalized.setdefault("state", state)
+
+        last_change = _first_value(
+            normalized,
+            "last_state_change",
+            "last_connected",
+            "last_connection",
+            "last_activity",
+            "last_contact",
+            "last_handshake",
+            "connected_since",
+            "connected_at",
+            "last_seen",
+        )
+        if last_change:
+            normalized.setdefault("last_state_change", last_change)
+
+        for key in (
+            "rx_bytes",
+            "bytes_rx",
+            "bytes_in",
+            "rx",
+            "received_bytes",
+            "receive_bytes",
+        ):
+            value = _coerce_int(normalized.get(key))
+            if value is not None:
+                normalized.setdefault("rx_bytes", value)
+                break
+
+        for key in (
+            "tx_bytes",
+            "bytes_tx",
+            "bytes_out",
+            "tx",
+            "sent_bytes",
+            "transmit_bytes",
+        ):
+            value = _coerce_int(normalized.get(key))
+            if value is not None:
+                normalized.setdefault("tx_bytes", value)
+                break
+
+        return normalized
+
     def get_vpn_peers(self, cache_sec: int = 5) -> List[Dict[str, Any]]:
         """Return normalized VPN peer records from supported controller endpoints."""
 
@@ -1352,8 +1660,9 @@ class UniFiOSClient:
                 stats,
             )
 
-        self._vpn_cache = (now, peers)
-        return peers
+        finalized = [self._finalize_vpn_peer(peer) for peer in peers]
+        self._vpn_cache = (now, finalized)
+        return finalized
 
     def _legacy_vpn_peer_sources(self) -> Iterable[Tuple[str, List[Dict[str, Any]]]]:
         """Yield raw VPN peer lists using the legacy discovery approach."""

@@ -285,6 +285,111 @@ def _extract_client_count(value: Any) -> Optional[int]:
     return _coerce_int(value)
 
 
+def _normalize_vpn_state_token(value: Any) -> Optional[str]:
+    if value in (None, "", [], {}):
+        return None
+    if isinstance(value, bool):
+        return "CONNECTED" if value else "DISCONNECTED"
+    if isinstance(value, (int, float)):
+        return "CONNECTED" if value else "DISCONNECTED"
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if not token:
+            return None
+        mapping = {
+            "connected": "CONNECTED",
+            "up": "CONNECTED",
+            "online": "CONNECTED",
+            "ok": "CONNECTED",
+            "ready": "CONNECTED",
+            "established": "CONNECTED",
+            "active": "CONNECTED",
+            "disconnected": "DISCONNECTED",
+            "down": "DISCONNECTED",
+            "offline": "DISCONNECTED",
+            "inactive": "DISCONNECTED",
+            "not_connected": "DISCONNECTED",
+            "error": "ERROR",
+            "failed": "ERROR",
+            "fail": "ERROR",
+            "critical": "ERROR",
+        }
+        if token in mapping:
+            return mapping[token]
+        if any(part in token for part in ("error", "fail", "fault")):
+            return "ERROR"
+        if any(part in token for part in ("connect", "online", "establish", "up")):
+            return "CONNECTED"
+        if any(part in token for part in ("discon", "down", "offline", "inactive")):
+            return "DISCONNECTED"
+        return token.upper()
+    return str(value).upper()
+
+
+def _vpn_peer_client_count(
+    record: Dict[str, Any], matches: Iterable[Dict[str, Any]]
+) -> Optional[int]:
+    count: Optional[int] = None
+    for key in (
+        "client_count",
+        "clients",
+        "sessions",
+        "active_sessions",
+        "connected_clients",
+        "users",
+        "num_clients",
+        "num_users",
+    ):
+        candidate = _extract_client_count(record.get(key))
+        if candidate is not None:
+            count = candidate
+            break
+    match_list = list(matches)
+    if match_list:
+        count = max(count or 0, len(match_list))
+    return count
+
+
+def _vpn_peer_state(
+    record: Dict[str, Any], matches: Iterable[Dict[str, Any]]
+) -> Optional[str]:
+    for key in (
+        "_ha_state",
+        "state",
+        "status",
+        "connection_state",
+        "connection_status",
+    ):
+        state = _normalize_vpn_state_token(record.get(key))
+        if state:
+            return state
+
+    for key in ("connected", "is_connected", "up", "enabled_state"):
+        state = _normalize_vpn_state_token(record.get(key))
+        if state:
+            return state
+
+    if record.get("error") or record.get("error_code") or record.get("last_error"):
+        return "ERROR"
+
+    count = _vpn_peer_client_count(record, matches)
+    if count is not None:
+        return "CONNECTED" if count > 0 else "DISCONNECTED"
+
+    return None
+
+
+def _vpn_icon_for_state(state: Optional[str], fallback: Optional[str]) -> Optional[str]:
+    normalized = (state or "").upper()
+    if normalized == "CONNECTED":
+        return "mdi:check-circle"
+    if normalized == "ERROR":
+        return "mdi:alert-circle-outline"
+    if normalized:
+        return "mdi:close-circle-outline"
+    return fallback
+
+
 def _normalize_vpn_label(value: Any) -> Optional[str]:
     if value in (None, "", [], {}):
         return None
@@ -1108,8 +1213,6 @@ class UniFiGatewayWlanClientsSensor(UniFiGatewaySensorBase):
 
 class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
     _attr_icon = "mdi:account-lock"
-    _attr_native_unit_of_measurement = "clients"
-    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(
         self,
@@ -1148,71 +1251,58 @@ class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
         return None
 
     @property
-    def native_value(self) -> Optional[int]:
+    def native_value(self) -> Optional[str]:
         record = self._record()
-        if not record and not self.coordinator.data:
+        if not record:
             return None
-        record = record or {}
-        for key in (
-            "num_clients",
-            "connected_clients",
-            "client_count",
-            "clients",
-        ):
-            count = _extract_client_count(record.get(key))
-            if count is not None:
-                if count > 0:
-                    return count
-                fallback_matches = self._matched_clients(record)
-                if fallback_matches:
-                    return len(fallback_matches)
-                return count
-        fallback_matches = self._matched_clients(record)
-        if fallback_matches:
-            return len(fallback_matches)
-        return 0 if record else None
+        matches = self._matched_clients(record)
+        state = _vpn_peer_state(record, matches)
+        if state:
+            return state
+        return "DISCONNECTED"
+
+    @property
+    def icon(self) -> Optional[str]:
+        return _vpn_icon_for_state(self.native_value, self._default_icon)
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         record = self._record() or {}
         matches = self._matched_clients(record)
-        match_count = len(matches)
         clients = record.get("clients")
-        active_clients = _extract_client_count(clients)
-        if active_clients is None:
-            for key in (
-                "num_clients",
-                "connected_clients",
-                "client_count",
-            ):
-                active_clients = _extract_client_count(record.get(key))
-                if active_clients is not None:
-                    break
-        if active_clients is None:
-            active_clients = 0
-        if match_count > active_clients:
-            active_clients = match_count
+        client_count = _vpn_peer_client_count(record, matches) or 0
+        state = self.native_value
         attrs = {
             "role": record.get("_ha_role") or "server",
             "category": record.get("_ha_category"),
             "template": record.get("template")
             or record.get("_ha_template")
             or record.get("profile"),
+            "vpn_name": record.get("vpn_name")
+            or record.get("name")
+            or record.get("peer_name"),
             "vpn_type": record.get("vpn_type") or record.get("type"),
-            "vpn_types": record.get("vpn_type") or record.get("type"),
             "interface": record.get("interface") or record.get("ifname"),
+            "public_ip": record.get("public_ip")
+            or record.get("gateway")
+            or record.get("wan_ip"),
+            "tunnel_subnet": record.get("tunnel_subnet")
+            or record.get("tunnel_network")
+            or record.get("client_subnet")
+            or record.get("subnet"),
             "local_ip": record.get("local_ip") or record.get("server_ip"),
             "gateway_ip": record.get("gateway_ip")
-            or record.get("wan_ip")
+            or record.get("server_addr")
             or record.get("public_ip"),
-            "subnet": record.get("subnet")
-            or record.get("tunnel_network")
-            or record.get("network"),
             "port": record.get("port")
             or record.get("listen_port")
             or record.get("server_port"),
-            "active_clients": active_clients,
+            "client_count": client_count,
             "status": record.get("status") or record.get("state"),
+            "state": state,
+            "last_state_change": record.get("last_state_change"),
+            "rx_bytes": _coerce_int(record.get("rx_bytes")),
+            "tx_bytes": _coerce_int(record.get("tx_bytes")),
         }
         if isinstance(clients, (list, dict)):
             attrs["clients"] = clients
@@ -1228,6 +1318,7 @@ class UniFiGatewayVpnServerSensor(UniFiGatewaySensorBase):
                 }
                 for client in matches
             ]
+            attrs["client_count"] = max(client_count, len(matches))
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -1290,36 +1381,42 @@ class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
             if matches:
                 return "CONNECTED"
             return None
-        if isinstance(record.get("connected"), bool):
-            return "CONNECTED" if record.get("connected") else "DISCONNECTED"
-        status = record.get("status") or record.get("state")
-        if isinstance(status, str):
-            return status.upper()
         matches = self._matched_clients(record)
+        state = _vpn_peer_state(record, matches)
+        if state:
+            return state
         if matches:
             return "CONNECTED"
-        return status
+        return "DISCONNECTED"
 
     @property
     def icon(self) -> Optional[str]:
-        status = str(self.native_value or "").upper()
-        if status in {"CONNECTED", "UP", "ONLINE", "OK"}:
-            return "mdi:check-circle"
-        if status in {"DOWN", "DISCONNECTED", "ERROR", "FAIL"}:
-            return "mdi:alert-circle"
-        return self._attr_icon
+        return _vpn_icon_for_state(self.native_value, self._attr_icon)
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         record = self._record() or {}
         matches = self._matched_clients(record)
+        client_count = _vpn_peer_client_count(record, matches) or 0
+        state = self.native_value
         attrs = {
             "role": record.get("_ha_role") or "client",
             "category": record.get("_ha_category"),
             "template": record.get("template")
             or record.get("_ha_template")
             or record.get("profile"),
+            "vpn_name": record.get("vpn_name")
+            or record.get("name")
+            or record.get("peer_name"),
             "vpn_type": record.get("vpn_type") or record.get("type"),
+            "interface": record.get("interface") or record.get("ifname"),
+            "public_ip": record.get("public_ip")
+            or record.get("gateway")
+            or record.get("server_addr"),
+            "tunnel_subnet": record.get("tunnel_subnet")
+            or record.get("tunnel_network")
+            or record.get("client_subnet")
+            or record.get("subnet"),
             "server_addr": record.get("server_addr")
             or record.get("server_address")
             or record.get("gateway"),
@@ -1329,16 +1426,23 @@ class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
             "remote_ip": record.get("remote_ip"),
             "peer_addr": record.get("peer_addr"),
             "tunnel_ip": record.get("tunnel_ip") or record.get("local_ip"),
-            "interface": record.get("interface") or record.get("ifname"),
             "port": record.get("port")
             or record.get("server_port")
             or record.get("remote_port"),
+            "client_count": client_count,
             "status": record.get("status") or record.get("state"),
+            "state": state,
+            "last_state_change": record.get("last_state_change"),
+            "rx_bytes": _coerce_int(record.get("rx_bytes")),
+            "tx_bytes": _coerce_int(record.get("tx_bytes")),
         }
         for key in ("subnet", "tunnel_network", "client_subnet"):
             if record.get(key):
                 attrs["subnet"] = record.get(key)
                 break
+        clients = record.get("clients")
+        if isinstance(clients, (list, dict)):
+            attrs["clients"] = clients
         if matches:
             attrs["matched_clients"] = [
                 {
@@ -1351,7 +1455,7 @@ class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
                 }
                 for client in matches
             ]
-            attrs["active_clients"] = len(matches)
+            attrs["client_count"] = max(client_count, len(matches))
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -1411,25 +1515,20 @@ class UniFiGatewayVpnSiteToSiteSensor(UniFiGatewaySensorBase):
         record = self._record()
         if not record:
             return None
-        if isinstance(record.get("connected"), bool):
-            return "CONNECTED" if record.get("connected") else "DISCONNECTED"
-        status = record.get("status") or record.get("state")
-        if isinstance(status, str):
-            return status.upper()
-        return status
+        state = _vpn_peer_state(record, [])
+        if state:
+            return state
+        return "DISCONNECTED"
 
     @property
     def icon(self) -> Optional[str]:
-        status = str(self.native_value or "").upper()
-        if status in {"CONNECTED", "UP", "ONLINE", "OK"}:
-            return "mdi:lan-connect"
-        if status in {"DOWN", "DISCONNECTED", "ERROR", "FAIL"}:
-            return "mdi:lan-disconnect"
-        return self._attr_icon
+        return _vpn_icon_for_state(self.native_value, self._attr_icon)
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         record = self._record() or {}
+        state = self.native_value
+        client_count = _vpn_peer_client_count(record, []) or 0
         attrs = {
             "role": record.get("_ha_role") or "site_to_site",
             "category": record.get("_ha_category"),
@@ -1438,6 +1537,16 @@ class UniFiGatewayVpnSiteToSiteSensor(UniFiGatewaySensorBase):
             or record.get("profile"),
             "vpn_type": record.get("vpn_type") or record.get("type"),
             "interface": record.get("interface") or record.get("ifname"),
+            "vpn_name": record.get("vpn_name")
+            or record.get("name")
+            or record.get("peer_name"),
+            "public_ip": record.get("public_ip")
+            or record.get("gateway")
+            or record.get("server_addr"),
+            "tunnel_subnet": record.get("tunnel_subnet")
+            or record.get("tunnel_network")
+            or record.get("client_subnet")
+            or record.get("subnet"),
             "local_ip": record.get("local_ip")
             or record.get("server_ip")
             or record.get("gateway"),
@@ -1449,7 +1558,12 @@ class UniFiGatewayVpnSiteToSiteSensor(UniFiGatewaySensorBase):
             or record.get("peer_addr")
             or record.get("server_addr"),
             "tunnel_ip": record.get("tunnel_ip"),
+            "client_count": client_count,
             "status": record.get("status") or record.get("state"),
+            "state": state,
+            "last_state_change": record.get("last_state_change"),
+            "rx_bytes": _coerce_int(record.get("rx_bytes")),
+            "tx_bytes": _coerce_int(record.get("tx_bytes")),
             "uptime": record.get("uptime")
             or record.get("uptime_seconds")
             or record.get("uptime_display"),
