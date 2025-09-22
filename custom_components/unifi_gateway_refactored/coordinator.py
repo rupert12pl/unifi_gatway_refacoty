@@ -35,6 +35,7 @@ class UniFiGatewayData:
     vpn_clients: List[Dict[str, Any]]
     vpn_site_to_site: List[Dict[str, Any]]
     speedtest: Optional[Dict[str, Any]]
+    vpn_diagnostics: Dict[str, Any]
 
 
 class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData]):
@@ -140,11 +141,40 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         _LOGGER.debug("Retrieved %s WLAN configurations", len(wlans))
         clients = self.client.get_clients() or []
         _LOGGER.debug("Retrieved %s clients", len(clients))
-        vpn_servers = self.client.get_vpn_servers() or []
-        vpn_clients = self.client.get_vpn_clients() or []
-        vpn_site_to_site = self.client.get_vpn_site_to_site() or []
+        vpn_servers: List[Dict[str, Any]] = []
+        vpn_clients: List[Dict[str, Any]] = []
+        vpn_site_to_site: List[Dict[str, Any]] = []
+        vpn_fetch_errors: Dict[str, str] = {}
+
+        def _capture_error(kind: str, err: Exception) -> None:
+            message = str(err)
+            vpn_fetch_errors[kind] = message
+            _LOGGER.debug(
+                "Fetching VPN %s records failed for instance %s: %s",
+                kind,
+                self.client.instance_key(),
+                message,
+                exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
+            )
+
+        try:
+            vpn_servers = self.client.get_vpn_servers() or []
+        except (APIError, ConnectivityError) as err:
+            _capture_error("servers", err)
+
+        try:
+            vpn_clients = self.client.get_vpn_clients() or []
+        except (APIError, ConnectivityError) as err:
+            _capture_error("clients", err)
+
+        try:
+            vpn_site_to_site = self.client.get_vpn_site_to_site() or []
+        except (APIError, ConnectivityError) as err:
+            _capture_error("site_to_site", err)
+
         _LOGGER.debug(
-            "VPN records: servers=%s clients=%s site_to_site=%s",
+            "VPN records for instance %s: servers=%s clients=%s site_to_site=%s",
+            self.client.instance_key(),
             len(vpn_servers),
             len(vpn_clients),
             len(vpn_site_to_site),
@@ -165,6 +195,18 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         except APIError as err:
             _LOGGER.debug("Speedtest trigger failed: %s", err)
 
+        vpn_diagnostics: Dict[str, Any] = {
+            "counts": {
+                "servers": len(vpn_servers),
+                "clients": len(vpn_clients),
+                "site_to_site": len(vpn_site_to_site),
+            },
+            "probe_errors": self.client.vpn_probe_errors(),
+            "probe_summary": self.client.vpn_probe_summary(),
+        }
+        if vpn_fetch_errors:
+            vpn_diagnostics["fetch_errors"] = vpn_fetch_errors
+
         data = UniFiGatewayData(
             controller=controller_info,
             health=health,
@@ -182,6 +224,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             vpn_clients=vpn_clients,
             vpn_site_to_site=vpn_site_to_site,
             speedtest=speedtest,
+            vpn_diagnostics=vpn_diagnostics,
         )
         _LOGGER.debug(
             "Completed data fetch: health=%s alerts=%s devices=%s",

@@ -648,6 +648,8 @@ class UniFiOSClient:
         self._ensure_connected()
         self._vpn_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
         self._vpn_expected_errors_reported = False
+        self._vpn_last_probe_errors: Dict[str, str] = {}
+        self._vpn_last_probe_summary: Dict[str, Any] = {}
 
     # ----------- auth / base detection -----------
     def _login(self, host: str, port: int, ssl_verify: bool, timeout: int):
@@ -1500,7 +1502,16 @@ class UniFiOSClient:
 
         now = time.time()
         if self._vpn_cache and (now - self._vpn_cache[0]) < cache_sec:
-            return self._vpn_cache[1]
+            cached = self._vpn_cache[1]
+            self._vpn_last_probe_errors = {}
+            self._vpn_last_probe_summary = {
+                "cache_hit": True,
+                "peers_collected": len(cached),
+                "probes_attempted": 0,
+                "probes_succeeded": 0,
+                "fallback_used": False,
+            }
+            return cached
 
         probes: List[Tuple[str, Optional[str]]] = [
             ("internet/vpn", None),
@@ -1522,6 +1533,9 @@ class UniFiOSClient:
         aggregated: Dict[str, Dict[str, Any]] = {}
         probe_errors: Dict[str, Exception] = {}
         total_candidates = 0
+        fallback_sources: List[str] = []
+        fallback_candidates = 0
+        fallback_used = False
 
         def _fetch_vpn_payload(path: str) -> Any:
             return self._vpn_api_request(
@@ -1587,8 +1601,9 @@ class UniFiOSClient:
                 "Attempting legacy VPN peer discovery fallback after %s probes",
                 len(probes),
             )
-            fallback_sources: List[str] = []
+            fallback_sources = []
             fallback_candidates = 0
+            fallback_used = True
             for source_path, records in self._legacy_vpn_peer_sources():
                 fallback_sources.append(source_path)
                 normalized = self._normalize_vpn_payload(
@@ -1662,6 +1677,28 @@ class UniFiOSClient:
 
         finalized = [self._finalize_vpn_peer(peer) for peer in peers]
         self._vpn_cache = (now, finalized)
+
+        self._vpn_last_probe_errors = {
+            path: str(err) for path, err in probe_errors.items()
+        }
+        summary: Dict[str, Any] = {
+            "cache_hit": False,
+            "probes_attempted": len(probes),
+            "probes_succeeded": len(probes) - len(probe_errors),
+            "total_candidates": total_candidates,
+            "peers_collected": len(finalized),
+            "fallback_used": fallback_used,
+        }
+        if fallback_sources:
+            summary["fallback_sources"] = fallback_sources
+            summary["fallback_candidates"] = fallback_candidates
+        if probe_errors:
+            summary["probe_errors"] = {
+                path: getattr(err, "status_code", None)
+                for path, err in probe_errors.items()
+            }
+        self._vpn_last_probe_summary = summary
+
         return finalized
 
     def _legacy_vpn_peer_sources(self) -> Iterable[Tuple[str, List[Dict[str, Any]]]]:
@@ -1812,6 +1849,16 @@ class UniFiOSClient:
         if not tunnels:
             _LOGGER.info("Controller reported no site-to-site VPN records")
         return tunnels
+
+    def vpn_probe_errors(self) -> Dict[str, str]:
+        """Return the most recent VPN probe error summary."""
+
+        return dict(self._vpn_last_probe_errors)
+
+    def vpn_probe_summary(self) -> Dict[str, Any]:
+        """Return statistics about the most recent VPN probe run."""
+
+        return dict(self._vpn_last_probe_summary)
 
     def instance_key(self) -> str:
         return self._iid
