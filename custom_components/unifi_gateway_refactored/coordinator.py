@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import timedelta
-import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -65,6 +64,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         vpn_fetch_errors: List[str] = []
 
         try:
+            # --- VPN: wymuś natychmiastowy probe (bez cache) ---
             await hass.async_add_executor_job(client.get_vpn_peers, 0)
         except Exception as err:  # pragma: no cover - defensive guard
             _LOGGER.debug(
@@ -98,6 +98,20 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             vpn_clients = []
 
         try:
+            vpn_site_to_site = await hass.async_add_executor_job(
+                client.get_vpn_site_to_site
+            )
+            vpn_site_to_site = vpn_site_to_site or []
+        except Exception as err:  # pragma: no cover - defensive guard
+            vpn_fetch_errors.append(str(err))
+            _LOGGER.warning(
+                "Fetching VPN site-to-site records failed during update: %s",
+                err,
+                exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
+            )
+            vpn_site_to_site = []
+
+        try:
             vpn_remote_users = await hass.async_add_executor_job(
                 client.get_vpn_remote_users
             )
@@ -112,23 +126,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             vpn_remote_users = []
 
         try:
-            vpn_site_to_site = await hass.async_add_executor_job(
-                client.get_vpn_site_to_site_tunnels
-            )
-            vpn_site_to_site = vpn_site_to_site or []
-        except Exception as err:  # pragma: no cover - defensive guard
-            vpn_fetch_errors.append(str(err))
-            _LOGGER.warning(
-                "Fetching VPN site-to-site records failed during update: %s",
-                err,
-                exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-            )
-            vpn_site_to_site = []
-
-        try:
-            vpn_summary = await hass.async_add_executor_job(
-                client.get_last_vpn_probe_summary
-            )
+            vpn_summary = await hass.async_add_executor_job(client.vpn_probe_summary)
         except Exception as err:  # pragma: no cover - defensive guard
             vpn_summary = {}
             _LOGGER.debug(
@@ -136,13 +134,6 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 err,
                 exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
             )
-
-        _LOGGER.debug(
-            "VPN fetched: remote_users=%d, s2s=%d, diag=%s",
-            len(vpn_remote_users),
-            len(vpn_site_to_site),
-            json.dumps(vpn_summary),
-        )
 
         try:
             vpn_errors = await hass.async_add_executor_job(client.vpn_probe_errors)
@@ -159,7 +150,20 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             "errors": vpn_errors,
             "controller_api": client.get_controller_api_url(),
             "site": client.get_site(),
+            "counts": {
+                "servers": len(vpn_servers),
+                "clients": len(vpn_clients),
+                "site_to_site": len(vpn_site_to_site),
+            },
         }
+
+        _LOGGER.debug(
+            "VPN fetched: servers=%d clients=%d s2s=%d diag=%s",
+            len(vpn_servers),
+            len(vpn_clients),
+            len(vpn_site_to_site),
+            vpn_diag.get("summary"),
+        )
 
         vpn_fetch_error = "; ".join(e for e in vpn_fetch_errors if e)
         if not vpn_fetch_error:
@@ -417,7 +421,14 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             vpn_diag["errors"] = [stripped] if stripped else []
         elif errors_value in (None, "", {}):
             vpn_diag["errors"] = []
-        vpn_diag.setdefault("counts", vpn_counts)
+        counts_value = vpn_diag.get("counts")
+        if isinstance(counts_value, dict):
+            counts_value.setdefault("servers", vpn_counts["servers"])
+            counts_value.setdefault("clients", vpn_counts["clients"])
+            counts_value.setdefault("site_to_site", vpn_counts["site_to_site"])
+            counts_value.setdefault("remote_users", vpn_counts["remote_users"])
+        else:
+            vpn_diag["counts"] = vpn_counts
         if vpn_fetch_error:
             fetch_errors = vpn_diag.setdefault("fetch_errors", {})
             if isinstance(fetch_errors, dict):
