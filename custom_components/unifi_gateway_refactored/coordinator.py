@@ -19,33 +19,33 @@ _LOGGER = logging.getLogger(__name__)
 class UniFiGatewayData:
     """Container describing the data returned by the coordinator."""
 
-    controller: Dict[str, Any]
-    health: List[Dict[str, Any]] = field(default_factory=list)
-    health_by_subsystem: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    wan_health: List[Dict[str, Any]] = field(default_factory=list)
-    alerts: List[Dict[str, Any]] = field(default_factory=list)
-    devices: List[Dict[str, Any]] = field(default_factory=list)
-    wan_links: List[Dict[str, Any]] = field(default_factory=list)
-    networks: List[Dict[str, Any]] = field(default_factory=list)
-    lan_networks: List[Dict[str, Any]] = field(default_factory=list)
-    network_map: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    wlans: List[Dict[str, Any]] = field(default_factory=list)
-    clients: List[Dict[str, Any]] = field(default_factory=list)
-    vpn_servers: List[Dict[str, Any]] = field(default_factory=list)
-    vpn_clients: List[Dict[str, Any]] = field(default_factory=list)
-    vpn_site_to_site: List[Dict[str, Any]] = field(default_factory=list)
-    vpn_remote_users: List[Dict[str, Any]] = field(default_factory=list)
-    vpn_summary: Dict[str, Any] = field(default_factory=dict)
-    speedtest: Optional[Dict[str, Any]] = None
-    vpn_diagnostics: Dict[str, Any] = field(default_factory=dict)
-    vpn: Dict[str, Any] = field(default_factory=dict)
+    controller: dict[str, Any]
+    health: list[dict[str, Any]] = field(default_factory=list)
+    health_by_subsystem: dict[str, dict[str, Any]] = field(default_factory=dict)
+    wan_health: list[dict[str, Any]] = field(default_factory=list)
+    alerts: list[dict[str, Any]] = field(default_factory=list)
+    devices: list[dict[str, Any]] = field(default_factory=list)
+    wan_links: list[dict[str, Any]] = field(default_factory=list)
+    networks: list[dict[str, Any]] = field(default_factory=list)
+    lan_networks: list[dict[str, Any]] = field(default_factory=list)
+    network_map: dict[str, dict[str, Any]] = field(default_factory=dict)
+    wlans: list[dict[str, Any]] = field(default_factory=list)
+    clients: list[dict[str, Any]] = field(default_factory=list)
+    vpn_servers: list[dict[str, Any]] = field(default_factory=list)
+    vpn_clients: list[dict[str, Any]] = field(default_factory=list)
+    vpn_site_to_site: list[dict[str, Any]] = field(default_factory=list)
+    vpn_remote_users: list[dict[str, Any]] = field(default_factory=list)
+    vpn_summary: dict[str, Any] = field(default_factory=dict)
+    speedtest: Optional[dict[str, Any]] = None
+    vpn_diagnostics: dict[str, Any] = field(default_factory=dict)
+    vpn: dict[str, Any] = field(default_factory=dict)
 
 
 class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData]):
     """Coordinate UniFi Gateway data retrieval for Home Assistant entities."""
 
     def __init__(self, hass: HomeAssistant, client: UniFiOSClient) -> None:
-        self.client = client
+        self._client = client
         super().__init__(
             hass,
             logger=_LOGGER,
@@ -54,8 +54,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         )
 
     async def _async_update_data(self) -> UniFiGatewayData:
-        client = self.client
-        hass = self.hass
+        client = self._client
 
         vpn_servers: List[Dict[str, Any]] = []
         vpn_clients: List[Dict[str, Any]] = []
@@ -65,7 +64,9 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
 
         try:
             # --- VPN: wymuś natychmiastowy probe (bez cache) ---
-            await hass.async_add_executor_job(client.get_vpn_peers, 0)
+            await self.hass.async_add_executor_job(
+                self._client.get_vpn_peers, 0
+            )
         except Exception as err:  # pragma: no cover - defensive guard
             _LOGGER.debug(
                 "Forcing VPN peer probe failed: %s",
@@ -74,8 +75,9 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             )
 
         try:
-            vpn_servers = await hass.async_add_executor_job(client.get_vpn_servers)
-            vpn_servers = vpn_servers or []
+            vpn_servers = await self.hass.async_add_executor_job(
+                self._client.get_vpn_servers
+            )
         except Exception as err:  # pragma: no cover - defensive guard
             vpn_fetch_errors.append(str(err))
             _LOGGER.warning(
@@ -83,11 +85,11 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 err,
                 exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
             )
-            vpn_servers = []
 
         try:
-            vpn_clients = await hass.async_add_executor_job(client.get_vpn_clients)
-            vpn_clients = vpn_clients or []
+            vpn_clients = await self.hass.async_add_executor_job(
+                self._client.get_vpn_clients
+            )
         except Exception as err:  # pragma: no cover - defensive guard
             vpn_fetch_errors.append(str(err))
             _LOGGER.warning(
@@ -95,13 +97,11 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 err,
                 exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
             )
-            vpn_clients = []
 
         try:
-            vpn_site_to_site = await hass.async_add_executor_job(
-                client.get_vpn_site_to_site
+            vpn_site_to_site = await self.hass.async_add_executor_job(
+                self._client.get_vpn_site_to_site
             )
-            vpn_site_to_site = vpn_site_to_site or []
         except Exception as err:  # pragma: no cover - defensive guard
             vpn_fetch_errors.append(str(err))
             _LOGGER.warning(
@@ -109,13 +109,11 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 err,
                 exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
             )
-            vpn_site_to_site = []
 
         try:
-            vpn_remote_users = await hass.async_add_executor_job(
-                client.get_vpn_remote_users
+            vpn_remote_users = await self.hass.async_add_executor_job(
+                self._client.get_vpn_remote_users
             )
-            vpn_remote_users = vpn_remote_users or []
         except Exception as err:  # pragma: no cover - defensive guard
             vpn_fetch_errors.append(str(err))
             _LOGGER.warning(
@@ -123,10 +121,11 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 err,
                 exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
             )
-            vpn_remote_users = []
 
         try:
-            vpn_summary = await hass.async_add_executor_job(client.vpn_probe_summary)
+            vpn_summary = await self.hass.async_add_executor_job(
+                self._client.vpn_probe_summary
+            )
         except Exception as err:  # pragma: no cover - defensive guard
             vpn_summary = {}
             _LOGGER.debug(
@@ -136,7 +135,9 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             )
 
         try:
-            vpn_errors = await hass.async_add_executor_job(client.vpn_probe_errors)
+            vpn_errors = await self.hass.async_add_executor_job(
+                self._client.vpn_probe_errors
+            )
         except Exception as err:  # pragma: no cover - defensive guard
             vpn_errors = []
             _LOGGER.debug(
@@ -144,6 +145,22 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 err,
                 exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
             )
+
+        vpn_servers = list(vpn_servers or [])
+        vpn_clients = list(vpn_clients or [])
+        vpn_site_to_site = list(vpn_site_to_site or [])
+        vpn_remote_users = list(vpn_remote_users or [])
+
+        if isinstance(vpn_errors, tuple):
+            vpn_errors = list(vpn_errors)
+        elif not isinstance(vpn_errors, list):
+            vpn_errors = [vpn_errors] if vpn_errors not in (None, "", [], {}) else []
+
+        if not isinstance(vpn_summary, dict):
+            try:
+                vpn_summary = dict(vpn_summary or {})
+            except (TypeError, ValueError):  # pragma: no cover - defensive guard
+                vpn_summary = {}
 
         vpn_diag = {
             "summary": vpn_summary,
@@ -157,6 +174,10 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             },
         }
 
+        vpn_fetch_error = "; ".join(e for e in vpn_fetch_errors if e)
+        if vpn_fetch_error:
+            vpn_diag["fetch_errors"] = {"exception": vpn_fetch_error}
+
         _LOGGER.debug(
             "VPN fetched: servers=%d clients=%d s2s=%d diag=%s",
             len(vpn_servers),
@@ -165,12 +186,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             vpn_diag.get("summary"),
         )
 
-        vpn_fetch_error = "; ".join(e for e in vpn_fetch_errors if e)
-        if not vpn_fetch_error:
-            vpn_fetch_error = None
-
         try:
-            return await hass.async_add_executor_job(
+            return await self.hass.async_add_executor_job(
                 self._fetch_data,
                 vpn_servers,
                 vpn_clients,
@@ -195,12 +212,12 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
     ) -> UniFiGatewayData:
         _LOGGER.debug(
             "Starting UniFi Gateway data fetch for instance %s",
-            self.client.instance_key(),
+            self._client.instance_key(),
         )
-        controller_api_url = self.client.get_controller_api_url()
-        controller_site = self.client.get_site()
+        controller_api_url = self._client.get_controller_api_url()
+        controller_site = self._client.get_site()
         controller_info = {
-            "url": self.client.get_controller_url(),
+            "url": self._client.get_controller_url(),
             "api_url": controller_api_url,
             "site": controller_site,
         }
@@ -210,7 +227,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             controller_info["site"],
         )
 
-        health = self.client.get_healthinfo() or []
+        health = self._client.get_healthinfo() or []
         _LOGGER.debug("Retrieved %s health records", len(health))
         health_by_subsystem: Dict[str, Dict[str, Any]] = {}
         wan_health: List[Dict[str, Any]] = []
@@ -226,15 +243,15 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             # meaningful instead of reporting missing data entirely.
             wan_health = list(health)
 
-        alerts_raw = self.client.get_alerts() or []
+        alerts_raw = self._client.get_alerts() or []
         alerts = [alert for alert in alerts_raw if not alert.get("archived")]
         _LOGGER.debug(
             "Retrieved %s active alerts (raw=%s)", len(alerts), len(alerts_raw)
         )
-        devices = self.client.get_devices() or []
+        devices = self._client.get_devices() or []
         _LOGGER.debug("Retrieved %s devices", len(devices))
 
-        networks = self.client.get_networks() or []
+        networks = self._client.get_networks() or []
         _LOGGER.debug("Retrieved %s networks", len(networks))
         lan_networks: List[Dict[str, Any]] = []
         network_map: Dict[str, Dict[str, Any]] = {}
@@ -259,7 +276,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             lan_networks.append(net)
         _LOGGER.debug("Identified %s LAN networks", len(lan_networks))
 
-        wan_links_raw = self.client.get_wan_links() or []
+        wan_links_raw = self._client.get_wan_links() or []
         if not wan_links_raw:
             wan_links_raw = self._derive_wan_links_from_networks(networks)
             _LOGGER.warning(
@@ -280,9 +297,9 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             wan_links.append(normalized)
         _LOGGER.debug("Processed %s WAN link records", len(wan_links))
 
-        wlans = self.client.get_wlans() or []
+        wlans = self._client.get_wlans() or []
         _LOGGER.debug("Retrieved %s WLAN configurations", len(wlans))
-        clients_all = self.client.get_clients() or []
+        clients_all = self._client.get_clients() or []
         _LOGGER.debug("Retrieved %s clients", len(clients_all))
         vpn_servers_list: List[Dict[str, Any]] = list(vpn_servers or [])
         vpn_clients_list: List[Dict[str, Any]] = list(vpn_clients or [])
@@ -300,7 +317,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
 
         if vpn_servers is None:
             try:
-                vpn_servers_list = self.client.get_vpn_servers() or []
+                vpn_servers_list = self._client.get_vpn_servers() or []
             except Exception as err:  # pragma: no cover - defensive guard
                 message = str(err)
                 vpn_fetch_error_value = (
@@ -315,7 +332,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 )
         if vpn_clients is None:
             try:
-                vpn_clients_list = self.client.get_vpn_clients() or []
+                vpn_clients_list = self._client.get_vpn_clients() or []
             except Exception as err:  # pragma: no cover - defensive guard
                 message = str(err)
                 vpn_fetch_error_value = (
@@ -330,7 +347,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 )
         if vpn_site_to_site is None:
             try:
-                vpn_site_to_site_list = self.client.get_vpn_site_to_site() or []
+                vpn_site_to_site_list = self._client.get_vpn_site_to_site() or []
             except Exception as err:  # pragma: no cover - defensive guard
                 message = str(err)
                 vpn_fetch_error_value = (
@@ -346,7 +363,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
 
         if vpn_remote_users is None:
             try:
-                vpn_remote_users_list = self.client.get_vpn_remote_users() or []
+                vpn_remote_users_list = self._client.get_vpn_remote_users() or []
             except Exception as err:  # pragma: no cover - defensive guard
                 message = str(err)
                 vpn_fetch_error_value = (
@@ -362,7 +379,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
 
         if vpn_diag is None or "summary" not in vpn_diag_payload:
             try:
-                vpn_diag_payload["summary"] = self.client.vpn_probe_summary()
+                vpn_diag_payload["summary"] = self._client.vpn_probe_summary()
             except Exception as err:  # pragma: no cover - defensive guard
                 _LOGGER.debug(
                     "Fetching VPN probe summary during fallback failed: %s",
@@ -372,7 +389,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 vpn_diag_payload.setdefault("summary", None)
         if vpn_diag is None or "errors" not in vpn_diag_payload:
             try:
-                vpn_diag_payload["errors"] = self.client.vpn_probe_errors()
+                vpn_diag_payload["errors"] = self._client.vpn_probe_errors()
             except Exception as err:  # pragma: no cover - defensive guard
                 _LOGGER.debug(
                     "Fetching VPN probe errors during fallback failed: %s",
@@ -447,7 +464,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
 
         _LOGGER.info(
             "VPN discovery summary for %s (api=%s, site=%s): %s",
-            self.client.instance_key(),
+            self._client.instance_key(),
             controller_api_url,
             controller_site,
             vpn_counts,
@@ -455,14 +472,14 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
 
         _LOGGER.debug(
             "VPN records for instance %s: servers=%s clients=%s site_to_site=%s",
-            self.client.instance_key(),
+            self._client.instance_key(),
             vpn_counts["servers"],
             vpn_counts["clients"],
             vpn_counts["site_to_site"],
         )
 
         try:
-            speedtest = self.client.get_last_speedtest(cache_sec=5)
+            speedtest = self._client.get_last_speedtest(cache_sec=5)
             if speedtest:
                 _LOGGER.debug("Retrieved cached speedtest result")
         except APIError as err:
@@ -471,7 +488,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
 
         # fire and forget — the method is safe if controller does not support speedtests
         try:
-            self.client.maybe_start_speedtest(cooldown_sec=3600)
+            self._client.maybe_start_speedtest(cooldown_sec=3600)
             _LOGGER.debug("Speedtest trigger evaluated")
         except APIError as err:
             _LOGGER.debug("Speedtest trigger failed: %s", err)
