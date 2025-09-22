@@ -637,7 +637,8 @@ class UniFiOSClient:
         prefix = "/proxy/network" if use_proxy_prefix else ""
         self._base = f"https://{host}:{port}{prefix}/api/s/{site_id}"
 
-        # Stable instance identifier should not depend on autodetected base URL.
+        # Stabilny identyfikator instancji – NIE zależy od autodetekcji _base,
+        # żeby HA nie tworzył nowych encji po zmianie /proxy/network ↔ /network ↔ /v2.
         basis = instance_hint or f"{host}|{site_id}"
         self._iid = hashlib.sha1(basis.encode()).hexdigest()[:12]
 
