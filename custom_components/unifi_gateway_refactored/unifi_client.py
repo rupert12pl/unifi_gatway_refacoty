@@ -1216,12 +1216,11 @@ class UniFiOSClient:
         total_candidates = 0
 
         def _fetch_vpn_payload(path: str) -> Any:
-            if self._vpn_is_internet_path(path):
-                return self._vpn_get_internet(
-                    path,
-                    expected_errors=_VPN_EXPECTED_ERROR_CODES,
-                )
-            return self._get(path, expected_errors=_VPN_EXPECTED_ERROR_CODES)
+            return self._vpn_api_request(
+                "GET",
+                path,
+                expected_errors=_VPN_EXPECTED_ERROR_CODES,
+            )
 
         def _store_peer(record: Dict[str, Any]) -> None:
             peer_id = record.get("_ha_peer_id") or vpn_peer_identity(record)
@@ -1377,16 +1376,11 @@ class UniFiOSClient:
 
         for path in legacy_paths:
             try:
-                if self._vpn_is_internet_path(path):
-                    payload = self._vpn_get_internet(
-                        path,
-                        expected_errors=_VPN_EXPECTED_ERROR_CODES,
-                    )
-                else:
-                    payload = self._get(
-                        path,
-                        expected_errors=_VPN_EXPECTED_ERROR_CODES,
-                    )
+                payload = self._vpn_api_request(
+                    "GET",
+                    path,
+                    expected_errors=_VPN_EXPECTED_ERROR_CODES,
+                )
             except APIError as err:
                 _LOGGER.debug(
                     "Legacy VPN probe %s failed: %s",
