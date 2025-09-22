@@ -951,11 +951,19 @@ class UniFiOSClient:
         return self._get("stat/device")
 
     def get_alerts(self):
-        path = "list/alert"
+        """Fetch controller alerts, handling both legacy and v2 endpoints."""
+
+        legacy_path = "list/alert"
+        v2_path = "alerts"
         bases = self._api_bases()
         last_error: Optional[APIError] = None
+        last_path: str = legacy_path
+
+        def _path_for_base(base: str) -> str:
+            return v2_path if "/v2/api/" in base else legacy_path
 
         for index, base in enumerate(bases):
+            path = _path_for_base(base)
             url = f"{base}/{path}"
             try:
                 alerts = self._request(
@@ -965,6 +973,7 @@ class UniFiOSClient:
                 )
             except APIError as err:
                 last_error = err
+                last_path = path
                 has_alternate = index < (len(bases) - 1)
                 if has_alternate and err.status_code in (400, 404):
                     _LOGGER.debug(
@@ -986,7 +995,7 @@ class UniFiOSClient:
         if last_error is not None:
             _LOGGER.warning(
                 "Fetching %s failed (%s); attempting legacy list/alarm endpoint",
-                path,
+                last_path,
                 last_error,
             )
 
