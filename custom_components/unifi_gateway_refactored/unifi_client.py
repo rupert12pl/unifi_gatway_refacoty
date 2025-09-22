@@ -872,7 +872,10 @@ class UniFiOSClient:
         _LOGGER.debug("Attempting WAN link discovery via endpoints: %s", ", ".join(paths))
         for path in paths:
             try:
-                data = self._get(path)
+                data = self._get(
+                    path,
+                    expected_errors=_VPN_EXPECTED_ERROR_CODES,
+                )
             except Exception as err:
                 _LOGGER.debug(
                     "WAN link fetch via %s failed: %s",
