@@ -496,7 +496,7 @@ async def async_setup_entry(
 
     _sync_dynamic()
     entry.async_on_unload(coordinator.async_add_listener(_sync_dynamic))
-    # Ensure the first coordinator refresh runs immediately so peer entities appear
+    # Ensure first refresh happens immediately; dynamic VPN entities will be created.
     await coordinator.async_request_refresh()
 
 
