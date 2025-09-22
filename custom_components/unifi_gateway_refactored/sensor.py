@@ -128,6 +128,12 @@ async def async_setup_entry(
         vpn_servers = coordinator_data.vpn_servers
         vpn_clients = coordinator_data.vpn_clients
         vpn_site_to_site = getattr(coordinator_data, "vpn_site_to_site", [])
+        if not (vpn_servers or vpn_clients or vpn_site_to_site):
+            _LOGGER.info(
+                "No VPN peers reported by coordinator for %s; subsystem will show DISABLED. Last diagnostics: %s",
+                entry.entry_id,
+                getattr(coordinator_data, "vpn_diagnostics", None),
+            )
         vpn_summary = {
             "servers": len(vpn_servers),
             "clients": len(vpn_clients),
@@ -276,6 +282,7 @@ async def async_setup_entry(
 
     _sync_dynamic()
     entry.async_on_unload(coordinator.async_add_listener(_sync_dynamic))
+    await coordinator.async_request_refresh()
 
 
 def _vpn_peer_id(peer: Dict[str, Any]) -> str:
@@ -534,6 +541,8 @@ def _vpn_identifier_candidates(peer: Dict[str, Any]) -> set[str]:
         "uuid",
         "peer_uuid",
         "peer_id",
+        "peerId",
+        "peerID",
         "peerid",
         "server_id",
         "client_id",
@@ -1521,7 +1530,7 @@ class UniFiGatewayVpnClientSensor(UniFiGatewaySensorBase):
 
     @property
     def icon(self) -> Optional[str]:
-        return _vpn_icon_for_state(self.native_value, self._attr_icon)
+        return _vpn_icon_for_state(self.native_value, self._default_icon)
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
