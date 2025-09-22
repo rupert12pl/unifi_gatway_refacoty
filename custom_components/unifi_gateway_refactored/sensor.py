@@ -232,7 +232,18 @@ async def async_setup_entry(
                 entity.mark_stale()
 
         summary = vpn_payload.get("summary") or {}
-        diagnostics = vpn_payload.get("diagnostics") or {}
+        diagnostics_payload = vpn_payload.get("diagnostics") or {}
+        errors_map = vpn_payload.get("errors") or diagnostics_errors
+        if errors_map and "errors" not in diagnostics_payload:
+            diagnostics_payload = dict(diagnostics_payload)
+            diagnostics_payload["errors"] = errors_map
+        if errors_map and "errors_text" not in summary:
+            summary = dict(summary)
+            summary.setdefault("errors_text", errors_map)
+        if errors_map:
+            vpn_payload["errors"] = errors_map
+        vpn_payload["summary"] = summary
+        vpn_payload["diagnostics"] = diagnostics_payload
         diag_uid = f"{entry.entry_id}-vpn-summary"
         if vpn_diag_entity is None:
             vpn_diag_entity = VpnDiagSensor(
@@ -240,7 +251,7 @@ async def async_setup_entry(
                 name="VPN diagnostics",
                 site=controller_site,
                 payload=summary,
-                diagnostics=diagnostics,
+                diagnostics=diagnostics_payload,
                 vpn_payload=vpn_payload,
                 controller_context=controller_context,
             )
@@ -248,7 +259,7 @@ async def async_setup_entry(
         else:
             vpn_diag_entity.set_payload(
                 summary,
-                diagnostics=diagnostics,
+                diagnostics=diagnostics_payload,
                 vpn_payload=vpn_payload,
                 site=controller_site,
                 controller_context=controller_context,
@@ -294,6 +305,18 @@ async def async_setup_entry(
                 for key in summary_keys
                 if key in payload and payload.get(key) not in (None, "", [], {})
             }
+            keys_preview = sorted(payload.keys())
+            if len(keys_preview) > 10:
+                keys_preview = keys_preview[:10] + ["..."]
+            _LOGGER.warning(
+                "Unable to create %s entity for entry %s (peer_id=%s, source=%s, category=%s, keys=%s)",
+                kind,
+                entry.entry_id,
+                peer_id or "<missing>",
+                payload.get("_ha_source") or payload.get("_ha_sources"),
+                payload.get("_ha_category") or payload.get("role"),
+                keys_preview,
+            )
             _LOGGER.error(
                 "Failed to create %s entity for entry %s (peer_id=%s): %s",
                 kind,
@@ -342,25 +365,32 @@ async def async_setup_entry(
         vpn_servers = coordinator_data.vpn_servers
         vpn_clients = coordinator_data.vpn_clients
         vpn_site_to_site = getattr(coordinator_data, "vpn_site_to_site", [])
-        diagnostics = getattr(coordinator_data, "vpn_diagnostics", {}) or {}
+        diagnostics_summary = getattr(coordinator_data, "vpn_diagnostics", {}) or {}
+        diagnostics_errors = getattr(coordinator_data, "vpn_errors", {}) or {}
         _LOGGER.debug(
             "VPN dataset: servers=%d clients=%d site_to_site=%d diag=%s",
             len(vpn_servers),
             len(vpn_clients),
             len(vpn_site_to_site),
-            diagnostics,
+            diagnostics_summary,
         )
         if not (vpn_servers or vpn_clients or vpn_site_to_site):
             _LOGGER.info(
                 "No VPN peers for entry %s; subsystem will show DISABLED. Diagnostics=%s",
                 entry.entry_id,
-                getattr(coordinator_data, "vpn_diagnostics", None),
+                diagnostics_summary,
             )
-        if diagnostics:
+        if diagnostics_summary:
             _LOGGER.debug(
-                "VPN diagnostics for entry %s: %s",
+                "VPN diagnostics summary for entry %s: %s",
                 entry.entry_id,
-                diagnostics,
+                diagnostics_summary,
+            )
+        if diagnostics_errors:
+            _LOGGER.debug(
+                "VPN probe errors for entry %s: %s",
+                entry.entry_id,
+                diagnostics_errors,
             )
 
         for link in coordinator_data.wan_links:
@@ -1333,6 +1363,12 @@ class VpnDiagSensor(_GatewayDynamicSensor):
         fetch_errors = diagnostics_payload.get("fetch_errors")
         if fetch_errors not in (None, "", [], {}):
             attrs["fetch_errors"] = fetch_errors
+        errors_payload = diagnostics_payload.get("errors")
+        if errors_payload not in (None, "", [], {}):
+            attrs["errors"] = errors_payload
+        errors_text = summary_payload.get("errors_text")
+        if errors_text not in (None, "", [], {}):
+            attrs.setdefault("errors_text", errors_text)
         if vpn_payload:
             attrs["remote_users"] = vpn_payload.get("remote_users")
             attrs["site_to_site"] = vpn_payload.get("site_to_site")

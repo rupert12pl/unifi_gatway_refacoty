@@ -38,6 +38,7 @@ class UniFiGatewayData:
     vpn_summary: dict[str, Any] = field(default_factory=dict)
     speedtest: Optional[dict[str, Any]] = None
     vpn_diagnostics: dict[str, Any] = field(default_factory=dict)
+    vpn_errors: dict[str, Any] = field(default_factory=dict)
     vpn: dict[str, Any] = field(default_factory=dict)
 
 
@@ -151,6 +152,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 None,
                 vpn_remote_users,
                 vpn_summary,
+                vpn_errors,
             )
         except (ConnectivityError, APIError) as err:
             raise UpdateFailed(str(err)) from err
@@ -164,6 +166,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         vpn_fetch_error: Optional[str] = None,
         vpn_remote_users: Optional[List[Dict[str, Any]]] = None,
         vpn_summary: Optional[Dict[str, Any]] = None,
+        vpn_errors: Optional[Dict[str, Any]] = None,
     ) -> UniFiGatewayData:
         _LOGGER.debug(
             "Starting UniFi Gateway data fetch for instance %s",
@@ -269,6 +272,11 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         vpn_summary_payload: Dict[str, Any] = (
             dict(vpn_summary) if isinstance(vpn_summary, dict) else {}
         )
+        vpn_errors_payload: Dict[str, Any] = (
+            dict(vpn_errors) if isinstance(vpn_errors, dict) else {}
+        )
+        if vpn_errors_payload and "errors" not in vpn_diag_payload:
+            vpn_diag_payload["errors"] = vpn_errors_payload
 
         if vpn_servers is None:
             try:
@@ -391,6 +399,9 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         elif isinstance(errors_value, str):
             stripped = errors_value.strip()
             vpn_diag["errors"] = [stripped] if stripped else []
+        elif isinstance(errors_value, dict):
+            if not errors_value:
+                vpn_diag["errors"] = {}
         elif errors_value in (None, "", {}):
             vpn_diag["errors"] = []
         counts_value = vpn_diag.get("counts")
@@ -415,6 +426,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             "site_to_site": list(vpn_site_to_site or []),
             "summary": dict(vpn_summary_payload or {}),
             "diagnostics": dict(vpn_diag),
+            "errors": dict(vpn_errors_payload or {}),
         }
 
         _LOGGER.debug(
@@ -467,7 +479,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             vpn_remote_users=vpn_remote_users,
             vpn_summary=vpn_summary_payload,
             speedtest=speedtest,
-            vpn_diagnostics=vpn_diag,
+            vpn_diagnostics=vpn_summary_payload,
+            vpn_errors=vpn_errors_payload,
             vpn=vpn_payload,
         )
         _LOGGER.debug(

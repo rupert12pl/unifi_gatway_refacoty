@@ -41,3 +41,18 @@ The generated release contains the complete repository (including the
 `custom_components` directory) as required by the
 [HACS publishing guide](https://hacs.xyz/docs/publish/).
 
+## Enable verbose logging
+
+To collect detailed diagnostics (including VPN probe information), add the
+following snippet to your Home Assistant `configuration.yaml` and reload the
+logger integration:
+
+```yaml
+logger:
+  default: warning
+  logs:
+    custom_components.unifi_gateway_refactored: debug
+    custom_components.unifi_gateway_refactored.unifi_client: debug
+    custom_components.unifi_gateway_refactored.coordinator: debug
+```
+
