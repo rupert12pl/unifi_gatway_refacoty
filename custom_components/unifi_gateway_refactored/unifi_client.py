@@ -1515,6 +1515,11 @@ class UniFiOSClient:
         now = time.time()
         if self._vpn_cache and (now - self._vpn_cache[0]) < cache_sec:
             cached = self._vpn_cache[1]
+            _LOGGER.info(
+                "VPN peers: using cache (age<=%ss), count=%d",
+                cache_sec,
+                len(cached),
+            )
             self._vpn_last_probe_errors = {}
             self._vpn_last_probe_summary = {
                 "cache_hit": True,
@@ -1671,9 +1676,9 @@ class UniFiOSClient:
                     "Controller returned no VPN peers even after legacy fallback",
                 )
 
+        category_counts: Dict[str, int] = {}
         if peers:
             self._vpn_expected_errors_reported = False
-            category_counts: Dict[str, int] = {}
             for peer in peers:
                 category = peer.get("_ha_category") or peer.get("role") or "unknown"
                 category_counts[category] = category_counts.get(category, 0) + 1
@@ -1710,6 +1715,20 @@ class UniFiOSClient:
                 for path, err in probe_errors.items()
             }
         self._vpn_last_probe_summary = summary
+
+        summary_log = {
+            "cache_hit": summary.get("cache_hit"),
+            "probes_attempted": summary.get("probes_attempted"),
+            "probes_succeeded": summary.get("probes_succeeded"),
+            "probe_errors": summary.get("probe_errors"),
+            "fallback_used": summary.get("fallback_used"),
+        }
+        _LOGGER.info(
+            "VPN peers: probe complete (count=%d, categories=%s, summary=%s)",
+            len(finalized),
+            category_counts,
+            summary_log,
+        )
 
         return finalized
 
@@ -1826,11 +1845,14 @@ class UniFiOSClient:
 
         return records
 
-    def get_vpn_servers(self) -> List[Dict[str, Any]]:
+    def get_vpn_servers(
+        self, peers: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
         """Return configured VPN servers (WireGuard/OpenVPN Remote User)."""
 
+        source_peers = list(peers) if peers is not None else self.get_vpn_peers()
         servers = self._filter_vpn_peers(
-            self.get_vpn_peers(),
+            source_peers,
             {"server", "remote_user", "remoteuser", "remote_access", "peer"},
         )
         _LOGGER.debug("Returning %s VPN server records", len(servers))
@@ -1838,11 +1860,14 @@ class UniFiOSClient:
             _LOGGER.info("Controller reported no VPN server records")
         return servers
 
-    def get_vpn_remote_users(self) -> List[Dict[str, Any]]:
+    def get_vpn_remote_users(
+        self, peers: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
         """Return configured VPN remote access user records."""
 
+        source_peers = list(peers) if peers is not None else self.get_vpn_peers()
         remote_users = self._filter_vpn_peers(
-            self.get_vpn_peers(),
+            source_peers,
             {"remote_user", "remoteuser", "remote_access"},
         )
         _LOGGER.debug("Returning %s VPN remote user records", len(remote_users))
@@ -1850,11 +1875,14 @@ class UniFiOSClient:
             _LOGGER.info("Controller reported no VPN remote user records")
         return remote_users
 
-    def get_vpn_clients(self) -> List[Dict[str, Any]]:
+    def get_vpn_clients(
+        self, peers: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
         """Return configured VPN client tunnels (policy-based/route-based)."""
 
+        source_peers = list(peers) if peers is not None else self.get_vpn_peers()
         clients = self._filter_vpn_peers(
-            self.get_vpn_peers(),
+            source_peers,
             {"client", "teleport"},
         )
         _LOGGER.debug("Returning %s VPN client records", len(clients))
@@ -1862,11 +1890,14 @@ class UniFiOSClient:
             _LOGGER.info("Controller reported no VPN client records")
         return clients
 
-    def get_vpn_site_to_site(self) -> List[Dict[str, Any]]:
+    def get_vpn_site_to_site(
+        self, peers: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
         """Return configured Site-to-Site tunnels (IPSec/UID)."""
 
+        source_peers = list(peers) if peers is not None else self.get_vpn_peers()
         tunnels = self._filter_vpn_peers(
-            self.get_vpn_peers(),
+            source_peers,
             {"site_to_site", "uid", "uid_vpn"},
         )
         _LOGGER.debug("Returning %s VPN site-to-site records", len(tunnels))
@@ -1874,10 +1905,17 @@ class UniFiOSClient:
             _LOGGER.info("Controller reported no site-to-site VPN records")
         return tunnels
 
-    def get_vpn_site_to_site_tunnels(self) -> List[Dict[str, Any]]:
+    def get_vpn_site_to_site_tunnels(
+        self, peers: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
         """Return configured VPN site-to-site tunnels (alias helper)."""
 
-        return self.get_vpn_site_to_site()
+        return self.get_vpn_site_to_site(peers)
+
+    def get_vpn_api_bases(self) -> List[str]:
+        """Return the API bases attempted for VPN discovery."""
+
+        return list(self._vpn_api_bases())
 
     def vpn_probe_errors(self) -> Dict[str, str]:
         """Return the most recent VPN probe error summary."""

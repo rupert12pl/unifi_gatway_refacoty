@@ -14,7 +14,10 @@
   ],
   "integration_type": "hub",
   "loggers": [
-    "custom_components.unifi_gateway_refactored"
+    "custom_components.unifi_gateway_refactored",
+    "custom_components.unifi_gateway_refactored.sensor",
+    "custom_components.unifi_gateway_refactored.coordinator",
+    "custom_components.unifi_gateway_refactored.unifi_client"
   ],
   "logo": "logo.svg",
   "icon": "icon.svg"

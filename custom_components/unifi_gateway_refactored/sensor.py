@@ -342,15 +342,13 @@ async def async_setup_entry(
         vpn_servers = coordinator_data.vpn_servers
         vpn_clients = coordinator_data.vpn_clients
         vpn_site_to_site = getattr(coordinator_data, "vpn_site_to_site", [])
-        vpn_summary = {
-            "servers": len(vpn_servers),
-            "clients": len(vpn_clients),
-            "site_to_site": len(vpn_site_to_site),
-        }
+        diagnostics = getattr(coordinator_data, "vpn_diagnostics", {}) or {}
         _LOGGER.debug(
-            "VPN dataset for entry %s: %s",
-            entry.entry_id,
-            vpn_summary,
+            "VPN dataset: servers=%d clients=%d site_to_site=%d diag=%s",
+            len(vpn_servers),
+            len(vpn_clients),
+            len(vpn_site_to_site),
+            diagnostics,
         )
         if not (vpn_servers or vpn_clients or vpn_site_to_site):
             _LOGGER.info(
@@ -358,7 +356,6 @@ async def async_setup_entry(
                 entry.entry_id,
                 getattr(coordinator_data, "vpn_diagnostics", None),
             )
-        diagnostics = getattr(coordinator_data, "vpn_diagnostics", None)
         if diagnostics:
             _LOGGER.debug(
                 "VPN diagnostics for entry %s: %s",
