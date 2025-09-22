@@ -637,8 +637,9 @@ class UniFiOSClient:
         prefix = "/proxy/network" if use_proxy_prefix else ""
         self._base = f"https://{host}:{port}{prefix}/api/s/{site_id}"
 
-        # Stabilny identyfikator instancji – NIE zależy od autodetekcji _base,
-        # żeby HA nie tworzył nowych encji po zmianie /proxy/network ↔ /network ↔ /v2.
+        # Stable instance identifier – must NOT depend on autodetected _base so that
+        # Home Assistant keeps existing entities when the controller path changes
+        # between /proxy/network, /network and /v2 variants.
         basis = instance_hint or f"{host}|{site_id}"
         self._iid = hashlib.sha1(basis.encode()).hexdigest()[:12]
 

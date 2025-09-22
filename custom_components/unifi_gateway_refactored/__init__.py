@@ -53,8 +53,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX
         ),
         "timeout": entry.data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
-
-        main
+        "instance_hint": entry.entry_id,  # stabilizes entity unique_ids across base changes
     }
 
     username = entry.data.get(CONF_USERNAME)
