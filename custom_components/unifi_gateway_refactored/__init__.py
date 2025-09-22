@@ -62,7 +62,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if password:
         client_kwargs["password"] = password
 
-    client_kwargs["instance_hint"] = entry.entry_id
+    client_kwargs["instance_hint"] = entry.entry_id  # ensures stable unique_id across restarts
 
     client_factory = partial(UniFiOSClient, **client_kwargs)
 
