@@ -7,6 +7,7 @@ import re
 import socket
 import time
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Any, Collection, Dict, Iterable, List, Optional, Tuple
 
 import requests
@@ -101,6 +102,15 @@ def vpn_peer_identity(peer: Dict[str, Any]) -> str:
     return f"peer_{hashlib.sha1(str(sorted(peer.items())).encode()).hexdigest()[:12]}"
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class VpnSnapshot:
+    remote_users: List[Dict[str, Any]]
+    site_to_site: List[Dict[str, Any]]
+    teleport_clients: List[Dict[str, Any]]
+    teleport_servers: List[Dict[str, Any]]
+    diagnostics: Dict[str, Any]
 
 _VPN_EXPECTED_ERROR_CODES: Tuple[int, ...] = (400, 404)
 
@@ -655,6 +665,11 @@ class UniFiOSClient:
         self._vpn_expected_errors_reported = False
         self._vpn_last_probe_errors: Dict[str, str] = {}
         self._vpn_last_probe_summary: Dict[str, Any] = {}
+        self._vpn_optional_404_paths: set[str] = {
+            "stat/teleport",
+            "stat/teleport/clients",
+            "stat/teleport/servers",
+        }
 
     # ----------- auth / base detection -----------
     def _login(self, host: str, port: int, ssl_verify: bool, timeout: int):
@@ -757,11 +772,41 @@ class UniFiOSClient:
                 timeout=self._timeout,
             )
         except requests.RequestException as ex:
-            _LOGGER.error("Transport error during UniFi request %s %s: %s", method, url, ex)
+            path = urlsplit(url).path
+            query = urlsplit(url).query
+            if query:
+                path = f"{path}?{query}"
+            _LOGGER.warning(
+                "VPN probe failed: %s %s – %s",
+                method,
+                path,
+                ex,
+            )
             raise ConnectivityError(f"Request error: {ex}") from ex
-        _LOGGER.debug(
-            "UniFi response for %s %s: HTTP %s", method, url, r.status_code
-        )
+
+        path = urlsplit(url).path
+        query = urlsplit(url).query
+        if query:
+            path = f"{path}?{query}"
+        body_preview = (r.text or "")[:400]
+        length = len(r.content or b"")
+        if r.status_code >= 400:
+            _LOGGER.debug(
+                "HTTP %s %s -> %s len=%s body=%s",
+                method,
+                path,
+                r.status_code,
+                length,
+                body_preview,
+            )
+        else:
+            _LOGGER.debug(
+                "HTTP %s %s -> %s len=%s",
+                method,
+                path,
+                r.status_code,
+                length,
+            )
         if r.status_code in (401, 403):
             _LOGGER.error("Authentication failed for UniFi request %s %s", method, url)
             raise AuthError(f"Auth failed at {url}")
@@ -815,6 +860,16 @@ class UniFiOSClient:
             if v2_candidate not in candidates:
                 candidates.append(v2_candidate)
         return candidates
+
+    def _api_site_base(self, site: str) -> str:
+        """Return the API base URL for a specific site."""
+
+        base = self._base.rstrip("/")
+        marker = "/api/s/"
+        if marker in base:
+            prefix, _ = base.split(marker, 1)
+            return f"{prefix}{marker}{site}".rstrip("/")
+        return base
 
     def _vpn_api_bases(self) -> List[str]:
         """Return API base URLs for VPN endpoint probing."""
@@ -942,6 +997,300 @@ class UniFiOSClient:
             expected=False,
             body=getattr(last_error, "body", None),
         ) from last_error
+
+    def _probe_paths(
+        self, site: str, paths: List[str]
+    ) -> Tuple[Optional[Any], Optional[str]]:
+        """Attempt VPN discovery via the provided relative paths."""
+
+        base = self._api_site_base(site)
+        tracker = getattr(self, "_active_probe_state", None)
+
+        for raw_path in paths:
+            normalized = raw_path.lstrip("/")
+            url = f"{base}/{normalized}"
+            if tracker is not None:
+                tracker["attempts"] = tracker.get("attempts", 0) + 1
+            try:
+                payload = self._request("GET", url)
+            except APIError as err:
+                short_error = self._vpn_error_snippet(err)
+                status_text = (
+                    str(err.status_code) if err.status_code is not None else "n/a"
+                )
+                entry = f"{normalized}: {status_text} {short_error}".strip()
+                if tracker is not None:
+                    tracker.setdefault("errors", []).append(entry)
+                log_level = logging.WARNING
+                if err.status_code == 404 and normalized in self._vpn_optional_404_paths:
+                    log_level = logging.DEBUG
+                _LOGGER.log(
+                    log_level,
+                    "VPN probe failed: %s %s – %s",
+                    "GET",
+                    normalized,
+                    short_error,
+                )
+                continue
+            except ConnectivityError as err:
+                entry = f"{normalized}: connectivity {err}"
+                if tracker is not None:
+                    tracker.setdefault("errors", []).append(entry)
+                _LOGGER.warning(
+                    "VPN probe failed: %s %s – %s", "GET", normalized, err
+                )
+                continue
+
+            if tracker is not None:
+                tracker["succeeded"] = True
+            return payload, normalized
+
+        return None, None
+
+    def _discover_vpn_paths_from_openapi(self, site: str) -> List[str]:
+        """Inspect the controller OpenAPI schema for VPN-related endpoints."""
+
+        base_root = self._base.split("/api/s/")[0].rstrip("/")
+        discovered: List[str] = []
+        candidates = ["/proxy/network/openapi.json", "/proxy/network/api-docs"]
+
+        for rel in candidates:
+            url = f"{base_root}{rel}"
+            try:
+                document = self._request("GET", url)
+            except APIError as err:
+                short_error = self._vpn_error_snippet(err)
+                _LOGGER.debug(
+                    "OpenAPI probe failed: %s %s – %s",
+                    "GET",
+                    rel.lstrip("/"),
+                    short_error,
+                )
+                continue
+
+            paths = None
+            if isinstance(document, dict):
+                paths = document.get("paths")
+            if not isinstance(paths, dict):
+                continue
+
+            for raw_path in paths:
+                if not isinstance(raw_path, str):
+                    continue
+                lowered = raw_path.lower()
+                if not any(
+                    token in lowered
+                    for token in ("/vpn", "/remoteuser", "/teleport", "/site-to-site")
+                ):
+                    continue
+                normalized = raw_path.strip()
+                if not normalized:
+                    continue
+                normalized = normalized.lstrip("/")
+                normalized = (
+                    normalized.replace("{siteId}", site)
+                    .replace("{site}", site)
+                    .replace("{site_id}", site)
+                )
+                if normalized.startswith("proxy/network/"):
+                    normalized = normalized[len("proxy/network/") :]
+                if "/proxy/network/" in normalized:
+                    normalized = normalized.split("/proxy/network/", 1)[1]
+                if normalized.startswith("api/s/"):
+                    normalized = normalized[len("api/s/") :]
+                elif "/api/s/" in normalized:
+                    normalized = normalized.split("/api/s/", 1)[1]
+                if normalized.startswith("s/"):
+                    normalized = normalized[2:]
+                if normalized.startswith("v2/") or "/v2/" in normalized:
+                    continue
+                normalized = normalized.replace("//", "/")
+                if normalized:
+                    discovered.append(normalized)
+
+        unique = sorted({path for path in discovered if path})
+        if unique:
+            _LOGGER.info(
+                "Discovered VPN-related endpoints via OpenAPI: %s",
+                ", ".join(unique),
+            )
+        else:
+            _LOGGER.debug("No VPN endpoints discovered via OpenAPI schema")
+        return unique
+
+    def fetch_vpn_snapshot(self) -> VpnSnapshot:
+        """Collect VPN status information from the controller."""
+
+        site = self._site or "default"
+        summary_state = {"attempts": 0, "successes": 0}
+        errors: List[str] = []
+        successful_paths: List[str] = []
+        all_candidates: List[Dict[str, Any]] = []
+        fallback_used = False
+        discovered_paths: List[str] = []
+
+        self._vpn_last_probe_errors = {}
+        self._vpn_last_probe_summary = {}
+
+        def _run_probe(
+            paths: List[str], hint: Optional[str] = None
+        ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+            state: Dict[str, Any] = {"attempts": 0, "errors": []}
+            self._active_probe_state = state
+            payload, used_path = self._probe_paths(site, paths)
+            self._active_probe_state = None
+            summary_state["attempts"] += int(state.get("attempts", 0))
+            for entry in state.get("errors", []):
+                errors.append(entry)
+                path_key, _, message = entry.partition(":")
+                if path_key:
+                    self._vpn_last_probe_errors[path_key.strip()] = message.strip()
+            normalized: List[Dict[str, Any]] = []
+            if payload is not None:
+                normalized = self._normalize_vpn_payload(
+                    payload,
+                    path=used_path or (paths[0] if paths else ""),
+                    default_category=hint,
+                ) or []
+            if used_path:
+                summary_state["successes"] += 1
+                successful_paths.append(used_path)
+                self._vpn_last_probe_errors.pop(used_path, None)
+            return normalized, used_path
+
+        remote_sessions, _ = _run_probe(
+            ["stat/remoteuser", "stat/remote-user"], "remote_user"
+        )
+        remote_metadata, _ = _run_probe(["list/remoteuser"], "remote_user")
+        stat_vpn, _ = _run_probe(["stat/vpn"], None)
+        stat_s2s, _ = _run_probe(["stat/s2s", "stat/s2speer"], "site_to_site")
+        stat_teleport, _ = _run_probe(["stat/teleport"], "teleport")
+        stat_teleport_clients, _ = _run_probe(
+            ["stat/teleport/clients"], "teleport"
+        )
+        stat_teleport_servers, _ = _run_probe(
+            ["stat/teleport/servers"], "teleport"
+        )
+
+        for bucket in (
+            remote_sessions,
+            remote_metadata,
+            stat_vpn,
+            stat_s2s,
+            stat_teleport,
+            stat_teleport_clients,
+            stat_teleport_servers,
+        ):
+            all_candidates.extend(bucket)
+
+        if summary_state["successes"] == 0:
+            fallback_used = True
+            discovered_paths = self._discover_vpn_paths_from_openapi(site)
+            for candidate in discovered_paths:
+                normalized, used_path = _run_probe([candidate], None)
+                all_candidates.extend(normalized)
+                if used_path:
+                    successful_paths.append(used_path)
+
+        aggregated: Dict[str, Dict[str, Any]] = {}
+        total_candidates = 0
+        for peer in all_candidates:
+            total_candidates += 1
+            peer_id = peer.get("_ha_peer_id") or vpn_peer_identity(peer)
+            if peer_id in aggregated:
+                aggregated[peer_id] = self._merge_vpn_peer(aggregated[peer_id], peer)
+            else:
+                aggregated[peer_id] = peer
+
+        finalized = [self._finalize_vpn_peer(peer) for peer in aggregated.values()]
+
+        def _sources(record: Dict[str, Any]) -> set[str]:
+            raw_sources: set[str] = set()
+            base = record.get("_ha_source")
+            if isinstance(base, str) and base:
+                raw_sources.add(base)
+            nested = record.get("_ha_sources")
+            if isinstance(nested, list):
+                raw_sources.update(
+                    str(item) for item in nested if isinstance(item, str) and item
+                )
+            elif isinstance(nested, str) and nested:
+                raw_sources.add(nested)
+            return raw_sources
+
+        remote_sources = {"stat/remoteuser", "stat/remote-user"}
+        remote_users = [
+            peer for peer in finalized if _sources(peer) & remote_sources
+        ]
+        if not remote_users:
+            remote_users = [
+                peer
+                for peer in self._filter_vpn_peers(
+                    finalized, {"remote_user", "remoteuser", "remote_access"}
+                )
+                if _sources(peer) - {"list/remoteuser"}
+            ]
+
+        s2s_sources = {"stat/s2s", "stat/s2speer"}
+        site_to_site = [
+            peer for peer in finalized if _sources(peer) & s2s_sources
+        ]
+        if not site_to_site:
+            site_to_site = self._filter_vpn_peers(
+                finalized, {"site_to_site", "uid", "uid_vpn", "s2s"}
+            )
+
+        teleport_candidates = self._filter_vpn_peers(finalized, {"teleport"})
+        teleport_clients: List[Dict[str, Any]] = []
+        teleport_servers: List[Dict[str, Any]] = []
+        for peer in teleport_candidates:
+            role_token = _normalize_token(peer.get("_ha_role")) or _normalize_token(
+                peer.get("role")
+            )
+            if role_token == "server":
+                teleport_servers.append(peer)
+            else:
+                teleport_clients.append(peer)
+
+        peers_collected = (
+            len(remote_users)
+            + len(site_to_site)
+            + len(teleport_clients)
+            + len(teleport_servers)
+        )
+
+        summary_payload = {
+            "cache_hit": False,
+            "probes_attempted": summary_state["attempts"],
+            "probes_succeeded": summary_state["successes"],
+            "total_candidates": total_candidates,
+            "peers_collected": peers_collected,
+            "fallback_used": fallback_used,
+        }
+
+        self._vpn_last_probe_summary = dict(summary_payload)
+
+        diagnostics = {
+            "controller_api": self.get_controller_api_url(),
+            "controller_ui": self.get_controller_url(),
+            "site": site,
+            "summary": summary_payload,
+            "errors": list(errors),
+        }
+        if successful_paths:
+            diagnostics["successful_paths"] = list(dict.fromkeys(successful_paths))
+        if discovered_paths:
+            diagnostics["openapi_candidates"] = discovered_paths
+
+        self._active_probe_state = None
+
+        return VpnSnapshot(
+            remote_users=remote_users,
+            site_to_site=site_to_site,
+            teleport_clients=teleport_clients,
+            teleport_servers=teleport_servers,
+            diagnostics=diagnostics,
+        )
 
     def _vpn_get_internet(
         self,
