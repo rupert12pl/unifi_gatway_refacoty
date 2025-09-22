@@ -580,11 +580,13 @@ class APIError(Exception):
         status_code: Optional[int] = None,
         url: Optional[str] = None,
         expected: bool = False,
+        body: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.url = url
         self.expected = expected
+        self.body = body
 
 
 class AuthError(APIError):
@@ -640,7 +642,7 @@ class UniFiOSClient:
         # Stable instance identifier – must NOT depend on autodetected _base so that
         # Home Assistant keeps existing entities when the controller path changes
         # between /proxy/network, /network and /v2 variants.
-        basis = instance_hint or f"{host}|{site_id}"
+        basis = f"{self._base}|{host}|{site_id}|{instance_hint or ''}"
         self._iid = hashlib.sha1(basis.encode()).hexdigest()[:12]
 
         self._csrf: Optional[str] = None
@@ -769,24 +771,28 @@ class UniFiOSClient:
             _LOGGER.debug(
                 "Expected HTTP %s for UniFi request %s %s", status_code, method, url
             )
+            snippet = (r.text or "")[:200]
             raise APIError(
-                f"HTTP {status_code}: {r.text[:200]} at {url}",
+                f"HTTP {status_code}: {snippet} at {url}",
                 status_code=status_code,
                 url=url,
                 expected=True,
+                body=snippet,
             )
         if status_code >= 400:
+            snippet = (r.text or "")[:200]
             _LOGGER.error(
                 "HTTP error %s for UniFi request %s %s: %s",
                 status_code,
                 method,
                 url,
-                r.text[:200],
+                snippet,
             )
             raise APIError(
-                f"HTTP {status_code}: {r.text[:200]} at {url}",
+                f"HTTP {status_code}: {snippet} at {url}",
                 status_code=status_code,
                 url=url,
+                body=snippet,
             )
         if not r.content:
             return None
@@ -836,6 +842,29 @@ class UniFiOSClient:
         # message payload to decide whether to try the next base.
         return True
 
+    @staticmethod
+    def _vpn_error_snippet(err: APIError) -> str:
+        """Return a concise, human-readable snippet for a VPN probe error."""
+
+        snippet: str
+        if isinstance(getattr(err, "body", None), str) and err.body:
+            snippet = err.body
+        else:
+            snippet = str(err)
+        snippet = snippet.strip()
+        if snippet.upper().startswith("HTTP ") and ":" in snippet:
+            snippet = snippet.split(":", 1)[1].strip()
+        if " at http" in snippet:
+            snippet = snippet.split(" at http", 1)[0].strip()
+        snippet = snippet.replace("\r", " ").replace("\n", " ")
+        snippet = re.sub(r"\s+", " ", snippet).strip()
+        if "<" in snippet and ">" in snippet:
+            stripped = re.sub(r"<[^>]+>", " ", snippet)
+            stripped = re.sub(r"\s+", " ", stripped).strip()
+            if stripped:
+                snippet = stripped
+        return snippet[:200]
+
     def _vpn_api_request(
         self,
         method: str,
@@ -856,14 +885,29 @@ class UniFiOSClient:
         for index, base in enumerate(bases):
             url = f"{base}/{normalized_path}"
             try:
-                return self._request(
+                result = self._request(
                     method,
                     url,
                     payload,
                     expected_errors=combined_expected,
                 )
+                self._vpn_last_probe_errors.pop(path, None)
+                return result
             except APIError as err:
                 last_error = err
+                status_text = (
+                    str(err.status_code) if err.status_code is not None else "n/a"
+                )
+                snippet = self._vpn_error_snippet(err)
+                short_text = f"{status_text} {snippet}".strip()
+                self._vpn_last_probe_errors[path] = short_text
+                _LOGGER.warning(
+                    "VPN probe %s %s returned HTTP %s: %s",
+                    method,
+                    url,
+                    status_text,
+                    snippet,
+                )
                 has_alternate = index < (len(bases) - 1)
                 if has_alternate and self._vpn_should_retry_with_alternate_base(err):
                     next_base = bases[index + 1]
@@ -884,6 +928,7 @@ class UniFiOSClient:
                     status_code=err.status_code,
                     url=err.url,
                     expected=False,
+                    body=getattr(err, "body", None),
                 ) from err
 
         assert last_error is not None
@@ -895,6 +940,7 @@ class UniFiOSClient:
             status_code=last_error.status_code,
             url=last_error.url,
             expected=False,
+            body=getattr(last_error, "body", None),
         ) from last_error
 
     def _vpn_get_internet(
@@ -1527,9 +1573,12 @@ class UniFiOSClient:
                 "probes_attempted": 0,
                 "probes_succeeded": 0,
                 "fallback_used": False,
+                "bases_tried": self.get_vpn_api_bases(),
+                "errors_text": {},
             }
             return cached
 
+        self._vpn_last_probe_errors = {}
         probes: List[Tuple[str, Optional[str]]] = [
             ("internet/vpn", None),
             ("internet/vpn/overview", None),
@@ -1538,13 +1587,21 @@ class UniFiOSClient:
             ("internet/vpn/teleport", "teleport"),
             ("internet/vpn/teleport/clients", "teleport"),
             ("internet/vpn/teleport/servers", "teleport"),
-            ("list/remoteuser", "remote_user"),
-            ("stat/vpn", None),
-            ("list/vpn", None),
             ("internet/vpn/peers", None),
             ("internet/vpn/servers", "server"),
             ("internet/vpn/clients", "client"),
             ("internet/vpn/site-to-site", "site_to_site"),
+            ("settings/vpn", None),
+            ("settings/vpn/remote-users", "server"),
+            ("settings/vpn/site-to-site", "site_to_site"),
+            ("settings/teleport", "teleport"),
+            ("list/remoteuser", "server"),
+            ("stat/vpn", None),
+            ("list/vpn", None),
+            ("rest/remoteuser", "server"),
+            ("rest/vpn", None),
+            ("rest/vpnconf", None),
+            ("stat/remote-user", "server"),
         ]
 
         aggregated: Dict[str, Dict[str, Any]] = {}
@@ -1579,6 +1636,12 @@ class UniFiOSClient:
                 payload = _fetch_vpn_payload(path)
             except APIError as err:
                 probe_errors[path] = err
+                status_text = (
+                    str(err.status_code) if err.status_code is not None else "n/a"
+                )
+                snippet = self._vpn_error_snippet(err)
+                short_text = f"{status_text} {snippet}".strip()
+                self._vpn_last_probe_errors.setdefault(path, short_text)
                 _LOGGER.debug(
                     "VPN peer probe %s failed: %s",
                     path,
@@ -1695,9 +1758,7 @@ class UniFiOSClient:
         finalized = [self._finalize_vpn_peer(peer) for peer in peers]
         self._vpn_cache = (now, finalized)
 
-        self._vpn_last_probe_errors = {
-            path: str(err) for path, err in probe_errors.items()
-        }
+        errors_text = dict(self._vpn_last_probe_errors)
         summary: Dict[str, Any] = {
             "cache_hit": False,
             "probes_attempted": len(probes),
@@ -1705,6 +1766,8 @@ class UniFiOSClient:
             "total_candidates": total_candidates,
             "peers_collected": len(finalized),
             "fallback_used": fallback_used,
+            "errors_text": errors_text,
+            "bases_tried": self.get_vpn_api_bases(),
         }
         if fallback_sources:
             summary["fallback_sources"] = fallback_sources
@@ -1737,18 +1800,27 @@ class UniFiOSClient:
 
         legacy_paths = (
             "internet/vpn",
+            "internet/vpn/overview",
             "internet/vpn/remote-access",
             "internet/vpn/remote-access/users",
             "internet/vpn/teleport",
             "internet/vpn/teleport/clients",
             "internet/vpn/teleport/servers",
-            "list/remoteuser",
-            "list/vpn",
-            "stat/vpn",
             "internet/vpn/peers",
             "internet/vpn/servers",
             "internet/vpn/clients",
             "internet/vpn/site-to-site",
+            "settings/vpn",
+            "settings/vpn/remote-users",
+            "settings/vpn/site-to-site",
+            "settings/teleport",
+            "list/remoteuser",
+            "stat/vpn",
+            "list/vpn",
+            "rest/remoteuser",
+            "rest/vpn",
+            "rest/vpnconf",
+            "stat/remote-user",
         )
 
         for path in legacy_paths:
