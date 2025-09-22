@@ -984,7 +984,13 @@ class UniFiOSClient:
                 return alerts
 
         if last_error is not None:
-            _LOGGER.warning(
+            log_method = _LOGGER.warning
+            if getattr(last_error, "expected", False) or (
+                last_error.status_code in (400, 404)
+            ):
+                log_method = _LOGGER.debug
+
+            log_method(
                 "Fetching %s failed (%s); attempting legacy list/alarm endpoint",
                 path,
                 last_error,
