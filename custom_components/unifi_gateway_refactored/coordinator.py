@@ -37,7 +37,7 @@ class UniFiGatewayData:
     vpn_remote_users: List[Dict[str, Any]] = field(default_factory=list)
     vpn_summary: Dict[str, Any] = field(default_factory=dict)
     speedtest: Optional[Dict[str, Any]] = None
-    vpn_diagnostics: Optional[Dict[str, Any]] = None
+    vpn_diagnostics: Dict[str, Any] = field(default_factory=dict)
     vpn: Dict[str, Any] = field(default_factory=dict)
 
 
