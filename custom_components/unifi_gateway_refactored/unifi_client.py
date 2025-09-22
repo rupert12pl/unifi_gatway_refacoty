@@ -1836,6 +1836,18 @@ class UniFiOSClient:
             _LOGGER.info("Controller reported no VPN server records")
         return servers
 
+    def get_vpn_remote_users(self) -> List[Dict[str, Any]]:
+        """Return configured VPN remote access user records."""
+
+        remote_users = self._filter_vpn_peers(
+            self.get_vpn_peers(),
+            {"remote_user", "remoteuser", "remote_access"},
+        )
+        _LOGGER.debug("Returning %s VPN remote user records", len(remote_users))
+        if not remote_users:
+            _LOGGER.info("Controller reported no VPN remote user records")
+        return remote_users
+
     def get_vpn_clients(self) -> List[Dict[str, Any]]:
         """Return configured VPN client tunnels (policy-based/route-based)."""
 
@@ -1860,6 +1872,11 @@ class UniFiOSClient:
             _LOGGER.info("Controller reported no site-to-site VPN records")
         return tunnels
 
+    def get_vpn_site_to_site_tunnels(self) -> List[Dict[str, Any]]:
+        """Return configured VPN site-to-site tunnels (alias helper)."""
+
+        return self.get_vpn_site_to_site()
+
     def vpn_probe_errors(self) -> Dict[str, str]:
         """Return the most recent VPN probe error summary."""
 
@@ -1869,6 +1886,11 @@ class UniFiOSClient:
         """Return statistics about the most recent VPN probe run."""
 
         return dict(self._vpn_last_probe_summary)
+
+    def get_last_vpn_probe_summary(self) -> Dict[str, Any]:
+        """Return the cached VPN probe summary (alias helper)."""
+
+        return self.vpn_probe_summary()
 
     def instance_key(self) -> str:
         return self._iid

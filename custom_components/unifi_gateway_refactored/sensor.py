@@ -3,13 +3,14 @@ from __future__ import annotations
 import hashlib
 import logging
 import ipaddress
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
@@ -54,6 +55,206 @@ async def async_setup_entry(
         entry.entry_id,
     )
     async_add_entities(static_entities)
+
+    health_entities: Dict[str, HealthSensor] = {}
+    vpn_remote_user_entities: Dict[str, VpnRemoteUserSensor] = {}
+    vpn_s2s_entities: Dict[str, VpnS2SSensor] = {}
+    vpn_diag_entity: Optional[VpnDiagSensor] = None
+
+    def _build_health_entities(
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        health: Optional[List[Dict[str, Any]]],
+    ) -> List[SensorEntity]:
+        ent_reg = er.async_get(hass)
+        created: List[SensorEntity] = []
+        seen: Set[str] = set()
+        controller_context = {
+            "controller_api": client.get_controller_api_url(),
+            "controller_ui": client.get_controller_url(),
+            "controller_site": client.get_site(),
+        }
+
+        for item in health or []:
+            if not isinstance(item, dict):
+                continue
+            subsystem = str(item.get("subsystem") or "").lower()
+            if subsystem not in {"lan", "wan", "wlan", "www"}:
+                continue
+            uid = f"{entry.entry_id}-health-{subsystem}"
+            seen.add(uid)
+            entity = health_entities.get(uid)
+            if entity is None:
+                if ent_reg.async_get_entity_id("sensor", DOMAIN, uid):
+                    continue
+                entity = HealthSensor(
+                    unique_id=uid,
+                    name=subsystem.upper(),
+                    payload=item,
+                    controller_context=controller_context,
+                )
+                health_entities[uid] = entity
+                created.append(entity)
+            else:
+                entity.set_payload(item, controller_context=controller_context)
+
+        for uid, entity in list(health_entities.items()):
+            if uid not in seen:
+                entity.mark_stale()
+
+        return created
+
+    def _build_vpn_entities(
+        entry: ConfigEntry, data: Dict[str, Any] | UniFiGatewayData | None
+    ) -> List[SensorEntity]:
+        nonlocal vpn_diag_entity
+
+        ents: List[SensorEntity] = []
+        payload: Dict[str, Any]
+        controller_site: Optional[str] = None
+        if isinstance(data, UniFiGatewayData):
+            payload = getattr(data, "vpn", {}) or {}
+            controller = getattr(data, "controller", None)
+            if isinstance(controller, dict):
+                site_candidate = controller.get("site")
+                if isinstance(site_candidate, str) and site_candidate:
+                    controller_site = site_candidate
+        else:
+            payload = dict(data or {})
+            controller_site = payload.get("site")
+
+        vpn_payload = payload.get("vpn") if isinstance(payload.get("vpn"), dict) else payload
+        if not isinstance(vpn_payload, dict):
+            vpn_payload = {}
+        controller_site = (
+            controller_site
+            or payload.get("site")
+            or vpn_payload.get("site")
+            or client.get_site()
+            or "default"
+        )
+        controller_context = {
+            "controller_api": client.get_controller_api_url(),
+            "controller_ui": client.get_controller_url(),
+            "controller_site": controller_site,
+        }
+
+        seen_remote: Set[str] = set()
+        for user in (vpn_payload.get("remote_users") or []):
+            if not isinstance(user, dict):
+                continue
+            base_key = (
+                user.get("id")
+                or user.get("_id")
+                or user.get("remote_user_id")
+                or user.get("uuid")
+                or user.get("name")
+                or user.get("username")
+                or _vpn_peer_id(user)
+            )
+            fragment = _unique_fragment(base_key)
+            if not fragment:
+                fragment = hashlib.sha1(
+                    repr(sorted(user.items())).encode()
+                ).hexdigest()[:12]
+            uid = f"{entry.entry_id}-vpn-ru-{fragment}"
+            seen_remote.add(uid)
+            entity = vpn_remote_user_entities.get(uid)
+            display = user.get("name") or user.get("username") or fragment
+            if entity is None:
+                entity = VpnRemoteUserSensor(
+                    unique_id=uid,
+                    name=f"VPN User: {display}",
+                    site=controller_site,
+                    payload=user,
+                    controller_context=controller_context,
+                )
+                vpn_remote_user_entities[uid] = entity
+                ents.append(entity)
+            else:
+                entity.set_payload(
+                    user,
+                    site=controller_site,
+                    controller_context=controller_context,
+                )
+
+        for uid, entity in list(vpn_remote_user_entities.items()):
+            if uid not in seen_remote:
+                entity.mark_stale()
+
+        seen_s2s: Set[str] = set()
+        for tun in (vpn_payload.get("site_to_site") or []):
+            if not isinstance(tun, dict):
+                continue
+            base_key = (
+                tun.get("peer")
+                or tun.get("id")
+                or tun.get("_id")
+                or tun.get("uuid")
+                or tun.get("name")
+                or tun.get("remote")
+                or _vpn_peer_id(tun)
+            )
+            fragment = _unique_fragment(base_key)
+            if not fragment:
+                fragment = hashlib.sha1(
+                    repr(sorted(tun.items())).encode()
+                ).hexdigest()[:12]
+            uid = f"{entry.entry_id}-vpn-s2s-{fragment}"
+            seen_s2s.add(uid)
+            entity = vpn_s2s_entities.get(uid)
+            peer_name = (
+                tun.get("peer")
+                or tun.get("name")
+                or tun.get("remote")
+                or tun.get("display_name")
+                or fragment
+            )
+            if entity is None:
+                entity = VpnS2SSensor(
+                    unique_id=uid,
+                    name=f"VPN S2S: {peer_name}",
+                    site=controller_site,
+                    payload=tun,
+                    controller_context=controller_context,
+                )
+                vpn_s2s_entities[uid] = entity
+                ents.append(entity)
+            else:
+                entity.set_payload(
+                    tun,
+                    site=controller_site,
+                    controller_context=controller_context,
+                )
+
+        for uid, entity in list(vpn_s2s_entities.items()):
+            if uid not in seen_s2s:
+                entity.mark_stale()
+
+        summary = vpn_payload.get("summary") or {}
+        diagnostics = vpn_payload.get("diagnostics") or {}
+        diag_uid = f"{entry.entry_id}-vpn-summary"
+        if vpn_diag_entity is None:
+            vpn_diag_entity = VpnDiagSensor(
+                unique_id=diag_uid,
+                name="VPN diagnostics",
+                site=controller_site,
+                payload=summary,
+                diagnostics=diagnostics,
+                vpn_payload=vpn_payload,
+                controller_context=controller_context,
+            )
+            ents.append(vpn_diag_entity)
+        else:
+            vpn_diag_entity.set_payload(
+                summary,
+                diagnostics=diagnostics,
+                vpn_payload=vpn_payload,
+                site=controller_site,
+                controller_context=controller_context,
+            )
+
+        return ents
 
     known_wan: set[str] = set()
     known_lan: set[str] = set()
@@ -125,6 +326,18 @@ async def async_setup_entry(
             return
 
         new_entities: List[SensorEntity] = []
+
+        controller_site: Optional[str] = None
+        controller_info = getattr(coordinator_data, "controller", None)
+        if isinstance(controller_info, dict):
+            site_candidate = controller_info.get("site")
+            if isinstance(site_candidate, str) and site_candidate:
+                controller_site = site_candidate
+
+        new_entities.extend(
+            _build_health_entities(hass, entry, coordinator_data.health)
+        )
+        new_entities.extend(_build_vpn_entities(entry, coordinator_data))
 
         vpn_servers = coordinator_data.vpn_servers
         vpn_clients = coordinator_data.vpn_clients
@@ -275,7 +488,7 @@ async def async_setup_entry(
                 entry.entry_id,
                 names,
             )
-            async_add_entities(new_entities)
+            async_add_entities(new_entities, update_before_add=True)
         else:
             _LOGGER.debug(
                 "No new dynamic sensors discovered for entry %s", entry.entry_id
@@ -291,6 +504,21 @@ def _vpn_peer_id(peer: Dict[str, Any]) -> str:
     if stored not in (None, ""):
         return str(stored)
     return vpn_peer_identity(peer)
+
+
+def _unique_fragment(value: Any) -> str:
+    """Return a sanitized fragment suitable for unique IDs."""
+
+    if value in (None, "", [], {}):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in text)
+    cleaned = cleaned.strip("_")
+    if cleaned:
+        return cleaned.lower()
+    return hashlib.sha1(text.encode()).hexdigest()[:12]
 
 
 def _wan_identifier_candidates(
@@ -748,6 +976,390 @@ def _match_clients_for_peer(
                     matches.append(client)
                     break
     return matches
+
+
+class _GatewayDynamicSensor(SensorEntity):
+    """Base helper for dynamically created sensors that manage their payload."""
+
+    _attr_should_poll = False
+
+    def __init__(
+        self,
+        unique_id: str,
+        name: str,
+        controller_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._attr_unique_id = unique_id
+        self._attr_name = name
+        self._attr_available = False
+        self._state: Optional[Any] = None
+        self._attrs: Dict[str, Any] = {}
+        self._payload: Dict[str, Any] = {}
+        self._controller_context: Dict[str, Any] = {}
+        if controller_context:
+            self.update_context(controller_context)
+        self._default_icon = getattr(self, "_attr_icon", None)
+
+    def update_context(self, context: Optional[Dict[str, Any]]) -> None:
+        if not context:
+            return
+        for key, value in context.items():
+            if value in (None, "", [], {}):
+                continue
+            self._controller_context[key] = value
+
+    @property
+    def native_value(self) -> Optional[Any]:
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        attrs = dict(self._controller_context)
+        attrs.update(self._attrs)
+        return attrs
+
+    @property
+    def payload(self) -> Dict[str, Any]:
+        return self._payload
+
+    def _async_write_state(self) -> None:
+        if self.hass:
+            self.async_write_ha_state()
+
+    def mark_stale(self) -> None:
+        self._payload = {}
+        self._state = None
+        self._attrs = {}
+        self._attr_available = False
+        self._async_write_state()
+
+
+class HealthSensor(_GatewayDynamicSensor):
+    """Sensor exposing controller health per subsystem."""
+
+    def __init__(
+        self,
+        unique_id: str,
+        name: str,
+        payload: Dict[str, Any],
+        controller_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(unique_id, name, controller_context)
+        self._subsystem = name.lower()
+        self.set_payload(payload, controller_context=controller_context)
+
+    def set_payload(
+        self,
+        payload: Optional[Dict[str, Any]],
+        controller_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if controller_context:
+            self.update_context(controller_context)
+        self._payload = dict(payload or {})
+        if self._payload.get("subsystem"):
+            self._subsystem = str(self._payload.get("subsystem")).lower()
+        self._attr_available = bool(payload)
+        status = self._payload.get("status") or self._payload.get("state")
+        if isinstance(status, str):
+            cleaned = status.strip()
+            self._state = cleaned.upper() if cleaned else None
+        else:
+            self._state = status
+        attrs = {
+            key: value for key, value in self._payload.items() if key != "subsystem"
+        }
+        attrs["subsystem"] = self._payload.get("subsystem") or self._subsystem
+        self._attrs = attrs
+        self._async_write_state()
+
+    def mark_stale(self) -> None:  # type: ignore[override]
+        self._payload = {}
+        self._attr_available = False
+        self._state = None
+        self._attrs = {"subsystem": self._subsystem}
+        self._async_write_state()
+
+    @property
+    def icon(self) -> Optional[str]:
+        status = str(self._state or "").lower()
+        if status in {"ok", "online", "up", "healthy", "connected"}:
+            return "mdi:check-circle"
+        if status in {"warning", "notice", "degraded", "partial"}:
+            return "mdi:alert"
+        if status in {"error", "critical", "down", "offline", "disconnected"}:
+            return "mdi:alert-circle"
+        if status in {"disabled", "not_configured", "notconfigured"}:
+            return "mdi:power-plug-off"
+        return self._default_icon
+
+
+class VpnRemoteUserSensor(_GatewayDynamicSensor):
+    """Sensor describing VPN remote user sessions."""
+
+    _attr_icon = "mdi:account-lock-outline"
+
+    def __init__(
+        self,
+        unique_id: str,
+        name: str,
+        site: str,
+        payload: Dict[str, Any],
+        controller_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(unique_id, name, controller_context)
+        self._site = site
+        self.set_payload(payload, site=site, controller_context=controller_context)
+
+    def set_payload(
+        self,
+        payload: Optional[Dict[str, Any]],
+        *,
+        site: Optional[str] = None,
+        controller_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if site:
+            self._site = site
+        if controller_context:
+            self.update_context(controller_context)
+        self._payload = dict(payload or {})
+        self._attr_available = bool(payload)
+        state = _vpn_peer_state(self._payload, []) if self._payload else None
+        if isinstance(state, str):
+            self._state = state.upper()
+        else:
+            self._state = state
+        client_count = _vpn_peer_client_count(self._payload, []) if payload else None
+        attrs: Dict[str, Any] = {
+            "site": self._site,
+            "state": self._state,
+        }
+        for key in (
+            "name",
+            "username",
+            "ip",
+            "remote_ip",
+            "tunnel_ip",
+            "mac",
+            "profile",
+            "vpn_type",
+            "role",
+            "server_addr",
+            "server",
+            "connection_name",
+            "connected_at",
+            "last_connected",
+            "last_state_change",
+        ):
+            value = self._payload.get(key)
+            if value not in (None, "", [], {}):
+                attrs[key] = value
+        if client_count is not None:
+            attrs["client_count"] = client_count
+        errors = self._payload.get("errors") or self._payload.get("error")
+        if errors not in (None, "", [], {}):
+            attrs["errors"] = errors
+        if self._payload:
+            attrs["raw"] = self._payload
+        self._attrs = attrs
+        self._async_write_state()
+
+    def mark_stale(self) -> None:  # type: ignore[override]
+        self._payload = {}
+        self._state = None
+        self._attr_available = False
+        self._attrs = {"site": self._site}
+        self._async_write_state()
+
+    @property
+    def icon(self) -> Optional[str]:
+        return _vpn_icon_for_state(self._state, self._default_icon)
+
+
+class VpnS2SSensor(_GatewayDynamicSensor):
+    """Sensor describing VPN site-to-site tunnels."""
+
+    _attr_icon = "mdi:lan-lock"
+
+    def __init__(
+        self,
+        unique_id: str,
+        name: str,
+        site: str,
+        payload: Dict[str, Any],
+        controller_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(unique_id, name, controller_context)
+        self._site = site
+        self.set_payload(payload, site=site, controller_context=controller_context)
+
+    def set_payload(
+        self,
+        payload: Optional[Dict[str, Any]],
+        *,
+        site: Optional[str] = None,
+        controller_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if site:
+            self._site = site
+        if controller_context:
+            self.update_context(controller_context)
+        self._payload = dict(payload or {})
+        self._attr_available = bool(payload)
+        state = _vpn_peer_state(self._payload, []) if self._payload else None
+        if isinstance(state, str):
+            self._state = state.upper()
+        else:
+            self._state = state
+        attrs: Dict[str, Any] = {
+            "site": self._site,
+            "state": self._state,
+        }
+        for key in (
+            "peer",
+            "name",
+            "remote",
+            "description",
+            "vpn_type",
+            "interface",
+            "ifname",
+            "remote_ip",
+            "remote_host",
+            "public_ip",
+            "tunnel_ip",
+            "tunnel_subnet",
+            "client_subnet",
+            "gateway",
+            "last_state_change",
+        ):
+            value = self._payload.get(key)
+            if value not in (None, "", [], {}):
+                attrs[key] = value
+        count = _vpn_peer_client_count(self._payload, []) if payload else None
+        if count is not None:
+            attrs["client_count"] = count
+        if self._payload:
+            attrs["raw"] = self._payload
+        self._attrs = attrs
+        self._async_write_state()
+
+    def mark_stale(self) -> None:  # type: ignore[override]
+        self._payload = {}
+        self._state = None
+        self._attr_available = False
+        self._attrs = {"site": self._site}
+        self._async_write_state()
+
+    @property
+    def icon(self) -> Optional[str]:
+        return _vpn_icon_for_state(self._state, self._default_icon)
+
+
+class VpnDiagSensor(_GatewayDynamicSensor):
+    """Aggregated VPN diagnostics sensor."""
+
+    _attr_icon = "mdi:shield-search"
+
+    def __init__(
+        self,
+        unique_id: str,
+        name: str,
+        site: str,
+        payload: Dict[str, Any],
+        diagnostics: Optional[Dict[str, Any]] = None,
+        vpn_payload: Optional[Dict[str, Any]] = None,
+        controller_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(unique_id, name, controller_context)
+        self._site = site
+        self.set_payload(
+            payload,
+            diagnostics=diagnostics,
+            vpn_payload=vpn_payload,
+            site=site,
+            controller_context=controller_context,
+        )
+
+    def set_payload(
+        self,
+        summary: Optional[Dict[str, Any]],
+        *,
+        diagnostics: Optional[Dict[str, Any]] = None,
+        vpn_payload: Optional[Dict[str, Any]] = None,
+        site: Optional[str] = None,
+        controller_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if site:
+            self._site = site
+        if controller_context:
+            self.update_context(controller_context)
+        summary_payload = dict(summary or {})
+        self._payload = summary_payload
+        diagnostics_payload = dict(diagnostics or {})
+        counts = diagnostics_payload.get("counts")
+        if not isinstance(counts, dict):
+            counts = {}
+        vpn_payload = dict(vpn_payload or {})
+        derived_counts = {
+            "servers": len(vpn_payload.get("servers") or []),
+            "clients": len(vpn_payload.get("clients") or []),
+            "remote_users": len(vpn_payload.get("remote_users") or []),
+            "site_to_site": len(vpn_payload.get("site_to_site") or []),
+        }
+        counts.update({k: v for k, v in derived_counts.items() if k not in counts})
+        diagnostics_payload["counts"] = counts
+
+        status: Optional[str] = None
+        for source in (summary_payload, diagnostics_payload):
+            if not isinstance(source, dict):
+                continue
+            for key in ("status", "state", "result", "outcome", "health"):
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    status = value.strip().upper()
+                    break
+            if status:
+                break
+        if not status:
+            healthy = summary_payload.get("healthy")
+            if isinstance(healthy, bool):
+                status = "OK" if healthy else "ERROR"
+        self._state = status or "UNKNOWN"
+        self._attr_available = bool(summary_payload or diagnostics_payload or vpn_payload)
+
+        attrs: Dict[str, Any] = {
+            "site": self._site,
+            "summary": summary_payload,
+            "diagnostics": diagnostics_payload,
+            "counts": counts,
+        }
+        fetch_errors = diagnostics_payload.get("fetch_errors")
+        if fetch_errors not in (None, "", [], {}):
+            attrs["fetch_errors"] = fetch_errors
+        if vpn_payload:
+            attrs["remote_users"] = vpn_payload.get("remote_users")
+            attrs["site_to_site"] = vpn_payload.get("site_to_site")
+            attrs["servers"] = vpn_payload.get("servers")
+            attrs["clients"] = vpn_payload.get("clients")
+        self._attrs = attrs
+        self._async_write_state()
+
+    def mark_stale(self) -> None:  # type: ignore[override]
+        self._payload = {}
+        self._state = None
+        self._attr_available = False
+        self._attrs = {"site": self._site}
+        self._async_write_state()
+
+    @property
+    def icon(self) -> Optional[str]:
+        status = str(self._state or "").upper()
+        if status in {"OK", "ONLINE", "CONNECTED", "HEALTHY"}:
+            return "mdi:shield-check"
+        if status in {"ERROR", "FAILED", "CRITICAL"}:
+            return "mdi:shield-alert"
+        if status in {"WARNING", "WARN", "NOTICE"}:
+            return "mdi:shield-alert-outline"
+        return self._default_icon
 
 
 class UniFiGatewaySensorBase(
