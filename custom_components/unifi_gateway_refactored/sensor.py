@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import ipaddress
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
@@ -61,6 +61,56 @@ async def async_setup_entry(
     known_vpn_clients: set[str] = set()
     known_vpn_site_to_site: set[str] = set()
 
+    def _create_dynamic_entity(
+        kind: str,
+        peer_id: str,
+        payload: Dict[str, Any],
+        factory: Callable[[], SensorEntity],
+    ) -> Optional[SensorEntity]:
+        """Safely create a dynamic VPN entity and log failures for debugging."""
+
+        try:
+            entity = factory()
+        except Exception as err:  # pragma: no cover - defensive guard
+            summary_keys = [
+                "_id",
+                "id",
+                "uuid",
+                "name",
+                "peer_name",
+                "description",
+                "vpn_name",
+                "role",
+                "type",
+                "vpn_type",
+                "interface",
+                "server_addr",
+                "remote_ip",
+            ]
+            summary = {
+                key: payload.get(key)
+                for key in summary_keys
+                if key in payload and payload.get(key) not in (None, "", [], {})
+            }
+            _LOGGER.error(
+                "Failed to create %s entity for entry %s (peer_id=%s): %s",
+                kind,
+                entry.entry_id,
+                peer_id or "<missing>",
+                err,
+            )
+            _LOGGER.debug(
+                "VPN entity payload for %s (%s): keys=%s summary=%s",
+                kind,
+                peer_id or "<missing>",
+                sorted(payload.keys()),
+                summary,
+                exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
+            )
+            return None
+
+        return entity
+
     def _sync_dynamic() -> None:
         _LOGGER.debug(
             "Synchronizing dynamic UniFi Gateway sensors for entry %s",
@@ -74,6 +124,27 @@ async def async_setup_entry(
             return
 
         new_entities: List[SensorEntity] = []
+
+        vpn_servers = coordinator_data.vpn_servers
+        vpn_clients = coordinator_data.vpn_clients
+        vpn_site_to_site = getattr(coordinator_data, "vpn_site_to_site", [])
+        vpn_summary = {
+            "servers": len(vpn_servers),
+            "clients": len(vpn_clients),
+            "site_to_site": len(vpn_site_to_site),
+        }
+        _LOGGER.debug(
+            "VPN dataset for entry %s: %s",
+            entry.entry_id,
+            vpn_summary,
+        )
+        diagnostics = getattr(coordinator_data, "vpn_diagnostics", None)
+        if diagnostics:
+            _LOGGER.debug(
+                "VPN diagnostics for entry %s: %s",
+                entry.entry_id,
+                diagnostics,
+            )
 
         for link in coordinator_data.wan_links:
             link_id = str(link.get("id"))
@@ -106,32 +177,85 @@ async def async_setup_entry(
             known_wlan.add(ssid)
             new_entities.append(UniFiGatewayWlanClientsSensor(coordinator, client, wlan))
 
-        for peer in coordinator_data.vpn_servers:
+        for peer in vpn_servers:
             peer_id = _vpn_peer_id(peer)
+            if not peer_id:
+                _LOGGER.debug(
+                    "Skipping VPN server entity without peer id for entry %s: keys=%s",
+                    entry.entry_id,
+                    sorted(peer.keys()),
+                )
+                continue
             if peer_id in known_vpn_servers:
                 continue
-            known_vpn_servers.add(peer_id)
-            new_entities.append(
-                UniFiGatewayVpnServerSensor(coordinator, client, peer)
+            entity = _create_dynamic_entity(
+                "vpn_server",
+                peer_id,
+                peer,
+                lambda peer=peer: UniFiGatewayVpnServerSensor(
+                    coordinator, client, peer
+                ),
             )
+            if entity:
+                known_vpn_servers.add(peer_id)
+                _LOGGER.debug(
+                    "Discovered VPN server peer %s for entry %s", peer_id, entry.entry_id
+                )
+                new_entities.append(entity)
 
-        for peer in coordinator_data.vpn_clients:
+        for peer in vpn_clients:
             peer_id = _vpn_peer_id(peer)
+            if not peer_id:
+                _LOGGER.debug(
+                    "Skipping VPN client entity without peer id for entry %s: keys=%s",
+                    entry.entry_id,
+                    sorted(peer.keys()),
+                )
+                continue
             if peer_id in known_vpn_clients:
                 continue
-            known_vpn_clients.add(peer_id)
-            new_entities.append(
-                UniFiGatewayVpnClientSensor(coordinator, client, peer)
+            entity = _create_dynamic_entity(
+                "vpn_client",
+                peer_id,
+                peer,
+                lambda peer=peer: UniFiGatewayVpnClientSensor(
+                    coordinator, client, peer
+                ),
             )
+            if entity:
+                known_vpn_clients.add(peer_id)
+                _LOGGER.debug(
+                    "Discovered VPN client peer %s for entry %s", peer_id, entry.entry_id
+                )
+                new_entities.append(entity)
 
-        for peer in getattr(coordinator_data, "vpn_site_to_site", []):
+        for peer in vpn_site_to_site:
             peer_id = _vpn_peer_id(peer)
+            if not peer_id:
+                _LOGGER.debug(
+                    "Skipping VPN site-to-site entity without peer id for entry %s: keys=%s",
+                    entry.entry_id,
+                    sorted(peer.keys()),
+                )
+                continue
             if peer_id in known_vpn_site_to_site:
                 continue
-            known_vpn_site_to_site.add(peer_id)
-            new_entities.append(
-                UniFiGatewayVpnSiteToSiteSensor(coordinator, client, peer)
+            entity = _create_dynamic_entity(
+                "vpn_site_to_site",
+                peer_id,
+                peer,
+                lambda peer=peer: UniFiGatewayVpnSiteToSiteSensor(
+                    coordinator, client, peer
+                ),
             )
+            if entity:
+                known_vpn_site_to_site.add(peer_id)
+                _LOGGER.debug(
+                    "Discovered VPN site-to-site peer %s for entry %s",
+                    peer_id,
+                    entry.entry_id,
+                )
+                new_entities.append(entity)
 
         if new_entities:
             names = [
@@ -709,6 +833,12 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
                 total_found = True
             if total_found:
                 attrs["num_user_total"] = total
+        if (
+            self._subsystem == "vpn"
+            and data
+            and getattr(data, "vpn_diagnostics", None)
+        ):
+            attrs["vpn_diagnostics"] = data.vpn_diagnostics
         attrs.update(self._controller_attrs())
         return attrs
 
