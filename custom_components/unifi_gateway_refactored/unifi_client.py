@@ -104,6 +104,17 @@ _LOGGER = logging.getLogger(__name__)
 
 _VPN_EXPECTED_ERROR_CODES: Tuple[int, ...] = (400, 404)
 
+_VPN_CONTAINER_KEYS = {
+    "items",
+    "item",
+    "data",
+    "records",
+    "results",
+    "list",
+    "entries",
+    "groups",
+}
+
 _SERVER_FIELD_RE = re.compile(r"([A-Za-z0-9_]+)\s*:")
 
 _VPN_RECORD_KEYS = {
@@ -184,6 +195,8 @@ _SERVER_ROLE_KEYS = {
     "remote_users",
     "remoteuser",
     "remoteusers",
+    "remote_access",
+    "remoteaccess",
     "wgserver",
     "wgservers",
     "peer",
@@ -197,6 +210,7 @@ _CLIENT_ROLE_KEYS = {
     "vpnclients",
     "wgclient",
     "wgclients",
+    "teleport",
     "tunnel",
     "tunnels",
     "connection",
@@ -634,6 +648,13 @@ class UniFiOSClient:
         return self._api_bases()
 
     @staticmethod
+    def _vpn_is_internet_path(path: str) -> bool:
+        """Return True if the path targets the internet/vpn namespace."""
+
+        normalized = path.lstrip("/")
+        return normalized == "internet/vpn" or normalized.startswith("internet/vpn/")
+
+    @staticmethod
     def _vpn_should_retry_with_alternate_base(err: APIError) -> bool:
         """Return True if the VPN error indicates an alternate endpoint is needed."""
 
@@ -716,7 +737,7 @@ class UniFiOSClient:
     ) -> Any:
         """Issue a GET for internet/vpn paths with UniFi v2 fallback support."""
 
-        if not path.startswith("internet/vpn/"):
+        if not self._vpn_is_internet_path(path):
             raise ValueError(f"VPN internet endpoint expected, got {path}")
 
         return self._vpn_api_request(
@@ -1048,7 +1069,11 @@ class UniFiOSClient:
             for key, value in payload.items():
                 if not isinstance(value, (dict, list)):
                     continue
-                next_hint = key if isinstance(key, str) else key_hint
+                next_hint = key_hint
+                if isinstance(key, str):
+                    lowered = key.strip().lower()
+                    if lowered not in _VPN_CONTAINER_KEYS:
+                        next_hint = lowered
                 yield from self._iter_vpn_payload(value, next_hint)
 
     def _prepare_vpn_peer(
@@ -1170,6 +1195,13 @@ class UniFiOSClient:
             return self._vpn_cache[1]
 
         probes: List[Tuple[str, Optional[str]]] = [
+            ("internet/vpn", None),
+            ("internet/vpn/overview", None),
+            ("internet/vpn/remote-access", "server"),
+            ("internet/vpn/remote-access/users", "server"),
+            ("internet/vpn/teleport", "teleport"),
+            ("internet/vpn/teleport/clients", "teleport"),
+            ("internet/vpn/teleport/servers", "teleport"),
             ("list/remoteuser", "remote_user"),
             ("stat/vpn", None),
             ("list/vpn", None),
@@ -1184,7 +1216,7 @@ class UniFiOSClient:
         total_candidates = 0
 
         def _fetch_vpn_payload(path: str) -> Any:
-            if path.startswith("internet/vpn/"):
+            if self._vpn_is_internet_path(path):
                 return self._vpn_get_internet(
                     path,
                     expected_errors=_VPN_EXPECTED_ERROR_CODES,
@@ -1328,15 +1360,24 @@ class UniFiOSClient:
         """Yield raw VPN peer lists using the legacy discovery approach."""
 
         legacy_paths = (
+            "internet/vpn",
+            "internet/vpn/remote-access",
+            "internet/vpn/remote-access/users",
+            "internet/vpn/teleport",
+            "internet/vpn/teleport/clients",
+            "internet/vpn/teleport/servers",
             "list/remoteuser",
             "list/vpn",
             "stat/vpn",
             "internet/vpn/peers",
+            "internet/vpn/servers",
+            "internet/vpn/clients",
+            "internet/vpn/site-to-site",
         )
 
         for path in legacy_paths:
             try:
-                if path.startswith("internet/vpn/"):
+                if self._vpn_is_internet_path(path):
                     payload = self._vpn_get_internet(
                         path,
                         expected_errors=_VPN_EXPECTED_ERROR_CODES,
@@ -1438,7 +1479,7 @@ class UniFiOSClient:
 
         servers = self._filter_vpn_peers(
             self.get_vpn_peers(),
-            {"server", "remote_user", "remoteuser", "peer"},
+            {"server", "remote_user", "remoteuser", "remote_access", "peer"},
         )
         _LOGGER.debug("Returning %s VPN server records", len(servers))
         if not servers:
