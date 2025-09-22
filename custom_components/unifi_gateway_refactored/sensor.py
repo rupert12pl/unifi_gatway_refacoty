@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import ipaddress
 from typing import Any, Callable, Dict, Iterable, List, Optional
@@ -780,6 +781,40 @@ class UniFiGatewaySensorBase(
         }
 
 
+class UniFiGatewayWanSensorBase(UniFiGatewaySensorBase):
+    """Common logic for WAN-related sensors."""
+
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        link: Dict[str, Any],
+        suffix: str,
+        name_suffix: str = "",
+    ) -> None:
+        self._link_id = str(link.get("id"))
+        self._link_name = link.get("name") or self._link_id
+        self._identifiers = _wan_identifier_candidates(
+            self._link_id, self._link_name, link
+        )
+        canonical = (sorted(self._identifiers) or [self._link_id])[0]
+        self._uid_source = canonical
+        self._uid_key = hashlib.sha1(canonical.encode()).hexdigest()[:12]
+        unique_id = f"unifigw_{client.instance_key()}_wan_{self._uid_key}_{suffix}"
+        super().__init__(
+            coordinator, client, unique_id, f"WAN {self._link_name}{name_suffix}"
+        )
+
+    def _link(self) -> Optional[Dict[str, Any]]:
+        data = self.coordinator.data
+        if not data:
+            return None
+        for link in data.wan_links:
+            if str(link.get("id")) == self._link_id:
+                return link
+        return None
+
+
 class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
     def __init__(
         self,
@@ -953,7 +988,7 @@ class UniFiGatewayFirmwareSensor(UniFiGatewaySensorBase):
         return attrs
 
 
-class UniFiGatewayWanStatusSensor(UniFiGatewaySensorBase):
+class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
     _attr_icon = "mdi:shield-outline"
 
     def __init__(
@@ -962,21 +997,8 @@ class UniFiGatewayWanStatusSensor(UniFiGatewaySensorBase):
         client: UniFiOSClient,
         link: Dict[str, Any],
     ) -> None:
-        self._link_id = str(link.get("id"))
-        self._link_name = link.get("name") or self._link_id
-        self._identifiers = _wan_identifier_candidates(self._link_id, self._link_name, link)
-        unique_id = f"unifigw_{client.instance_key()}_wan_{self._link_id}_status"
-        super().__init__(coordinator, client, unique_id, f"WAN {self._link_name}")
-        self._default_icon = "mdi:shield-outline"
-
-    def _link(self) -> Optional[Dict[str, Any]]:
-        data = self.coordinator.data
-        if not data:
-            return None
-        for link in data.wan_links:
-            if str(link.get("id")) == self._link_id:
-                return link
-        return None
+        super().__init__(coordinator, client, link, "status")
+        self._default_icon = getattr(self, "_attr_icon", None)
 
     def _wan_health_record(self) -> Optional[Dict[str, Any]]:
         return _find_wan_health_record(self.coordinator.data, self._identifiers)
@@ -1048,7 +1070,7 @@ class UniFiGatewayWanStatusSensor(UniFiGatewaySensorBase):
         return attrs
 
 
-class UniFiGatewayWanIpSensor(UniFiGatewaySensorBase):
+class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
     _attr_icon = "mdi:ip"
 
     def __init__(
@@ -1057,22 +1079,9 @@ class UniFiGatewayWanIpSensor(UniFiGatewaySensorBase):
         client: UniFiOSClient,
         link: Dict[str, Any],
     ) -> None:
-        self._link_id = str(link.get("id"))
-        self._link_name = link.get("name") or self._link_id
-        self._identifiers = _wan_identifier_candidates(self._link_id, self._link_name, link)
+        super().__init__(coordinator, client, link, "ip", " IP")
         self._last_ip: Optional[str] = None
         self._last_source: Optional[str] = None
-        unique_id = f"unifigw_{client.instance_key()}_wan_{self._link_id}_ip"
-        super().__init__(coordinator, client, unique_id, f"WAN {self._link_name} IP")
-
-    def _link(self) -> Optional[Dict[str, Any]]:
-        data = self.coordinator.data
-        if not data:
-            return None
-        for link in data.wan_links:
-            if str(link.get("id")) == self._link_id:
-                return link
-        return None
 
     def _wan_health_record(self) -> Optional[Dict[str, Any]]:
         return _find_wan_health_record(self.coordinator.data, self._identifiers)
@@ -1131,7 +1140,7 @@ class UniFiGatewayWanIpSensor(UniFiGatewaySensorBase):
         return attrs
 
 
-class UniFiGatewayWanIspSensor(UniFiGatewaySensorBase):
+class UniFiGatewayWanIspSensor(UniFiGatewayWanSensorBase):
     _attr_icon = "mdi:domain"
 
     def __init__(
@@ -1140,22 +1149,9 @@ class UniFiGatewayWanIspSensor(UniFiGatewaySensorBase):
         client: UniFiOSClient,
         link: Dict[str, Any],
     ) -> None:
-        self._link_id = str(link.get("id"))
-        self._link_name = link.get("name") or self._link_id
-        self._identifiers = _wan_identifier_candidates(self._link_id, self._link_name, link)
+        super().__init__(coordinator, client, link, "isp", " ISP")
         self._last_isp: Optional[str] = None
         self._last_source: Optional[str] = None
-        unique_id = f"unifigw_{client.instance_key()}_wan_{self._link_id}_isp"
-        super().__init__(coordinator, client, unique_id, f"WAN {self._link_name} ISP")
-
-    def _link(self) -> Optional[Dict[str, Any]]:
-        data = self.coordinator.data
-        if not data:
-            return None
-        for link in data.wan_links:
-            if str(link.get("id")) == self._link_id:
-                return link
-        return None
 
     def _wan_health_record(self) -> Optional[Dict[str, Any]]:
         return _find_wan_health_record(self.coordinator.data, self._identifiers)
