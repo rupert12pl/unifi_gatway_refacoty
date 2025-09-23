@@ -1,8 +1,11 @@
-## Checklist
-
-- [ ] No calls to /v2/api/.../internet/vpn/*, /stat/teleport*, /openapi.json, /api-docs
-- [ ] `_join_api` used for all UniFi URLs
-- [ ] No duplicate entities; stable `unique_id` scheme
-- [ ] No secrets in logs; timeouts set; SSL verify respected
-- [ ] Coordinator never raises on VPN 4xx/400
-- [ ] Tests (rg checks) pass
+## Summary
+- [ ] Uses LAN/WAN fetch helper for VPN (same session/timeouts/site/base).
+- [ ] No per-connection VPN entities created.
+- [ ] `configured_vpn` attribute present; `attempts` and `winner_paths` filled.
+- [ ] Handles 400/404 without raising; diagnostics populated.
+- [ ] No secrets in logs or attributes; redaction verified.
+- [ ] No weak crypto (MD5/SHA-1/RC4/DES/3DES); any hashing for IDs uses SHA-256.
+- [ ] TLS verify on by default; timeouts finite; retries bounded.
+- [ ] Unique IDs stable and include `entry.entry_id`.
+- [ ] Type hints added; `ruff`/`flake8`/`mypy`/`bandit` pass.
+- [ ] Tests for legacy/v2 fallback and double-prefix prevention pass.

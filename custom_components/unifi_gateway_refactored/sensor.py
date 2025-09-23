@@ -28,10 +28,6 @@ SUBSYSTEM_SENSORS: Dict[str, tuple[str, str]] = {
 }
 
 
-def compose_unique_id(entry_id: str, site_key: str, family: str, metric_key: str) -> str:
-    return f"{entry_id}|{site_key}|{family}|{metric_key}"
-
-
 def _build_health_entities(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -58,12 +54,7 @@ def _build_health_entities(
             continue
         if subsystem in SUBSYSTEM_SENSORS:
             continue
-        uid = compose_unique_id(
-            entry.entry_id,
-            site_key,
-            "health",
-            _sanitize_stable_key(subsystem),
-        )
+        uid = f"{entry.entry_id}|{site_key}|health::{_sanitize_stable_key(subsystem)}"
         seen.add(uid)
         entity = health_entities.get(uid)
         if entity is None:
@@ -192,22 +183,26 @@ async def async_setup_entry(
 
         remote_users = list(vpn_state.remote_users)
         s2s_peers = list(vpn_state.site_to_site_peers)
+        teleport_servers = list(vpn_state.teleport_servers)
+        teleport_clients = list(vpn_state.teleport_clients)
 
         counts = {
-            "remote_users": int(vpn_state.counts.get("remote_users", len(remote_users))),
-            "s2s_peers": int(vpn_state.counts.get("s2s_peers", len(s2s_peers))),
+            "remote_users": len(remote_users),
+            "s2s_peers": len(s2s_peers),
+            "teleport_servers": len(teleport_servers),
+            "teleport_clients": len(teleport_clients),
         }
         total_connections = sum(counts.values())
 
-        diag_errors = [err for err in vpn_state.errors if err]
-        if diag_errors:
+        diag_errors = vpn_state.errors
+        if isinstance(diag_errors, dict) and diag_errors:
             state_token = "error"
         elif total_connections > 0:
             state_token = "ok"
         else:
             state_token = "unknown"
 
-        diag_uid = compose_unique_id(entry.entry_id, site_key, "vpn", "diagnostics")
+        diag_uid = f"{entry.entry_id}|{site_key}|vpn::diagnostics"
         if vpn_diag_entity is None:
             vpn_diag_entity = VpnDiagSensor(
                 unique_id=diag_uid,
@@ -414,30 +409,15 @@ def resolve_site_key(client: UniFiOSClient, data: UniFiGatewayData | None) -> st
 def build_wan_unique_id(
     entry_id: str, site_key: str, link: Dict[str, Any], suffix: str
 ) -> str:
-    return compose_unique_id(
-        entry_id,
-        site_key,
-        "wan",
-        f"{wan_interface_key(link)}::{suffix}",
-    )
+    return f"{entry_id}|{site_key}|wan::{wan_interface_key(link)}::{suffix}"
 
 
 def build_lan_unique_id(entry_id: str, site_key: str, network: Dict[str, Any]) -> str:
-    return compose_unique_id(
-        entry_id,
-        site_key,
-        "lan",
-        f"{lan_interface_key(network)}::clients",
-    )
+    return f"{entry_id}|{site_key}|lan::{lan_interface_key(network)}::clients"
 
 
 def build_wlan_unique_id(entry_id: str, site_key: str, wlan: Dict[str, Any]) -> str:
-    return compose_unique_id(
-        entry_id,
-        site_key,
-        "wlan",
-        f"{wlan_interface_key(wlan)}::clients",
-    )
+    return f"{entry_id}|{site_key}|wlan::{wlan_interface_key(wlan)}::clients"
 
 
 def _first_non_empty(record: Dict[str, Any], keys: Iterable[str]) -> Optional[str]:
@@ -859,12 +839,10 @@ class VpnDiagSensor(_GatewayDynamicSensor):
             self.update_context(controller_context)
         self._vpn_state = vpn_state
         counts = {
-            "remote_users": int(
-                vpn_state.counts.get("remote_users", len(vpn_state.remote_users))
-            ),
-            "s2s_peers": int(
-                vpn_state.counts.get("s2s_peers", len(vpn_state.site_to_site_peers))
-            ),
+            "remote_users": len(vpn_state.remote_users),
+            "s2s_peers": len(vpn_state.site_to_site_peers),
+            "teleport_servers": len(vpn_state.teleport_servers),
+            "teleport_clients": len(vpn_state.teleport_clients),
         }
         self._counts = counts
 
@@ -879,7 +857,8 @@ class VpnDiagSensor(_GatewayDynamicSensor):
             "counts": counts,
             "remote_users": list(vpn_state.remote_users),
             "site_to_site_peers": list(vpn_state.site_to_site_peers),
-            "configured_list": vpn_state.configured_list,
+            "teleport_servers": list(vpn_state.teleport_servers),
+            "teleport_clients": list(vpn_state.teleport_clients),
         }
         attempts_attr = [
             {
@@ -893,7 +872,7 @@ class VpnDiagSensor(_GatewayDynamicSensor):
         if attempts_attr:
             attrs["attempts"] = attempts_attr
         if vpn_state.errors:
-            attrs["errors"] = list(vpn_state.errors)
+            attrs["errors"] = vpn_state.errors
         self._attrs = attrs
         self._async_write_state()
 
@@ -906,8 +885,9 @@ class VpnDiagSensor(_GatewayDynamicSensor):
             "counts": {},
             "remote_users": [],
             "site_to_site_peers": [],
+            "teleport_servers": [],
+            "teleport_clients": [],
             "attempts": [],
-            "configured_list": "",
         }
         self._async_write_state()
 
@@ -1003,11 +983,8 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
         label: str,
         icon: str,
     ) -> None:
-        unique_id = compose_unique_id(
-            entry_id,
-            site_key,
-            "subsystem",
-            _sanitize_stable_key(subsystem),
+        unique_id = (
+            f"{entry_id}|{site_key}|subsystem::{_sanitize_stable_key(subsystem)}"
         )
         super().__init__(coordinator, client, unique_id, label)
         self._subsystem = subsystem
@@ -1064,14 +1041,10 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
         if self._subsystem == "vpn" and data:
             vpn_state = data.vpn_state or VpnState()
             counts = {
-                "remote_users": int(
-                    vpn_state.counts.get("remote_users", len(vpn_state.remote_users))
-                ),
-                "site_to_site_peers": int(
-                    vpn_state.counts.get(
-                        "s2s_peers", len(vpn_state.site_to_site_peers)
-                    )
-                ),
+                "remote_users": len(vpn_state.remote_users),
+                "site_to_site_peers": len(vpn_state.site_to_site_peers),
+                "teleport_servers": len(vpn_state.teleport_servers),
+                "teleport_clients": len(vpn_state.teleport_clients),
             }
             attrs["vpn_counts"] = counts
             if vpn_state.attempts:
@@ -1085,9 +1058,7 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
                     for attempt in vpn_state.attempts
                 ]
             if vpn_state.errors:
-                attrs["vpn_errors"] = list(vpn_state.errors)
-            if vpn_state.configured_list:
-                attrs["vpn_configured_list"] = vpn_state.configured_list
+                attrs["vpn_errors"] = vpn_state.errors
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -1130,9 +1101,10 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
                 not (
                     vpn_state.remote_users
                     or vpn_state.site_to_site_peers
+                    or vpn_state.teleport_servers
+                    or vpn_state.teleport_clients
                 )
                 and not vpn_state.errors
-                and not any(vpn_state.counts.values())
             ):
                 return True
 
@@ -1149,7 +1121,7 @@ class UniFiGatewayAlertsSensor(UniFiGatewaySensorBase):
         entry_id: str,
         site_key: str,
     ) -> None:
-        unique_id = compose_unique_id(entry_id, site_key, "alerts", "active")
+        unique_id = f"{entry_id}|{site_key}|alerts"
         super().__init__(coordinator, client, unique_id, "Alerts")
 
     @property
@@ -1177,7 +1149,7 @@ class UniFiGatewayFirmwareSensor(UniFiGatewaySensorBase):
         entry_id: str,
         site_key: str,
     ) -> None:
-        unique_id = compose_unique_id(entry_id, site_key, "firmware", "upgradable")
+        unique_id = f"{entry_id}|{site_key}|firmware_upgradable"
         super().__init__(coordinator, client, unique_id, "Firmware Upgradable")
 
     @property
@@ -1583,7 +1555,7 @@ class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
         kind: str,
         label: str,
     ) -> None:
-        unique_id = compose_unique_id(entry_id, site_key, "speedtest", kind)
+        unique_id = f"{entry_id}|{site_key}|speedtest::{kind}"
         super().__init__(coordinator, client, unique_id, label)
         self._kind = kind
 
