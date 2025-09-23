@@ -375,7 +375,13 @@ class UniFiOSClient:
         return []
 
     def _get_list(self, path: str, *, timeout: Optional[int] = None) -> List[Dict[str, Any]]:
-        payload = self._request_json("GET", path, timeout=timeout)
+        try:
+            payload = self._request_json("GET", path, timeout=timeout)
+        except APIError as err:
+            if err.expected:
+                LOGGER.debug("UniFi endpoint %s unavailable: %s", path, err)
+                return []
+            raise
         return self._extract_list(payload)
 
     def _post(self, path: str, payload: Dict[str, Any], *, timeout: Optional[int] = None) -> Any:
