@@ -7,7 +7,6 @@ import logging
 import socket
 import time
 from datetime import datetime, timezone
-import asyncio
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -205,6 +204,358 @@ class UniFiOSClient:
         if path:
             return f"{base}/{path.lstrip('/')}"
         return base
+
+    @staticmethod
+    def _shorten(text: Optional[str], limit: int = 1024) -> Optional[str]:
+        if text is None:
+            return None
+        cleaned = text.strip()
+        if len(cleaned) <= limit:
+            return cleaned
+        return f"{cleaned[:limit]}…"
+
+    def _update_csrf_token(self, response: requests.Response) -> None:
+        token: Optional[str] = None
+        header_token = response.headers.get("X-CSRF-Token")
+        if isinstance(header_token, str) and header_token:
+            token = header_token
+        else:
+            for cookie_name in ("TOKEN", "csrf_token", "X-CSRF-Token"):
+                cookie_token = response.cookies.get(cookie_name)
+                if isinstance(cookie_token, str) and cookie_token:
+                    token = cookie_token
+                    break
+        if token and token != self._csrf:
+            self._csrf = token
+            self._session.headers.update({"X-CSRF-Token": token})
+
+    def _refresh_csrf_token(self, base_url: str, timeout: int) -> None:
+        for path in ("/api/auth/csrf", "/api/csrf"):
+            url = f"{base_url}{path}"
+            try:
+                response = self._session.get(url, timeout=timeout, allow_redirects=False)
+            except requests.exceptions.RequestException as err:  # pragma: no cover - network guard
+                LOGGER.debug("Fetching CSRF token from %s failed: %s", url, err)
+                continue
+            if response.status_code >= 400:
+                LOGGER.debug(
+                    "CSRF probe %s returned HTTP %s", url, response.status_code
+                )
+                continue
+            self._update_csrf_token(response)
+            if self._csrf:
+                LOGGER.debug("CSRF token refreshed from %s", url)
+                return
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_payload: Any = None,
+        data: Any = None,
+        timeout: Optional[int] = None,
+    ) -> tuple[requests.Response, str]:
+        url = self._join(path)
+        req_timeout = timeout or self._timeout
+        kwargs: Dict[str, Any] = {"timeout": req_timeout, "allow_redirects": False}
+        if params:
+            kwargs["params"] = params
+        if json_payload is not None:
+            kwargs["json"] = json_payload
+        if data is not None:
+            kwargs["data"] = data
+        LOGGER.debug("UniFi request %s %s", method, url)
+        try:
+            response = self._session.request(method, url, **kwargs)
+        except requests.exceptions.SSLError as err:
+            raise ConnectivityError(
+                f"SSL error while connecting to {url}: {err}", url=url
+            ) from err
+        except requests.exceptions.ConnectTimeout as err:
+            raise ConnectivityError(
+                f"Timeout while connecting to {url}: {err}", url=url
+            ) from err
+        except requests.exceptions.ConnectionError as err:
+            raise ConnectivityError(
+                f"Connection error while reaching {url}: {err}", url=url
+            ) from err
+        except requests.exceptions.RequestException as err:
+            raise ConnectivityError(
+                f"Request {method} {url} failed: {err}", url=url
+            ) from err
+
+        self._update_csrf_token(response)
+
+        status = response.status_code
+        body_preview = self._shorten(response.text)
+        if status in (401, 403):
+            raise AuthError(
+                "Authentication with UniFi controller failed",
+                status_code=status,
+                url=url,
+                body=body_preview,
+            )
+        if status >= 400:
+            raise APIError(
+                f"UniFi API call {method} {url} failed with HTTP {status}",
+                status_code=status,
+                url=url,
+                expected=status == 404,
+                body=body_preview,
+            )
+        return response, response.text or ""
+
+    def _process_payload(self, payload: Any, url: str) -> Any:
+        if isinstance(payload, dict):
+            meta = payload.get("meta")
+            if isinstance(meta, dict):
+                rc = meta.get("rc")
+                if rc and rc not in {"ok", "success"}:
+                    message = meta.get("msg") or rc
+                    raise APIError(
+                        f"UniFi controller returned error for {url}: {message}",
+                        url=url,
+                        expected=rc in {"error"},
+                        body=self._shorten(json.dumps(payload)[:1024]),
+                    )
+        return payload
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_payload: Any = None,
+        data: Any = None,
+        timeout: Optional[int] = None,
+    ) -> Any:
+        response, text = self._request(
+            method,
+            path,
+            params=params,
+            json_payload=json_payload,
+            data=data,
+            timeout=timeout,
+        )
+        if not text:
+            return None
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            LOGGER.debug("Non-JSON response from %s", response.url)
+            return text
+        return self._process_payload(payload, response.url)
+
+    @staticmethod
+    def _extract_list(payload: Any) -> List[Dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            for key in ("data", "items", "sites", "list", "records"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+            # Some APIs return a dict keyed by identifiers
+            if all(isinstance(v, dict) for v in payload.values()):
+                return [dict(v) for v in payload.values()]  # type: ignore[arg-type]
+        return []
+
+    def _get_list(self, path: str, *, timeout: Optional[int] = None) -> List[Dict[str, Any]]:
+        payload = self._request_json("GET", path, timeout=timeout)
+        return self._extract_list(payload)
+
+    def _post(self, path: str, payload: Dict[str, Any], *, timeout: Optional[int] = None) -> Any:
+        return self._request_json("POST", path, json_payload=payload, timeout=timeout)
+
+    def _get(self, path: str, *, timeout: Optional[int] = None) -> Any:
+        return self._request_json("GET", path, timeout=timeout)
+
+    def _login(self, host: str, port: int, ssl_verify: bool, timeout: int) -> None:
+        base = f"{self._scheme}://{host}:{port}"
+        self._session.verify = ssl_verify
+        self._session.cookies.clear()
+        self._session.headers.update({"Referer": base})
+
+        attempts = [
+            ("/api/auth/login", {"username": self._username, "password": self._password, "rememberMe": True}, True),
+            ("/api/login", {"username": self._username, "password": self._password, "remember": True}, True),
+            ("/login", {"username": self._username, "password": self._password}, False),
+        ]
+
+        last_error: Optional[Exception] = None
+        for path, payload, use_json in attempts:
+            url = f"{base}{path}"
+            LOGGER.debug("Attempting UniFi login via %s", url)
+            try:
+                if use_json:
+                    response = self._session.post(
+                        url,
+                        json=payload,
+                        timeout=timeout,
+                        allow_redirects=False,
+                    )
+                else:
+                    response = self._session.post(
+                        url,
+                        data=payload,
+                        timeout=timeout,
+                        allow_redirects=False,
+                    )
+            except requests.exceptions.RequestException as err:
+                LOGGER.debug("Login attempt via %s failed: %s", url, err)
+                last_error = ConnectivityError(
+                    f"Error connecting to {url}: {err}", url=url
+                )
+                continue
+
+            self._update_csrf_token(response)
+
+            status = response.status_code
+            body_preview = self._shorten(response.text)
+            if status in (401, 403):
+                raise AuthError(
+                    "Invalid UniFi controller credentials",
+                    status_code=status,
+                    url=url,
+                    body=body_preview,
+                )
+            if status == 404:
+                LOGGER.debug("Login endpoint %s not found", url)
+                last_error = APIError(
+                    f"Login endpoint {url} not found",
+                    status_code=status,
+                    url=url,
+                    expected=True,
+                    body=body_preview,
+                )
+                continue
+            if status >= 400:
+                LOGGER.debug(
+                    "Login attempt via %s returned HTTP %s", url, status
+                )
+                last_error = APIError(
+                    f"Login attempt failed with HTTP {status}",
+                    status_code=status,
+                    url=url,
+                    body=body_preview,
+                )
+                continue
+
+            LOGGER.debug("Login via %s succeeded", url)
+            if not self._csrf:
+                self._refresh_csrf_token(base, timeout)
+            return
+
+        if last_error:
+            raise last_error
+        raise ConnectivityError("Unable to log in to UniFi controller", url=base)
+
+    def _ensure_connected(self) -> None:
+        prefixes: List[str] = []
+        if self._use_proxy_prefix:
+            prefixes.append("/proxy/network")
+        prefixes.extend(["/network", ""])
+
+        last_error: Optional[Exception] = None
+        for prefix in prefixes:
+            self._path_prefix = prefix
+            probe_path = self._site_path("stat/health")
+            candidate_base = self._join(self._site_path())
+            LOGGER.debug(
+                "Probing UniFi Network API base %s using %s", candidate_base, probe_path
+            )
+            try:
+                payload = self._request_json("GET", probe_path, timeout=6)
+            except AuthError:
+                raise
+            except ConnectivityError as err:
+                LOGGER.debug("Connectivity error probing %s: %s", candidate_base, err)
+                last_error = err
+                continue
+            except APIError as err:
+                LOGGER.debug("API error probing %s: %s", candidate_base, err)
+                if err.status_code == 404 or err.expected:
+                    last_error = err
+                    continue
+                raise
+
+            if isinstance(payload, dict):
+                payload = self._process_payload(payload, candidate_base)
+            LOGGER.debug("Selected UniFi Network API base %s", candidate_base)
+            self._base = candidate_base
+            return
+
+        if last_error:
+            raise last_error
+        raise ConnectivityError("Unable to determine UniFi Network API base path")
+
+    def ping(self) -> bool:
+        self.get_healthinfo()
+        return True
+
+    def list_sites(self) -> List[Dict[str, Any]]:
+        for path in ("api/self/sites", "api/stat/sites"):
+            sites = self._get_list(path)
+            if sites:
+                return sites
+        return []
+
+    def get_healthinfo(self) -> List[Dict[str, Any]]:
+        return self._get_list(self._site_path("stat/health"))
+
+    def get_alerts(self) -> List[Dict[str, Any]]:
+        for path in ("stat/alert", "list/alarm", "stat/alarm"):
+            alerts = self._get_list(self._site_path(path))
+            if alerts:
+                return alerts
+        return []
+
+    def get_devices(self) -> List[Dict[str, Any]]:
+        for path in ("stat/device", "stat/device-basic"):
+            devices = self._get_list(self._site_path(path))
+            if devices:
+                return devices
+        return []
+
+    def get_networks(self) -> List[Dict[str, Any]]:
+        for path in (
+            "rest/networkconf",
+            "stat/networkconf",
+            "stat/network",
+        ):
+            networks = self._get_list(self._site_path(path))
+            if networks:
+                return networks
+        return []
+
+    def get_wlans(self) -> List[Dict[str, Any]]:
+        for path in ("rest/wlanconf", "list/wlanconf"):
+            wlans = self._get_list(self._site_path(path))
+            if wlans:
+                return wlans
+        return []
+
+    def get_clients(self) -> List[Dict[str, Any]]:
+        for path in ("stat/sta", "stat/associated", "stat/user"):
+            clients = self._get_list(self._site_path(path))
+            if clients:
+                return clients
+        return self._get_list(self._site_path("stat/alluser"))
+
+    def get_wan_links(self) -> List[Dict[str, Any]]:
+        for path in (
+            "internet/wan",
+            "stat/waninfo",
+            "stat/wan",
+            "rest/internet",
+        ):
+            links = self._get_list(self._site_path(path))
+            if links:
+                return links
+        return []
 
     def instance_key(self) -> str:
         return self._iid
