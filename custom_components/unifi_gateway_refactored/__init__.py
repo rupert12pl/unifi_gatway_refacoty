@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import hashlib
@@ -33,11 +32,11 @@ from .const import (
 )
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .sensor import (
-    _sanitize_stable_key,
     _wan_identifier_candidates,
     build_lan_unique_id,
     build_wan_unique_id,
     build_wlan_unique_id,
+    resolve_site_key,
 )
 from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
 
@@ -72,7 +71,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if password:
         client_kwargs["password"] = password
 
-    client_kwargs["instance_hint"] = entry.entry_id  # ensures stable unique_id across restarts
+    client_kwargs["instance_hint"] = (
+        entry.entry_id
+    )  # ensures stable unique_id across restarts
 
     vpn_family_override = entry.options.get(
         CONF_VPN_FAMILY_OVERRIDE,
@@ -85,13 +86,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         client: UniFiOSClient = await hass.async_add_executor_job(client_factory)
     except AuthError as err:
-        _LOGGER.error("Authentication failed while setting up entry %s: %s", entry.entry_id, err)
-        raise ConfigEntryAuthFailed("Authentication with UniFi controller failed") from err
+        _LOGGER.error(
+            "Authentication failed while setting up entry %s: %s", entry.entry_id, err
+        )
+        raise ConfigEntryAuthFailed(
+            "Authentication with UniFi controller failed"
+        ) from err
     except ConnectivityError as err:
-        _LOGGER.error("Connectivity issue while setting up entry %s: %s", entry.entry_id, err)
+        _LOGGER.error(
+            "Connectivity issue while setting up entry %s: %s", entry.entry_id, err
+        )
         raise ConfigEntryNotReady(f"Cannot connect to UniFi controller: {err}") from err
     except APIError as err:
-        _LOGGER.error("Controller error while setting up entry %s: %s", entry.entry_id, err)
+        _LOGGER.error(
+            "Controller error while setting up entry %s: %s", entry.entry_id, err
+        )
         raise ConfigEntryNotReady(f"UniFi controller error: {err}") from err
 
     coordinator = UniFiGatewayDataUpdateCoordinator(hass, client)
@@ -138,6 +147,7 @@ async def _async_migrate_interface_unique_ids(
 
     mapping: dict[str, str] = {}
     instance_prefix = f"unifigw_{client.instance_key()}"
+    site_key = resolve_site_key(client, data)
 
     for link in data.wan_links:
         if not isinstance(link, dict):
@@ -149,7 +159,7 @@ async def _async_migrate_interface_unique_ids(
         old_key = hashlib.sha256(canonical.encode()).hexdigest()[:12]
         for suffix in ("status", "ip", "isp"):
             old_uid = f"{instance_prefix}_wan_{old_key}_{suffix}"
-            new_uid = build_wan_unique_id(entry.entry_id, link, suffix)
+            new_uid = build_wan_unique_id(entry.entry_id, site_key, link, suffix)
             mapping[old_uid] = new_uid
 
     for network in data.lan_networks:
@@ -159,7 +169,7 @@ async def _async_migrate_interface_unique_ids(
             network.get("_id") or network.get("id") or network.get("name") or "lan"
         )
         old_uid = f"{instance_prefix}_lan_{net_id}_clients"
-        new_uid = build_lan_unique_id(entry.entry_id, network)
+        new_uid = build_lan_unique_id(entry.entry_id, site_key, network)
         mapping[old_uid] = new_uid
 
     for wlan in data.wlans:
@@ -169,14 +179,14 @@ async def _async_migrate_interface_unique_ids(
         if not ssid:
             continue
         old_uid = f"{instance_prefix}_wlan_{ssid}_clients"
-        new_uid = build_wlan_unique_id(entry.entry_id, wlan)
+        new_uid = build_wlan_unique_id(entry.entry_id, site_key, wlan)
         mapping[old_uid] = new_uid
 
     if not mapping:
-        _LOGGER.debug("No interface unique ID migrations required for entry %s", entry.entry_id)
+        _LOGGER.debug(
+            "No interface unique ID migrations required for entry %s", entry.entry_id
+        )
         return
-
-    registry = er.async_get(hass)
 
     async def _migrate(entity_entry: er.RegistryEntry) -> dict[str, str] | None:
         if entity_entry.config_entry_id != entry.entry_id:
@@ -192,5 +202,3 @@ async def _async_migrate_interface_unique_ids(
         len(mapping),
         entry.entry_id,
     )
-
-
