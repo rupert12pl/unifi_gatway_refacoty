@@ -1,7 +1,11 @@
+import asyncio
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
+
+import pytest
 
 if "requests" not in sys.modules:
     requests_stub = types.ModuleType("requests")
@@ -51,122 +55,102 @@ assert spec and spec.loader
 sys.modules.setdefault("unifi_client_test_module", unifi_client)
 spec.loader.exec_module(unifi_client)
 
-APIError = unifi_client.APIError
 UniFiOSClient = unifi_client.UniFiOSClient
 
 
-def _build_client(responses: dict[str, object], openapi_candidates: list[str] | None = None) -> UniFiOSClient:
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def load_fixture(name: str) -> str:
+    return (FIXTURES / name).read_text()
+
+
+class DummyResponse:
+    def __init__(self, status: int) -> None:
+        self.status_code = status
+
+
+def _build_client(responses: dict[str, tuple[int, str]]) -> UniFiOSClient:
     client = object.__new__(UniFiOSClient)
-    client._site = "default"
-    client._base = "https://example.com/proxy/network/api/s/default"
-    client._host = "example.com"
+    client._scheme = "https"
+    client._host = "gateway.local"
     client._port = 443
-    client._iid = "test-instance"
-    client._vpn_optional_404_paths = {
-        "stat/teleport",
-        "stat/teleport/clients",
-        "stat/teleport/servers",
-    }
-    client._vpn_last_probe_errors = {}
-    client._vpn_last_probe_summary = {}
-    client._active_probe_state = None
-    client._vpn_cache = None
+    client._use_proxy_prefix = True
+    client._timeout = 5
+    client._ssl_verify = False
+    client._site_name = "default"
+    client._site = "default"
+    client._site_id = "site-1"
+    client._vpn_endpoints = None
+    client._vpn_endpoint_winners = {}
+    client._vpn_probe_candidates = {}
+    client._session = None
 
-    def request(self, method: str, url: str, payload=None, expected_errors=None):
-        assert method == "GET"
-        marker = "/api/s/default/"
-        assert marker in url, url
-        path = url.split(marker, 1)[1]
-        result = responses.get(path)
-        if isinstance(result, Exception):
-            raise result
-        if result is not None:
-            return result
-        raise APIError(
-            "HTTP 404: Not Found",
-            status_code=404,
-            url=url,
-            body="Not Found",
-        )
+    async def _mock_request(self, method: str, path: str, **kwargs):
+        status, payload = responses.get(path, (404, load_fixture("error_404.json")))
+        return DummyResponse(status), payload
 
-    client._request = types.MethodType(request, client)
-
-    if openapi_candidates is None:
-        client._discover_vpn_paths_from_openapi = lambda site: []
-    else:
-        client._discover_vpn_paths_from_openapi = lambda site: list(openapi_candidates)
-
+    client._request = types.MethodType(_mock_request, client)
     return client
 
 
-def test_fetch_vpn_snapshot_legacy_remote_user():
+def test_discover_vpn_endpoints_prefers_first_success():
     responses = {
-        "stat/remoteuser": [
-            {
-                "_id": "user1",
-                "username": "alice",
-                "status": "CONNECTED",
-                "rx_bytes": 123,
-                "tx_bytes": 456,
-            }
-        ],
+        "/v1/sites/site-1/vpn/remote-access/users": (404, load_fixture("error_404.json")),
+        "/v2/api/site/default/internet/vpn/remote-access/users": (404, load_fixture("error_404.json")),
+        "/api/s/default/stat/remote-user": (200, load_fixture("legacy_remote_user.json")),
+        "/v1/sites/site-1/vpn/site-to-site/peers": (200, load_fixture("v1_s2s_peers.json")),
+        "/v1/sites/site-1/vpn/teleport/servers": (204, ""),
+        "/v1/sites/site-1/vpn/teleport/clients": (404, load_fixture("error_404.json")),
+        "/v2/api/site/default/internet/vpn/teleport/clients": (404, load_fixture("error_404.json")),
+        "/api/s/default/stat/teleport/clients": (200, json.dumps([])),
     }
+
     client = _build_client(responses)
 
-    snapshot = client.fetch_vpn_snapshot()
+    endpoints = asyncio.run(client._discover_vpn_endpoints(force=True))
 
-    assert len(snapshot.remote_users) == 1
-    remote = snapshot.remote_users[0]
-    assert remote["username"] == "alice"
-    assert remote["rx_bytes"] == 123
-    assert remote["tx_bytes"] == 456
-    assert remote.get("state") == "CONNECTED"
-
-    diagnostics = snapshot.diagnostics
-    summary = diagnostics["summary"]
-    assert summary["probes_attempted"] == 8
-    assert summary["probes_succeeded"] == 1
-    assert summary["peers_collected"] == 1
-    assert summary["fallback_used"] is False
-
-    errors = diagnostics["errors"]
-    assert len(errors) == 7
-    assert any(error.startswith("list/remoteuser:") for error in errors)
-    assert any(error.startswith("stat/vpn:") for error in errors)
-    assert any(error.startswith("stat/s2s:") for error in errors)
-    assert any(error.startswith("stat/s2speer:") for error in errors)
+    assert endpoints.remote_users == "/api/s/default/stat/remote-user"
+    assert endpoints.s2s_peers == "/v1/sites/site-1/vpn/site-to-site/peers"
+    assert endpoints.teleport_servers == "/v1/sites/site-1/vpn/teleport/servers"
+    assert endpoints.teleport_clients == "/api/s/default/stat/teleport/clients"
+    assert endpoints.probes_attempted == 8
+    assert "remote_users" in client._vpn_probe_candidates
+    assert client._vpn_endpoint_winners["remote_users"].endswith("stat/remote-user")
+    assert "teleport_clients" in endpoints.last_errors
 
 
-def test_fetch_vpn_snapshot_openapi_fallback():
+def test_get_vpn_state_normalizes_payloads():
     responses = {
-        "stat/customvpn": [
-            {
-                "id": "peer-1",
-                "vpn_type": "site_to_site",
-                "status": "CONNECTED",
-                "rx_bytes": 10,
-                "tx_bytes": 20,
-            }
-        ]
+        "/api/s/default/stat/remote-user": (200, load_fixture("legacy_remote_user.json")),
+        "/v1/sites/site-1/vpn/site-to-site/peers": (200, load_fixture("v1_s2s_peers.json")),
+        "/v1/sites/site-1/vpn/teleport/servers": (200, json.dumps([
+            {"id": "server-1", "name": "Teleport Server", "state": "CONNECTED", "public_ip": "203.0.113.5"}
+        ])),
+        "/v1/sites/site-1/vpn/teleport/clients": (200, json.dumps([
+            {"id": "client-1", "name": "Laptop", "state": "DOWN", "server_id": "server-1"}
+        ])),
     }
-    client = _build_client(responses, openapi_candidates=["stat/customvpn"])
 
-    snapshot = client.fetch_vpn_snapshot()
+    client = _build_client(responses)
+    client._vpn_endpoints = asyncio.run(client._discover_vpn_endpoints(force=True))
 
-    assert not snapshot.remote_users
-    assert len(snapshot.site_to_site) == 1
-    peer = snapshot.site_to_site[0]
-    assert peer.get("vpn_type") == "site_to_site"
-    assert peer.get("state") == "CONNECTED"
+    vpn_state = asyncio.run(client.get_vpn_state())
 
-    diagnostics = snapshot.diagnostics
-    summary = diagnostics["summary"]
-    assert summary["fallback_used"] is True
-    assert summary["probes_succeeded"] == 1
-    assert summary["peers_collected"] == 1
-    assert summary["probes_attempted"] == 10
-
-    errors = diagnostics["errors"]
-    assert len(errors) == 9
-    assert diagnostics.get("openapi_candidates") == ["stat/customvpn"]
-    assert diagnostics.get("successful_paths") == ["stat/customvpn"]
+    assert vpn_state["counts"] == {
+        "remote_users": 1,
+        "s2s_peers": 1,
+        "teleport_servers": 1,
+        "teleport_clients": 1,
+    }
+    remote = vpn_state["remote_users"][0]
+    assert remote["id"]
+    assert remote["username"] == "alice"
+    assert remote["connected"] is True
+    assert remote["rx_bytes"] == 1024
+    peer = vpn_state["s2s_peers"][0]
+    assert peer["name"] == "HQ"
+    assert peer["peer_addr"] == "203.0.113.1"
+    diagnostics = vpn_state["diagnostics"]
+    assert diagnostics["winner_paths"]["remote_users"].endswith("stat/remote-user")
+    assert "families" in diagnostics

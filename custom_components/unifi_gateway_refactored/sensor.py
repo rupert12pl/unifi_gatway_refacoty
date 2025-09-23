@@ -14,7 +14,7 @@ from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
-from .unifi_client import UniFiOSClient, VpnSnapshot, vpn_peer_identity
+from .unifi_client import UniFiOSClient, vpn_peer_identity
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -118,7 +118,7 @@ async def async_setup_entry(
             "controller_ui": client.get_controller_url(),
             "controller_site": controller_site,
         }
-        snapshot: Optional[VpnSnapshot] = None
+        vpn_state: Dict[str, Any] = {}
         diagnostics_payload: Dict[str, Any] = {}
 
         if isinstance(data, UniFiGatewayData):
@@ -134,25 +134,30 @@ async def async_setup_entry(
                 ui_candidate = controller_info.get("url")
                 if isinstance(ui_candidate, str) and ui_candidate:
                     controller_context["controller_ui"] = ui_candidate
-            snapshot = data.vpn_snapshot
-            diagnostics_payload = dict(data.vpn_diagnostics or {})
+            vpn_state = dict(data.vpn_state or {})
+            diagnostics_payload = dict(vpn_state.get("diagnostics") or data.vpn_diagnostics or {})
         elif isinstance(data, dict):
+            vpn_state = dict(data.get("vpn_state") or {})
             diagnostics_payload = dict(data.get("vpn_diagnostics") or {})
 
-        if snapshot is not None:
-            diagnostics_payload = dict(snapshot.diagnostics or {})
-        summary_payload = dict(diagnostics_payload.get("summary") or {})
+        counts = dict(vpn_state.get("counts") or {})
+        teleport_payload = vpn_state.get("teleport") or {}
+        remote_users = list(vpn_state.get("remote_users") or [])
+        s2s_peers = list(vpn_state.get("s2s_peers") or [])
+        teleport_servers = list(teleport_payload.get("servers") or [])
+        teleport_clients = list(teleport_payload.get("clients") or [])
 
-        vpn_payload_diag: Dict[str, Any] = {}
-        if snapshot is not None:
-            vpn_payload_diag = {
-                "remote_users": list(snapshot.remote_users),
-                "site_to_site": list(snapshot.site_to_site),
-                "servers": list(snapshot.teleport_servers),
-                "clients": list(snapshot.teleport_clients),
-                "teleport_servers": list(snapshot.teleport_servers),
-                "teleport_clients": list(snapshot.teleport_clients),
-            }
+        summary_payload = {
+            "state": "OK" if sum(counts.values()) else "ERROR",
+            "counts": counts,
+        }
+
+        vpn_payload_diag = {
+            "remote_users": remote_users,
+            "site_to_site": s2s_peers,
+            "teleport_servers": teleport_servers,
+            "teleport_clients": teleport_clients,
+        }
 
         diag_uid = f"{entry.entry_id}-vpn-summary"
         if vpn_diag_entity is None:
@@ -175,8 +180,97 @@ async def async_setup_entry(
                 controller_context=controller_context,
             )
 
-        if snapshot is None:
-            return ents
+        def _friendly_name(kind: str, record: Dict[str, Any], fallback: str) -> str:
+            label = record.get("name") or record.get("username")
+            if isinstance(label, str) and label.strip():
+                return label.strip()
+            if kind == "remote_users":
+                return f"VPN Remote User {fallback}"
+            if kind == "s2s_peers":
+                return f"VPN Site-to-Site {fallback}"
+            if kind == "teleport_clients":
+                return f"Teleport Client {fallback}"
+            if kind == "teleport_servers":
+                return f"Teleport Server {fallback}"
+            return fallback
+
+        def _sync_entities(
+            records: List[Dict[str, Any]],
+            data_key: str,
+            unique_prefix: str,
+            store: Dict[str, SensorEntity],
+            factory: Callable[[str, str], SensorEntity],
+        ) -> None:
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                peer_id = record.get("id") or record.get("_id")
+                if not isinstance(peer_id, str) or not peer_id:
+                    peer_id = _stable_peer_key(data_key, record)
+                unique_id = f"{entry.entry_id}::{unique_prefix}::{peer_id}"
+                entity = store.get(unique_id)
+                display = _friendly_name(data_key, record, peer_id)
+                if entity is None:
+                    entity = factory(peer_id, display)
+                    store[unique_id] = entity
+                    ents.append(entity)
+                else:
+                    entity._attr_name = display  # type: ignore[attr-defined]
+
+        _sync_entities(
+            remote_users,
+            "remote_users",
+            "vpn_remote_user",
+            vpn_remote_user_entities,
+            lambda peer_id, name: UniFiVpnRemoteUserSensor(
+                coordinator,
+                client,
+                entry.entry_id,
+                peer_id,
+                name,
+            ),
+        )
+        _sync_entities(
+            s2s_peers,
+            "s2s_peers",
+            "vpn_s2s",
+            vpn_s2s_entities,
+            lambda peer_id, name: UniFiVpnSiteToSitePeerSensor(
+                coordinator,
+                client,
+                entry.entry_id,
+                peer_id,
+                name,
+            ),
+        )
+        _sync_entities(
+            teleport_clients,
+            "teleport_clients",
+            "vpn_teleport_client",
+            vpn_teleport_client_entities,
+            lambda peer_id, name: UniFiTeleportClientSensor(
+                coordinator,
+                client,
+                entry.entry_id,
+                peer_id,
+                name,
+            ),
+        )
+        _sync_entities(
+            teleport_servers,
+            "teleport_servers",
+            "vpn_teleport_server",
+            vpn_teleport_server_entities,
+            lambda peer_id, name: UniFiTeleportServerSensor(
+                coordinator,
+                client,
+                entry.entry_id,
+                peer_id,
+                name,
+            ),
+        )
+
+        return ents
 
         def _friendly_name(kind: str, record: Dict[str, Any], fallback: str) -> str:
             if kind == "remote_user":
@@ -304,31 +398,20 @@ async def async_setup_entry(
         )
         new_entities.extend(_build_vpn_entities(entry, coordinator_data))
 
-        diagnostics_summary = getattr(coordinator_data, "vpn_diagnostics", {}) or {}
-        diagnostics_errors = getattr(coordinator_data, "vpn_errors", {}) or {}
-        snapshot = getattr(coordinator_data, "vpn_snapshot", None)
-        if snapshot:
+        vpn_state_payload = getattr(coordinator_data, "vpn_state", {}) or {}
+        diagnostics_payload = dict(vpn_state_payload.get("diagnostics") or {})
+        counts_payload = dict(vpn_state_payload.get("counts") or {})
+        if counts_payload:
             _LOGGER.debug(
-                "VPN snapshot for entry %s: remote_users=%d site_to_site=%d teleport_clients=%d teleport_servers=%d",
+                "VPN counts for entry %s: %s",
                 entry.entry_id,
-                len(snapshot.remote_users),
-                len(snapshot.site_to_site),
-                len(snapshot.teleport_clients),
-                len(snapshot.teleport_servers),
+                counts_payload,
             )
-        else:
-            _LOGGER.debug("VPN snapshot unavailable for entry %s", entry.entry_id)
-        if diagnostics_summary:
+        if diagnostics_payload:
             _LOGGER.debug(
-                "VPN diagnostics summary for entry %s: %s",
+                "VPN diagnostics for entry %s: %s",
                 entry.entry_id,
-                diagnostics_summary,
-            )
-        if diagnostics_errors:
-            _LOGGER.debug(
-                "VPN probe errors for entry %s: %s",
-                entry.entry_id,
-                diagnostics_errors,
+                diagnostics_payload,
             )
 
         for link in coordinator_data.wan_links:
@@ -1737,7 +1820,7 @@ class UniFiGatewayWlanClientsSensor(UniFiGatewaySensorBase):
 
 
 class UniFiVpnPeerSensorBase(UniFiGatewaySensorBase):
-    """Base class for per-peer VPN sensors."""
+    """Base class for per-peer VPN sensors backed by ``vpn_state``."""
 
     _attr_should_poll = False
 
@@ -1746,110 +1829,93 @@ class UniFiVpnPeerSensorBase(UniFiGatewaySensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
-        kind: str,
-        stable_key: str,
+        data_key: str,
+        unique_prefix: str,
+        peer_id: str,
         name: str,
     ) -> None:
-        unique_id = f"{entry_id}::vpn::{kind}::{stable_key}"
+        unique_id = f"{entry_id}::{unique_prefix}::{peer_id}"
         super().__init__(coordinator, client, unique_id, name)
-        self._kind = kind
-        self._stable_key = stable_key
+        self._data_key = data_key
+        self._peer_id = peer_id
+        self._unique_prefix = unique_prefix
 
     def _records(self) -> List[Dict[str, Any]]:
         data = self.coordinator.data
         if not data:
             return []
-        snapshot: Optional[VpnSnapshot] = getattr(data, "vpn_snapshot", None)
-        if snapshot is None:
+        vpn_state = getattr(data, "vpn_state", {}) or {}
+        if not isinstance(vpn_state, dict):
             return []
-        if self._kind == "remote_user":
-            return list(snapshot.remote_users)
-        if self._kind == "site_to_site":
-            return list(snapshot.site_to_site)
-        if self._kind == "teleport_client":
-            return list(snapshot.teleport_clients)
-        if self._kind == "teleport_server":
-            return list(snapshot.teleport_servers)
+        if self._data_key == "remote_users":
+            return list(vpn_state.get("remote_users") or [])
+        if self._data_key == "s2s_peers":
+            return list(vpn_state.get("s2s_peers") or [])
+        if self._data_key == "teleport_servers":
+            teleport = vpn_state.get("teleport") or {}
+            return list(teleport.get("servers") or [])
+        if self._data_key == "teleport_clients":
+            teleport = vpn_state.get("teleport") or {}
+            return list(teleport.get("clients") or [])
         return []
 
     def _record(self) -> Optional[Dict[str, Any]]:
         for record in self._records():
-            if _stable_peer_key(self._kind, record) == self._stable_key:
+            rid = record.get("id") or record.get("_id")
+            if isinstance(rid, str) and rid == self._peer_id:
                 return record
         return None
 
-    def _state_from_record(self, record: Optional[Dict[str, Any]]) -> str:
-        if record is None:
-            return "disconnected"
-        matches: Iterable[Dict[str, Any]] = []
-        clients = record.get("clients")
-        if isinstance(clients, list):
-            matches = clients
-        state_token = _vpn_peer_state(record, matches)
-        if state_token:
-            return state_token.lower()
-        status = record.get("status") or record.get("state")
-        if isinstance(status, str) and status.strip():
-            return status.strip().lower()
-        return "unknown"
+    def _connected(self, record: Optional[Dict[str, Any]]) -> Optional[bool]:
+        if not record:
+            return None
+        connected = record.get("connected")
+        if isinstance(connected, bool):
+            return connected
+        state = record.get("state")
+        if isinstance(state, str):
+            token = state.strip().lower()
+            if token in {"connected", "on", "up", "online"}:
+                return True
+            if token in {"disconnected", "off", "down", "offline"}:
+                return False
+        return None
 
     @property
     def native_value(self) -> Optional[str]:
-        return self._state_from_record(self._record())
+        record = self._record()
+        connected = self._connected(record)
+        if connected is None:
+            return None
+        return "on" if connected else "off"
+
+    def _base_attributes(self, record: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        attrs: Dict[str, Any] = {
+            "kind": self._data_key,
+            "peer_id": self._peer_id,
+        }
+        if record:
+            attrs.update(
+                {
+                    "state": record.get("state"),
+                    "connected": self._connected(record),
+                    "rx_bytes": record.get("rx_bytes"),
+                    "tx_bytes": record.get("tx_bytes"),
+                    "last_seen": record.get("last_seen"),
+                    "client_count": record.get("client_count"),
+                    "peer_addr": record.get("peer_addr")
+                    or record.get("remote_ip")
+                    or record.get("public_ip"),
+                }
+            )
+            if record.get("networks"):
+                attrs["networks"] = record.get("networks")
+        attrs.update(self._controller_attrs())
+        return {k: v for k, v in attrs.items() if v not in (None, "", [], {})}
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        record = self._record()
-        attrs: Dict[str, Any] = {
-            "kind": self._kind,
-            "stable_key": self._stable_key,
-        }
-        state = self._state_from_record(record)
-        attrs["state"] = state
-        attrs["connected"] = state == "connected"
-        if record:
-            status = record.get("status") or record.get("state")
-            if status not in (None, "", [], {}):
-                attrs["status"] = status
-            rx = _coerce_int(record.get("rx_bytes"))
-            if rx is not None:
-                attrs["rx_bytes"] = rx
-            tx = _coerce_int(record.get("tx_bytes"))
-            if tx is not None:
-                attrs["tx_bytes"] = tx
-            peer = _first_non_empty(
-                record,
-                ("peer", "peer_name", "name", "remote", "description", "endpoint"),
-            )
-            if peer:
-                attrs["peer"] = peer
-            tunnel = _first_non_empty(
-                record,
-                (
-                    "tunnel_subnet",
-                    "tunnel_network",
-                    "remote_subnets",
-                    "client_subnet",
-                    "allowed_ips",
-                ),
-            )
-            if tunnel:
-                attrs["tunnel"] = tunnel
-            last_handshake = _first_non_empty(
-                record,
-                (
-                    "last_handshake",
-                    "last_state_change",
-                    "last_connected",
-                    "last_activity",
-                    "connected_since",
-                    "last_seen",
-                ),
-            )
-            if last_handshake:
-                attrs["last_handshake"] = last_handshake
-        attrs.update(self._controller_attrs())
-        return {k: v for k, v in attrs.items() if v not in (None, "", [], {})}
+        return self._base_attributes(self._record())
 
 
 class UniFiVpnRemoteUserSensor(UniFiVpnPeerSensorBase):
@@ -1860,17 +1926,25 @@ class UniFiVpnRemoteUserSensor(UniFiVpnPeerSensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
-        stable_key: str,
+        peer_id: str,
         name: str,
     ) -> None:
-        super().__init__(coordinator, client, entry_id, "remote_user", stable_key, name)
+        super().__init__(
+            coordinator,
+            client,
+            entry_id,
+            "remote_users",
+            "vpn_remote_user",
+            peer_id,
+            name,
+        )
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         attrs = dict(super().extra_state_attributes)
         record = self._record()
         if record:
-            for key in ("username", "user", "name", "remote_ip", "tunnel_ip"):
+            for key in ("username", "user", "name", "remote_ip", "peer_addr"):
                 value = record.get(key)
                 if value not in (None, "", [], {}):
                     attrs[key] = value
@@ -1885,17 +1959,43 @@ class UniFiVpnSiteToSitePeerSensor(UniFiVpnPeerSensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
-        stable_key: str,
+        peer_id: str,
         name: str,
     ) -> None:
-        super().__init__(coordinator, client, entry_id, "site_to_site", stable_key, name)
+        super().__init__(
+            coordinator,
+            client,
+            entry_id,
+            "s2s_peers",
+            "vpn_s2s",
+            peer_id,
+            name,
+        )
+
+    @property
+    def native_value(self) -> Optional[str]:
+        record = self._record()
+        if not record:
+            return "unknown"
+        state = record.get("state")
+        if isinstance(state, str) and state.strip():
+            token = state.strip().lower()
+            if token in {"connected", "up", "on", "online"}:
+                return "up"
+            if token in {"disconnected", "down", "off", "offline"}:
+                return "down"
+            return token
+        connected = self._connected(record)
+        if connected is None:
+            return "unknown"
+        return "up" if connected else "down"
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         attrs = dict(super().extra_state_attributes)
         record = self._record()
         if record:
-            for key in ("peer_ip", "public_ip", "remote_subnets", "local_ip"):
+            for key in ("peer_addr", "public_ip", "remote_subnets", "networks"):
                 value = record.get(key)
                 if value not in (None, "", [], {}):
                     attrs[key] = value
@@ -1910,10 +2010,18 @@ class UniFiTeleportClientSensor(UniFiVpnPeerSensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
-        stable_key: str,
+        peer_id: str,
         name: str,
     ) -> None:
-        super().__init__(coordinator, client, entry_id, "teleport_client", stable_key, name)
+        super().__init__(
+            coordinator,
+            client,
+            entry_id,
+            "teleport_clients",
+            "vpn_teleport_client",
+            peer_id,
+            name,
+        )
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
@@ -1935,10 +2043,18 @@ class UniFiTeleportServerSensor(UniFiVpnPeerSensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
-        stable_key: str,
+        peer_id: str,
         name: str,
     ) -> None:
-        super().__init__(coordinator, client, entry_id, "teleport_server", stable_key, name)
+        super().__init__(
+            coordinator,
+            client,
+            entry_id,
+            "teleport_servers",
+            "vpn_teleport_server",
+            peer_id,
+            name,
+        )
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
