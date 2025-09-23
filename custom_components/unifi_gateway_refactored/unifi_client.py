@@ -59,7 +59,7 @@ class UniFiOSClient:
         site_id: str = DEFAULT_SITE,
         ssl_verify: bool = False,
         use_proxy_prefix: bool = True,
-        timeout: int = 10
+        timeout: int = 10,
         instance_hint: str | None = None,
     ):
         self._scheme = "https"
