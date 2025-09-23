@@ -36,6 +36,7 @@ SUBSYSTEM_SENSORS: Dict[str, tuple[str, str]] = {
     "wan": ("WAN", "mdi:shield-outline"),
     "lan": ("LAN", "mdi:lan"),
     "wlan": ("WLAN", "mdi:wifi"),
+    "www": ("WWW", "mdi:web"),
     "vpn": ("VPN", "mdi:folder-key-network"),
 }
 
