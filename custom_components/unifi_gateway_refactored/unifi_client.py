@@ -37,9 +37,6 @@ else:  # pragma: no cover - fallback for environments without requests.Response 
 LOGGER = logging.getLogger(__name__)
 _LOGGER = LOGGER
 
-DEFAULT_CONNECT_TIMEOUT = 8
-DEFAULT_READ_TIMEOUT = 12
-
 _REDACT_KEYS = (
     "password",
     "token",
@@ -66,6 +63,29 @@ def _redact_text(text: str) -> str:
     for pattern in _REDACT_PATTERNS:
         redacted = pattern.sub(r"\1***", redacted)
     return redacted
+
+
+def _join_api(*parts: str) -> str:
+    """Join URL path parts ensuring normalized separators."""
+
+    tokens: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        stripped = str(part).strip("/")
+        if not stripped:
+            continue
+        tokens.extend(segment for segment in stripped.split("/") if segment)
+
+    if not tokens:
+        return ""
+
+    joined = "/".join(tokens)
+    marker = "proxy/network"
+    duplicate = f"{marker}/{marker}"
+    while duplicate in joined:
+        joined = joined.replace(duplicate, marker)
+    return joined
 
 
 def build_path(*segments: str) -> str:
@@ -106,12 +126,68 @@ class VpnAttempt:
 class VpnState:
     """Aggregated VPN state derived from UniFi gateway overview stats."""
 
+    counts: dict[str, int] = field(
+        default_factory=lambda: {"remote_users": 0, "s2s_peers": 0}
+    )
+    configured_list: str = ""
+    attempts: List[VpnAttempt] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
     remote_users: List[dict[str, Any]] = field(default_factory=list)
     site_to_site_peers: List[dict[str, Any]] = field(default_factory=list)
-    teleport_servers: List[dict[str, Any]] = field(default_factory=list)
-    teleport_clients: List[dict[str, Any]] = field(default_factory=list)
-    attempts: List[VpnAttempt] = field(default_factory=list)
-    errors: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_overview(cls, overview: Mapping[str, Any]) -> "VpnState":
+        counts: dict[str, int] = {"remote_users": 0, "s2s_peers": 0}
+        raw_counts = overview.get("counts") if isinstance(overview, Mapping) else None
+        if isinstance(raw_counts, Mapping):
+            for key in counts:
+                value = raw_counts.get(key)
+                if isinstance(value, int):
+                    counts[key] = max(value, 0)
+
+        attempts: List[VpnAttempt] = []
+        for attempt in overview.get("attempts", []) if isinstance(overview, Mapping) else []:
+            if not isinstance(attempt, Mapping):
+                continue
+            path = str(attempt.get("path") or "")
+            status_raw = attempt.get("status")
+            status = int(status_raw) if isinstance(status_raw, (int, float)) else 0
+            ok = bool(attempt.get("ok"))
+            snippet = _redact_text(str(attempt.get("snippet") or ""))[:200]
+            attempts.append(VpnAttempt(path=path, status=status, ok=ok, snippet=snippet))
+
+        errors: List[str] = []
+        if isinstance(overview, Mapping):
+            for err in overview.get("errors", []) or []:
+                if err in (None, ""):
+                    continue
+                errors.append(str(err))
+
+        remote_users = [
+            record
+            for record in overview.get("remote_users", [])
+            if isinstance(record, dict)
+        ]
+        s2s_peers = [
+            record
+            for record in overview.get("s2s_peers", [])
+            if isinstance(record, dict)
+        ]
+
+        configured_list = ""
+        if isinstance(overview, Mapping):
+            configured_value = overview.get("configured_list")
+            if isinstance(configured_value, str):
+                configured_list = configured_value
+
+        return cls(
+            counts=counts,
+            configured_list=configured_list,
+            attempts=attempts,
+            errors=errors,
+            remote_users=_unique_dicts(remote_users),
+            site_to_site_peers=_unique_dicts(s2s_peers),
+        )
 
 
 def _unique_dicts(records: Iterable[dict[str, Any]]) -> List[dict[str, Any]]:
@@ -131,59 +207,84 @@ def _unique_dicts(records: Iterable[dict[str, Any]]) -> List[dict[str, Any]]:
     return unique
 
 
-def _normalize_vpn_entry(value: Any) -> dict[str, Any]:
-    """Convert controller payload fragments into dictionaries."""
+def _flatten_vpn_payload(payload: Any) -> List[dict[str, Any]]:
+    """Convert controller payload fragments into a list of dictionaries."""
 
-    if isinstance(value, dict):
-        return {k: v for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return {"items": list(value)}
-    return {"value": value}
+    if isinstance(payload, list):
+        return [dict(item) for item in payload if isinstance(item, dict)]
+
+    if isinstance(payload, dict):
+        candidate_keys = (
+            "data",
+            "items",
+            "users",
+            "remote_users",
+            "remoteUsers",
+            "peers",
+            "s2s",
+            "s2s_peers",
+            "records",
+            "entries",
+            "list",
+            "result",
+        )
+        for key in candidate_keys:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [dict(item) for item in value if isinstance(item, dict)]
+        for value in payload.values():
+            if isinstance(value, list):
+                records = [dict(item) for item in value if isinstance(item, dict)]
+                if records:
+                    return records
+        return [dict(payload)]
+
+    return []
 
 
-def _extract_vpn_entries(payload: Any, tokens: Sequence[str]) -> List[dict[str, Any]]:
-    """Extract dictionaries matching any of ``tokens`` from ``payload``."""
+def _extract_identifier(record: Mapping[str, Any], keys: Sequence[str]) -> Optional[str]:
+    """Return the first non-empty identifier matching ``keys``."""
 
-    matches: List[dict[str, Any]] = []
-
-    def _walk(candidate: Any, *, parent_key: Optional[str] = None) -> None:
-        if isinstance(candidate, dict):
-            for key, value in candidate.items():
-                lowered = str(key).lower()
-                if any(token in lowered for token in tokens):
-                    matches.append(_normalize_vpn_entry(value))
-                if isinstance(value, (dict, list, tuple)):
-                    _walk(value, parent_key=lowered)
-        elif isinstance(candidate, list):
-            for item in candidate:
-                _walk(item, parent_key=parent_key)
-
-    _walk(payload)
-    return _unique_dicts(matches)
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                return cleaned
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, str):
+                    cleaned = item.strip()
+                    if cleaned:
+                        return cleaned
+    return None
 
 
-_VPN_REMOTE_TOKENS = (
+_VPN_REMOTE_IDENTIFIER_KEYS: tuple[str, ...] = (
+    "name",
+    "user",
+    "username",
+    "x_username",
+    "display_name",
+    "fqdn",
+    "host",
+    "hostname",
     "remote_user",
-    "remote_users",
-    "remoteuser",
-    "remoteusers",
-    "remote_access",
+    "remote_username",
+    "id",
 )
 
-_VPN_S2S_TOKENS = (
-    "site_to_site",
-    "site-to-site",
-    "s2s",
-)
-
-_VPN_TELEPORT_SERVER_TOKENS = (
-    "teleport_servers",
-    "teleport_server",
-)
-
-_VPN_TELEPORT_CLIENT_TOKENS = (
-    "teleport_clients",
-    "teleport_client",
+_VPN_S2S_IDENTIFIER_KEYS: tuple[str, ...] = (
+    "name",
+    "peer",
+    "peername",
+    "x_peername",
+    "site_name",
+    "remote_site_name",
+    "hostname",
+    "remote_address",
+    "ip",
+    "ip_address",
 )
 
 _WAN_EXPECTED_ERROR_CODES: Tuple[int, ...] = (400, 404)
@@ -325,9 +426,9 @@ class UniFiOSClient:
         self._scheme = "https"
         self._host = host
         self._port = port
-        connect_timeout = max(5, min(int(timeout or DEFAULT_TIMEOUT), 10))
-        read_timeout = max(connect_timeout + 4, 12)
-        read_timeout = min(read_timeout, 15)
+        base_timeout = int(timeout or DEFAULT_TIMEOUT)
+        connect_timeout = min(max(base_timeout, 3), 10)
+        read_timeout = max(connect_timeout, min(connect_timeout + 3, 10))
         self._timeout = (float(connect_timeout), float(read_timeout))
         self._use_proxy_prefix = use_proxy_prefix
         self._path_prefix = "/proxy/network" if use_proxy_prefix else ""
@@ -360,6 +461,7 @@ class UniFiOSClient:
 
         self._st_cache: tuple[float, Optional[Dict[str, Any]]] | None = None
         self._st_last_trigger: float = 0.0
+        self._skipped_endpoints: set[str] = set()
 
         try:
             socket.getaddrinfo(host, None)
@@ -397,23 +499,19 @@ class UniFiOSClient:
         """Join ``path`` onto the normalized UniFi Network base."""
 
         base = self._net_base().rstrip("/")
-        cleaned = str(path or "").lstrip("/")
-        if cleaned.startswith("proxy/network/"):
-            cleaned = cleaned[len("proxy/network/") :]
-        if cleaned.startswith("network/") and self._path_prefix.strip("/") == "network":
-            cleaned = cleaned[len("network/") :]
+        cleaned = _join_api(path)
         prefix = self._path_prefix.strip("/")
         if prefix and cleaned.startswith(f"{prefix}/"):
             cleaned = cleaned[len(prefix) + 1 :]
+        elif prefix and cleaned == prefix:
+            cleaned = ""
         return f"{base}/{cleaned}" if cleaned else base
 
     def _site_path(self, path: str = "") -> str:
         """Return the controller API path for the configured site."""
 
-        base = f"api/s/{self._site_name}".rstrip("/")
-        if path:
-            return f"{base}/{path.lstrip('/')}"
-        return base
+        base = _join_api("api", "s", self._site_name)
+        return _join_api(base, path)
 
     def site_name(self) -> str:
         """Return the textual site name used for API requests."""
@@ -431,10 +529,7 @@ class UniFiOSClient:
         if self._site_id:
             return self._site_id
 
-        candidates = [
-            "/v1/sites",
-            f"/v2/api/site/{self._site_name}/info",
-        ]
+        candidates = ["v1/sites"]
 
         for path in candidates:
             try:
@@ -486,10 +581,8 @@ class UniFiOSClient:
         """Return the API path for a specific site without duplicate prefixes."""
 
         site_name = str(site or self._site_name or DEFAULT_SITE).strip() or DEFAULT_SITE
-        base = f"api/s/{site_name}".rstrip("/")
-        if path:
-            return f"{base}/{path.lstrip('/')}"
-        return base
+        base = _join_api("api", "s", site_name)
+        return _join_api(base, path)
 
     # ----------- auth / base detection -----------
     def _login(self, host: str, port: int, ssl_verify: bool, timeout: int):
@@ -600,17 +693,26 @@ class UniFiOSClient:
         expected_codes = tuple(expected or (200,))
         expected_error_codes = tuple(expected_errors or ())
 
-        candidate = str(path)
+        candidate = str(path or "")
+        query = ""
+        if not absolute and "?" in candidate:
+            candidate, query = candidate.split("?", 1)
+            query = f"?{query}" if query else ""
+
         if absolute or candidate.startswith("http"):
             url = candidate
         else:
-            url = self._join(candidate)
+            normalized = _join_api(candidate)
+            url = self._join(normalized)
+            if query:
+                url = f"{url}{query}"
 
         request_timeout = timeout or self._timeout
         reauth_attempted = False
 
         while True:
             try:
+                start = time.perf_counter()
                 response: Response = self._session.request(
                     method,
                     url,
@@ -619,28 +721,45 @@ class UniFiOSClient:
                     params=params,
                     timeout=request_timeout,
                 )
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
             except requests.RequestException as err:
                 snippet = _redact_text(str(err))
-                _LOGGER.debug(
-                    "HTTP %s %s failed: %s",
-                    method,
-                    urlsplit(url).path or url,
-                    snippet,
-                )
+                log_path = urlsplit(url).path or url
+                _LOGGER.debug("HTTP %s %s failed: %s", method, log_path, snippet)
                 raise ConnectivityError(f"Request error: {err}") from err
 
             status = response.status_code or 0
-            snippet = _redact_text((response.text or "")[:200])
+            body_snippet = _redact_text((response.text or "")[:200])
             ok = status in expected_codes
+            content_length = len(response.content or b"")
             log_path = urlsplit(url).path or url
-            _LOGGER.debug(
-                "HTTP %s %s -> %s ok=%s body=%s",
-                method,
-                log_path,
-                status,
-                ok,
-                snippet,
-            )
+
+            if 200 <= status < 300:
+                _LOGGER.debug(
+                    "HTTP %s %s -> %s (%.1f ms, %d bytes)",
+                    method,
+                    log_path,
+                    status,
+                    elapsed_ms,
+                    content_length,
+                )
+            else:
+                _LOGGER.debug(
+                    "HTTP %s %s -> %s (%.1f ms, %d bytes) body=%s",
+                    method,
+                    log_path,
+                    status,
+                    elapsed_ms,
+                    content_length,
+                    body_snippet,
+                )
+                if status in {400, 404} and log_path not in self._skipped_endpoints:
+                    self._skipped_endpoints.add(log_path)
+                    _LOGGER.warning(
+                        "Endpoint %s skipped for this controller due to HTTP %s",
+                        log_path,
+                        status,
+                    )
 
             if status in (401, 403):
                 if not reauth_attempted:
@@ -656,19 +775,19 @@ class UniFiOSClient:
 
             if status in expected_error_codes:
                 raise APIError(
-                    f"HTTP {status}: {snippet} at {url}",
+                    f"HTTP {status}: {body_snippet} at {url}",
                     status_code=status,
                     url=url,
                     expected=True,
-                    body=snippet,
+                    body=body_snippet,
                 )
 
             if not ok:
                 raise APIError(
-                    f"HTTP {status}: {snippet} at {url}",
+                    f"HTTP {status}: {body_snippet} at {url}",
                     status_code=status,
                     url=url,
-                    body=snippet,
+                    body=body_snippet,
                 )
 
             if not response.content:
@@ -685,13 +804,13 @@ class UniFiOSClient:
                         payload = decoded
 
             if with_meta:
-                return JsonRequestResult(payload, status, ok, snippet, url)
+                return JsonRequestResult(payload, status, ok, body_snippet, url)
             return payload
 
     async def _request(self, method: str, path: str, **kwargs) -> Tuple[Any, str]:
         """Perform an asynchronous HTTP request against the UniFi Network API."""
 
-        url = self._join(path)
+        url = self._join(_join_api(path))
         timeout = kwargs.pop("timeout", self._timeout)
 
         def _do_request() -> Tuple[Any, str]:
@@ -743,42 +862,6 @@ class UniFiOSClient:
             if v2_candidate not in candidates:
                 candidates.append(v2_candidate)
         return candidates
-
-    def _api_site_base(self, site: str) -> str:
-        """Return the API base URL for a specific site."""
-
-        base = self._base.rstrip("/")
-        marker = "/api/s/"
-        if marker in base:
-            prefix, _ = base.split(marker, 1)
-            return f"{prefix}{marker}{site}".rstrip("/")
-        return base
-
-    def _vpn_api_bases(self) -> List[str]:
-        """Return API base URLs for VPN endpoint probing."""
-
-        return self._api_bases()
-
-    @staticmethod
-    def _vpn_is_internet_path(path: str) -> bool:
-        """Return True if the path targets the internet/vpn namespace."""
-
-        normalized = path.lstrip("/")
-        return normalized == "internet/vpn" or normalized.startswith("internet/vpn/")
-
-    @staticmethod
-    def _vpn_should_retry_with_alternate_base(err: APIError) -> bool:
-        """Return True if the VPN error indicates an alternate endpoint is needed."""
-
-        if err.status_code not in (400, 404):
-            return False
-
-        # Some controllers reply with a variety of 400/404 errors when a VPN
-        # endpoint is only exposed via the alternate API base. The response body
-        # differs between versions (e.g. api.err.Invalid, api.err.InvalidObject,
-        # api.err.NotFound), so rely on the status code itself instead of the
-        # message payload to decide whether to try the next base.
-        return True
 
     def _get(
         self,
@@ -1046,80 +1129,113 @@ class UniFiOSClient:
             _LOGGER.error("Unable to determine WAN links from controller data")
         return out
 
-    def get_vpn_summary(self, site: Optional[str] = None) -> VpnState:
-        """Return aggregated VPN diagnostics using gateway overview statistics."""
+    def get_vpn_overview(self, site: str) -> dict[str, Any]:
+        """Return VPN overview information using legacy UniFi Network endpoints."""
 
         site_name = str(site or self._site_name or DEFAULT_SITE).strip() or DEFAULT_SITE
-        _LOGGER.debug("using LAN/WAN-style gateway stats for VPN summary")
-
-        relative_paths = [
-            self._site_path_for(site_name, "gateway/health/overview"),
-            self._site_path_for(site_name, "gateway/health/overview/stats"),
+        endpoints: list[tuple[str, str]] = [
+            ("stat/remote-user", "remote"),
+            ("list/remoteuser", "remote"),
+            ("stat/s2speer", "s2s"),
+            ("stat/s2s", "s2s"),
         ]
 
         attempts: List[VpnAttempt] = []
-        errors: dict[str, Any] = {}
+        errors: List[str] = []
         remote_records: List[dict[str, Any]] = []
         s2s_records: List[dict[str, Any]] = []
-        teleport_servers: List[dict[str, Any]] = []
-        teleport_clients: List[dict[str, Any]] = []
 
-        for path in relative_paths:
+        for suffix, category in endpoints:
+            path = self._site_path_for(site_name, suffix)
             try:
                 result = self.request_json(path, with_meta=True)
             except APIError as err:
-                snippet = _redact_text(
-                    (err.body or "")[:200] if getattr(err, "body", None) else str(err)
-                )
+                status = err.status_code or 0
+                body = getattr(err, "body", None)
+                snippet = _redact_text(str(body or err))[:200]
                 attempts.append(
-                    VpnAttempt(
-                        path=path,
-                        status=err.status_code or 0,
-                        ok=False,
-                        snippet=snippet,
-                    )
+                    VpnAttempt(path=path, status=status, ok=False, snippet=snippet)
                 )
-                errors.setdefault("http", {})[path] = snippet or str(err)
+                errors.append(f"{path}: HTTP {status} {snippet}".strip())
                 continue
             except ConnectivityError as err:
-                snippet = _redact_text(str(err))
-                attempts.append(
-                    VpnAttempt(path=path, status=0, ok=False, snippet=snippet)
-                )
-                errors.setdefault("connectivity", {})[path] = snippet
+                snippet = _redact_text(str(err))[:200]
+                attempts.append(VpnAttempt(path=path, status=0, ok=False, snippet=snippet))
+                errors.append(f"{path}: {snippet}".strip())
                 continue
+            except Exception as err:  # pragma: no cover - defensive
+                snippet = _redact_text(str(err))[:200]
+                attempts.append(VpnAttempt(path=path, status=0, ok=False, snippet=snippet))
+                errors.append(f"{path}: {snippet}".strip())
+                continue
+
+            assert isinstance(result, JsonRequestResult)
+            attempts.append(
+                VpnAttempt(
+                    path=path,
+                    status=result.status,
+                    ok=result.ok,
+                    snippet=_redact_text(result.snippet)[:200],
+                )
+            )
+            if not result.ok or result.data in (None, "", [], {}):
+                continue
+
+            payload_records = _flatten_vpn_payload(result.data)
+            if not payload_records:
+                continue
+            if category == "remote":
+                remote_records.extend(payload_records)
             else:
-                assert isinstance(result, JsonRequestResult)
-                attempts.append(
-                    VpnAttempt(
-                        path=path,
-                        status=result.status,
-                        ok=result.ok,
-                        snippet=result.snippet,
-                    )
-                )
-                if not result.ok or result.data in (None, "", [], {}):
-                    continue
-                payload = result.data
-                remote_records.extend(_extract_vpn_entries(payload, _VPN_REMOTE_TOKENS))
-                s2s_records.extend(_extract_vpn_entries(payload, _VPN_S2S_TOKENS))
-                teleport_servers.extend(
-                    _extract_vpn_entries(payload, _VPN_TELEPORT_SERVER_TOKENS)
-                )
-                teleport_clients.extend(
-                    _extract_vpn_entries(payload, _VPN_TELEPORT_CLIENT_TOKENS)
-                )
+                s2s_records.extend(payload_records)
 
-        errors = {key: value for key, value in errors.items() if value}
+        remote_records = _unique_dicts(remote_records)
+        s2s_records = _unique_dicts(s2s_records)
 
-        return VpnState(
-            remote_users=_unique_dicts(remote_records),
-            site_to_site_peers=_unique_dicts(s2s_records),
-            teleport_servers=_unique_dicts(teleport_servers),
-            teleport_clients=_unique_dicts(teleport_clients),
-            attempts=attempts,
-            errors=errors,
-        )
+        counts = {
+            "remote_users": len(remote_records),
+            "s2s_peers": len(s2s_records),
+        }
+
+        configured_names: List[str] = []
+        seen: set[str] = set()
+        for record in remote_records:
+            name = _extract_identifier(record, _VPN_REMOTE_IDENTIFIER_KEYS)
+            if not name:
+                continue
+            lowered = name.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            configured_names.append(name)
+        for record in s2s_records:
+            name = _extract_identifier(record, _VPN_S2S_IDENTIFIER_KEYS)
+            if not name:
+                continue
+            lowered = name.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            configured_names.append(name)
+
+        attempt_dicts = [
+            {
+                "path": attempt.path,
+                "status": attempt.status,
+                "ok": attempt.ok,
+                "snippet": attempt.snippet,
+            }
+            for attempt in attempts
+        ]
+
+        return {
+            "counts": counts,
+            "configured_list": ", ".join(configured_names),
+            "attempts": attempt_dicts,
+            "errors": errors,
+            "remote_users": remote_records,
+            "s2s_peers": s2s_records,
+        }
 
     def instance_key(self) -> str:
         return self._iid

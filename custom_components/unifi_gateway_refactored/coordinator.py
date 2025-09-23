@@ -52,35 +52,43 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         site = client.get_site()
 
         try:
-            vpn_state = await self.hass.async_add_executor_job(
-                client.get_vpn_summary,
+            overview = await self.hass.async_add_executor_job(
+                client.get_vpn_overview,
                 site,
             )
         except Exception as err:  # pragma: no cover - defensive guard
             message = str(err)
             _LOGGER.debug(
-                "Fetching VPN summary failed: %s",
+                "Fetching VPN overview failed: %s",
                 err,
                 exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
             )
-            vpn_state = VpnState(errors={"summary": message[:200]})
+            vpn_state = VpnState(errors=[message[:200]])
+        else:
+            if isinstance(overview, dict):
+                vpn_state = VpnState.from_overview(overview)
+            else:
+                vpn_state = VpnState(
+                    errors=[
+                        f"Unexpected VPN overview payload type: {type(overview).__name__}"
+                    ]
+                )
 
-        counts = {
-            "remote_users": len(vpn_state.remote_users),
-            "s2s_peers": len(vpn_state.site_to_site_peers),
-            "teleport_servers": len(vpn_state.teleport_servers),
-            "teleport_clients": len(vpn_state.teleport_clients),
-        }
+        remote_count = int(vpn_state.counts.get("remote_users", 0))
+        s2s_count = int(vpn_state.counts.get("s2s_peers", 0))
+        peers_total = remote_count + s2s_count
 
-        peers_total = sum(counts.values())
         if peers_total:
             _LOGGER.info(
-                "VPN overview discovered: remote_users=%d site_to_site=%d teleport_clients=%d teleport_servers=%d",
-                counts["remote_users"],
-                counts["s2s_peers"],
-                counts["teleport_clients"],
-                counts["teleport_servers"],
+                "VPN overview discovered: remote_users=%d site_to_site=%d configured_list=%s",
+                remote_count,
+                s2s_count,
+                vpn_state.configured_list or "",
             )
+        elif vpn_state.attempts and all(
+            attempt.status in (400, 404) for attempt in vpn_state.attempts
+        ):
+            _LOGGER.debug("VPN state returned no connections for site %s", site)
         else:
             _LOGGER.info("VPN overview contains no entries for site %s", site)
 
