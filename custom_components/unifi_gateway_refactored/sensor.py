@@ -12,15 +12,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
-try:  # pragma: no cover - optional dependency for tests
-    from homeassistant.util import Throttle
-except ModuleNotFoundError:  # pragma: no cover - simple fallback for test envs
-    def Throttle(min_time):  # type: ignore[misc]
-        def decorator(func):
-            return func
-
-        return decorator
-
 from .const import CONF_HOST, DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, UniFiOSClient
@@ -37,7 +28,6 @@ SUBSYSTEM_SENSORS: Dict[str, tuple[str, str]] = {
     "lan": ("LAN", "mdi:lan"),
     "wlan": ("WLAN", "mdi:wifi"),
     "www": ("WWW", "mdi:web"),
-    "vpn": ("VPN", "mdi:folder-key-network"),
 }
 
 
@@ -74,7 +64,6 @@ async def async_setup_entry(
     known_wan: set[str] = set()
     known_lan: set[str] = set()
     known_wlan: set[str] = set()
-    known_vpn: set[str] = set()
 
     def _sync_dynamic() -> None:
         _LOGGER.debug(
@@ -158,22 +147,6 @@ async def async_setup_entry(
                 UniFiGatewayWlanClientsSensor(coordinator, client, entry.entry_id, wlan)
             )
             pending_unique_ids.add(unique_id)
-
-        vpn_peers = list(getattr(coordinator_data, "vpn_peers", []) or [])
-        if vpn_peers:
-            vpn_entities: List[SensorEntity] = []
-            for idx, peer in enumerate(vpn_peers, start=1):
-                entity = UnifiVpnPeerSensor(hass, client, base_name, peer, idx)
-                unique_id = entity.unique_id
-                if unique_id in pending_unique_ids or _should_skip(unique_id):
-                    continue
-                if unique_id in known_vpn:
-                    continue
-                vpn_entities.append(entity)
-                pending_unique_ids.add(unique_id)
-                known_vpn.add(unique_id)
-            if vpn_entities:
-                new_entities.extend(vpn_entities)
 
         if new_entities:
             names = [
@@ -390,122 +363,6 @@ def _extract_client_count(value: Any) -> Optional[int]:
     return _coerce_int(value)
 
 
-def _normalize_vpn_state_token(value: Any) -> Optional[str]:
-    if value in (None, "", [], {}):
-        return None
-    if isinstance(value, bool):
-        return "CONNECTED" if value else "DISCONNECTED"
-    if isinstance(value, (int, float)):
-        return "CONNECTED" if value else "DISCONNECTED"
-    if isinstance(value, str):
-        token = value.strip().lower()
-        if not token:
-            return None
-        mapping = {
-            "connected": "CONNECTED",
-            "up": "CONNECTED",
-            "online": "CONNECTED",
-            "ok": "CONNECTED",
-            "ready": "CONNECTED",
-            "established": "CONNECTED",
-            "active": "CONNECTED",
-            "disconnected": "DISCONNECTED",
-            "down": "DISCONNECTED",
-            "offline": "DISCONNECTED",
-            "inactive": "DISCONNECTED",
-            "not_connected": "DISCONNECTED",
-            "error": "ERROR",
-            "failed": "ERROR",
-            "fail": "ERROR",
-            "critical": "ERROR",
-        }
-        if token in mapping:
-            return mapping[token]
-        if any(part in token for part in ("error", "fail", "fault")):
-            return "ERROR"
-        if any(part in token for part in ("connect", "online", "establish", "up")):
-            return "CONNECTED"
-        if any(part in token for part in ("discon", "down", "offline", "inactive")):
-            return "DISCONNECTED"
-        return token.upper()
-    return str(value).upper()
-
-
-def _vpn_peer_client_count(
-    record: Dict[str, Any], matches: Iterable[Dict[str, Any]]
-) -> Optional[int]:
-    count: Optional[int] = None
-    for key in (
-        "client_count",
-        "clients",
-        "sessions",
-        "active_sessions",
-        "connected_clients",
-        "users",
-        "num_clients",
-        "num_users",
-    ):
-        candidate = _extract_client_count(record.get(key))
-        if candidate is not None:
-            count = candidate
-            break
-    match_list = list(matches)
-    if match_list:
-        count = max(count or 0, len(match_list))
-    return count
-
-
-def _vpn_peer_state(
-    record: Dict[str, Any], matches: Iterable[Dict[str, Any]]
-) -> Optional[str]:
-    for key in (
-        "_ha_state",
-        "state",
-        "status",
-        "connection_state",
-        "connection_status",
-    ):
-        state = _normalize_vpn_state_token(record.get(key))
-        if state:
-            return state
-
-    for key in ("connected", "is_connected", "up", "enabled_state"):
-        state = _normalize_vpn_state_token(record.get(key))
-        if state:
-            return state
-
-    if record.get("error") or record.get("error_code") or record.get("last_error"):
-        return "ERROR"
-
-    count = _vpn_peer_client_count(record, matches)
-    if count is not None:
-        return "CONNECTED" if count > 0 else "DISCONNECTED"
-
-    return None
-
-
-def _vpn_icon_for_state(state: Optional[str], fallback: Optional[str]) -> Optional[str]:
-    normalized = (state or "").upper()
-    if normalized == "CONNECTED":
-        return "mdi:check-circle"
-    if normalized == "ERROR":
-        return "mdi:alert-circle-outline"
-    if normalized:
-        return "mdi:close-circle-outline"
-    return fallback
-
-
-def _normalize_vpn_label(value: Any) -> Optional[str]:
-    if value in (None, "", [], {}):
-        return None
-    cleaned = str(value).strip().lower()
-    if not cleaned:
-        return None
-    if any(ch in cleaned for ch in ".:/"):
-        return cleaned
-    normalized = "".join(ch for ch in cleaned if ch.isalnum())
-    return normalized or None
-
 
 class UniFiGatewaySensorBase(
     CoordinatorEntity[UniFiGatewayDataUpdateCoordinator], SensorEntity
@@ -598,10 +455,6 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
             return None
         status = record.get("status") or record.get("state")
         if isinstance(status, str):
-            normalized = status.strip().lower()
-            if normalized == "error" and self._subsystem == "vpn":
-                if self._vpn_disabled(record, data):
-                    return "DISABLED"
             return status.upper()
         return status
 
@@ -635,93 +488,9 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
                 total_found = True
             if total_found:
                 attrs["num_user_total"] = total
-        if self._subsystem == "vpn" and data:
-            diag_payload = dict(getattr(data, "vpn_diagnostics", {}) or {})
-            if diag_payload:
-                attrs["vpn_diagnostics"] = diag_payload
-            config = getattr(data, "vpn_config_list", None)
-            configured_vpn = {
-                "remote_users": list(config.remote_users) if config else [],
-                "s2s_peers": list(config.s2s_peers) if config else [],
-                "teleport_servers": list(config.teleport_servers) if config else [],
-                "teleport_clients": list(config.teleport_clients) if config else [],
-            }
-            attrs["configured_vpn"] = configured_vpn
-            attempts = diag_payload.get("attempts") if diag_payload else None
-            if attempts is not None:
-                attrs["attempts"] = attempts
-            winner_paths = diag_payload.get("winner_paths") if diag_payload else None
-            if isinstance(winner_paths, dict):
-                attrs["winner_paths"] = winner_paths
-            peers = getattr(data, "vpn_peers", None)
-            if peers:
-                attrs["vpn_peers"] = peers
         attrs.update(self._controller_attrs())
         return attrs
 
-    def _vpn_disabled(
-        self, record: Dict[str, Any], data: UniFiGatewayData
-    ) -> bool:
-        """Determine if VPN subsystem is simply disabled/unconfigured."""
-
-        details: list[str] = []
-        for key in (
-            "status_reason",
-            "status_message",
-            "status_detail",
-            "status_info",
-            "reason",
-            "msg",
-        ):
-            value = record.get(key)
-            if isinstance(value, str) and value.strip():
-                details.append(value.strip().lower())
-
-        if details:
-            combined = " ".join(details)
-            for hint in (
-                "not configured",
-                "not available",
-                "not supported",
-                "not provisioned",
-                "disabled",
-                "no vpn",
-                "teleport disabled",
-            ):
-                if hint in combined:
-                    return True
-
-        if record.get("vpn_status") in {"disabled", "off"}:
-            return True
-
-        config = getattr(data, "vpn_config_list", None)
-        if config:
-            if not (
-                config.remote_users
-                or config.s2s_peers
-                or config.teleport_servers
-                or config.teleport_clients
-            ):
-                return True
-        else:
-            diag_payload = getattr(data, "vpn_diagnostics", {})
-            counts: Dict[str, Any] = {}
-            if isinstance(diag_payload, dict):
-                raw_counts = diag_payload.get("counts")
-                if isinstance(raw_counts, dict):
-                    counts = raw_counts
-            if counts:
-                total = 0
-                for value in counts.values():
-                    coerced = _coerce_int(value)
-                    if coerced:
-                        total += coerced
-                if total == 0:
-                    return True
-            else:
-                return True
-
-        return False
 
 
 class UniFiGatewayAlertsSensor(UniFiGatewaySensorBase):
@@ -1234,166 +1003,6 @@ class UniFiGatewaySpeedtestPingSensor(UniFiGatewaySpeedtestSensor):
             return round(float(record["latency_ms"]), 1)
         return None
 
-
-class UnifiVpnPeerSensor(SensorEntity):
-    """One entity per configured VPN peer on the UniFi gateway."""
-
-    _attr_icon = "mdi:lock"
-    _attr_native_unit_of_measurement = "clients"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        ctrl: UniFiOSClient,
-        base_name: str,
-        peer: Dict[str, Any],
-        index: int,
-    ) -> None:
-        self._ctrl = ctrl
-        self._peer = peer
-        self._peer_id = peer.get("_id") or peer.get("id") or f"peer{index}"
-        name = (
-            peer.get("name")
-            or peer.get("peer_name")
-            or peer.get("description")
-            or f"VPN {index}"
-        )
-        self._name = f"{base_name} VPN {name}"
-        self._attr_name = self._name
-
-        self._public_ip = (
-            peer.get("public_ip")
-            or peer.get("peer_addr")
-            or peer.get("remote_ip")
-        )
-        self._subnet_str = (
-            peer.get("tunnel_network")
-            or peer.get("subnet")
-            or peer.get("client_subnet")
-            or peer.get("ip_subnet")
-        )
-        self._ipnet = None
-        if self._subnet_str:
-            try:
-                self._ipnet = ipaddress.ip_network(self._subnet_str, strict=False)
-            except Exception:  # pragma: no cover - defensive
-                self._ipnet = None
-
-        self._state = 0
-        self._attributes = {
-            "vpn_name": name,
-            "public_ip": self._public_ip,
-            "tunnel_subnet": self._subnet_str,
-            "client_count": 0,
-            "controller_ui": ctrl.get_controller_url(),
-            "controller_site": ctrl.get_site(),
-            "instance": base_name,
-        }
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @property
-    def unit_of_measurement(self) -> str:
-        return "clients"
-
-    @property
-    def unique_id(self) -> str:
-        return f"unifigw_{self._ctrl.instance_key()}_vpn_{self._peer_id}"
-
-    @property
-    def device_info(self) -> Dict[str, Any]:
-        return {
-            "identifiers": {("unifigateway", self._ctrl.instance_key())},
-            "manufacturer": "Ubiquiti Networks",
-            "name": self._name.split(" VPN ")[0],
-        }
-
-    @property
-    def native_value(self) -> int:
-        return self._state
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        return self._attributes
-
-    @property
-    def state_attributes(self) -> Dict[str, Any]:  # back-compat
-        return self._attributes
-
-    @staticmethod
-    def _norm(value: Optional[str]) -> str:
-        if not value:
-            return ""
-        return "".join(ch for ch in value.lower() if ch.isalnum())
-
-    @Throttle(MIN_TIME_BETWEEN_UPDATES)
-    def update(self) -> None:
-        """Refresh the VPN peer client count."""
-        cnt = (
-            self._peer.get("num_clients")
-            or self._peer.get("clients")
-            or (
-                len(self._peer.get("connected_clients", []))
-                if isinstance(self._peer.get("connected_clients"), list)
-                else 0
-            )
-        )
-        if isinstance(cnt, list):
-            cnt = len(cnt)
-        cnt = int(cnt or 0)
-
-        if cnt == 0:
-            wanted = self._norm(self._attributes.get("vpn_name"))
-            try:
-                clients = self._ctrl.get_clients()
-                for client in clients or []:
-                    label = (
-                        client.get("network")
-                        or client.get("vpn_name")
-                        or client.get("remote_user_vpn")
-                        or client.get("tunnel")
-                        or client.get("gateway")
-                        or ""
-                    )
-                    if label:
-                        normalized = self._norm(label)
-                        if (
-                            normalized == wanted
-                            or wanted in normalized
-                            or normalized in wanted
-                        ):
-                            cnt += 1
-            except APIError as ex:  # pragma: no cover - network guard
-                _LOGGER.debug(
-                    "clients fetch failed for VPN %s: %s",
-                    self._peer_id,
-                    ex,
-                )
-
-        if cnt == 0 and self._ipnet:
-            try:
-                clients = self._ctrl.get_clients()
-                for client in clients or []:
-                    ip = client.get("ip")
-                    if not ip:
-                        continue
-                    try:
-                        if ipaddress.ip_address(ip) in self._ipnet:
-                            cnt += 1
-                    except Exception:  # pragma: no cover - defensive guard
-                        continue
-            except APIError as ex:  # pragma: no cover - network guard
-                _LOGGER.debug(
-                    "clients fetch by subnet failed for VPN %s: %s",
-                    self._peer_id,
-                    ex,
-                )
-
-        self._state = int(cnt)
-        self._attributes["client_count"] = int(cnt)
 
 
 def _to_ip_network(value: Optional[str]):
