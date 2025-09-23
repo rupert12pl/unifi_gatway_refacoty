@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import ipaddress
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
@@ -12,9 +12,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
 
-from .const import DEFAULT_SITE, DOMAIN
+from .const import DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
-from .unifi_client import UniFiOSClient, VpnConfigList
+from .unifi_client import UniFiOSClient
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,146 +56,6 @@ async def async_setup_entry(
     )
     async_add_entities(static_entities)
 
-    health_entities: Dict[str, HealthSensor] = {}
-    vpn_diag_entity: Optional[VpnDiagSensor] = None
-
-    def _build_health_entities(
-        hass: HomeAssistant,
-        entry: ConfigEntry,
-        health: Optional[List[Dict[str, Any]]],
-    ) -> List[SensorEntity]:
-        ent_reg = er.async_get(hass)
-        created: List[SensorEntity] = []
-        seen: Set[str] = set()
-        controller_context = {
-            "controller_api": client.get_controller_api_url(),
-            "controller_ui": client.get_controller_url(),
-            "controller_site": client.get_site(),
-        }
-
-        for item in health or []:
-            if not isinstance(item, dict):
-                continue
-            subsystem = str(item.get("subsystem") or "").lower()
-            if subsystem not in {"lan", "wan", "wlan", "www"}:
-                continue
-            uid = f"{entry.entry_id}-health-{subsystem}"
-            seen.add(uid)
-            entity = health_entities.get(uid)
-            if entity is None:
-                if ent_reg.async_get_entity_id("sensor", DOMAIN, uid):
-                    continue
-                entity = HealthSensor(
-                    unique_id=uid,
-                    name=subsystem.upper(),
-                    payload=item,
-                    controller_context=controller_context,
-                )
-                health_entities[uid] = entity
-                created.append(entity)
-            else:
-                entity.set_payload(item, controller_context=controller_context)
-
-        for uid, entity in list(health_entities.items()):
-            if uid not in seen:
-                entity.mark_stale()
-
-        return created
-
-    def _build_vpn_entities(
-        entry: ConfigEntry, data: Dict[str, Any] | UniFiGatewayData | None
-    ) -> List[SensorEntity]:
-        nonlocal vpn_diag_entity
-
-        ents: List[SensorEntity] = []
-        controller_site = client.get_site() or DEFAULT_SITE
-        controller_context = {
-            "controller_api": client.get_controller_api_url(),
-            "controller_ui": client.get_controller_url(),
-            "controller_site": controller_site,
-        }
-        vpn_config: VpnConfigList | None = None
-        diagnostics_payload: Dict[str, Any] = {}
-
-        if isinstance(data, UniFiGatewayData):
-            controller_info = getattr(data, "controller", {}) or {}
-            if isinstance(controller_info, dict):
-                site_candidate = controller_info.get("site")
-                if isinstance(site_candidate, str) and site_candidate:
-                    controller_site = site_candidate
-                    controller_context["controller_site"] = controller_site
-                api_candidate = controller_info.get("api_url")
-                if isinstance(api_candidate, str) and api_candidate:
-                    controller_context["controller_api"] = api_candidate
-                ui_candidate = controller_info.get("url")
-                if isinstance(ui_candidate, str) and ui_candidate:
-                    controller_context["controller_ui"] = ui_candidate
-            vpn_config = data.vpn_config_list
-            diagnostics_payload = dict(data.vpn_diagnostics or {})
-        elif isinstance(data, dict):
-            potential = data.get("vpn_config_list")
-            if isinstance(potential, VpnConfigList):
-                vpn_config = potential
-            diagnostics_payload = dict(data.get("vpn_diagnostics") or {})
-
-        remote_users = list(vpn_config.remote_users if vpn_config else [])
-        s2s_peers = list(vpn_config.s2s_peers if vpn_config else [])
-        teleport_servers = list(vpn_config.teleport_servers if vpn_config else [])
-        teleport_clients = list(vpn_config.teleport_clients if vpn_config else [])
-
-        counts = {
-            "remote_users": len(remote_users),
-            "s2s_peers": len(s2s_peers),
-            "teleport_servers": len(teleport_servers),
-            "teleport_clients": len(teleport_clients),
-        }
-        total_connections = sum(counts.values())
-
-        diag_errors = diagnostics_payload.get("errors")
-        if isinstance(diag_errors, dict) and diag_errors:
-            state_token = "error"
-        elif total_connections > 0:
-            state_token = "ok"
-        else:
-            state_token = "unknown"
-
-        summary_payload = {
-            "state": state_token,
-            "counts": counts,
-        }
-        winner_paths = diagnostics_payload.get("winner_paths")
-        if isinstance(winner_paths, dict):
-            summary_payload["winner_paths"] = dict(winner_paths)
-
-        configured_vpn = {
-            "remote_users": remote_users,
-            "s2s_peers": s2s_peers,
-            "teleport_servers": teleport_servers,
-            "teleport_clients": teleport_clients,
-        }
-
-        diag_uid = f"{entry.entry_id}-vpn-summary"
-        if vpn_diag_entity is None:
-            vpn_diag_entity = VpnDiagSensor(
-                unique_id=diag_uid,
-                name="VPN diagnostics",
-                site=controller_site,
-                payload=summary_payload,
-                diagnostics=diagnostics_payload,
-                configured_vpn=configured_vpn,
-                controller_context=controller_context,
-            )
-            ents.append(vpn_diag_entity)
-        else:
-            vpn_diag_entity.set_payload(
-                summary_payload,
-                diagnostics=diagnostics_payload,
-                configured_vpn=configured_vpn,
-                site=controller_site,
-                controller_context=controller_context,
-            )
-        return ents
-
     known_wan: set[str] = set()
     known_lan: set[str] = set()
     known_wlan: set[str] = set()
@@ -220,11 +80,6 @@ async def async_setup_entry(
             site_candidate = controller_info.get("site")
             if isinstance(site_candidate, str) and site_candidate:
                 controller_site = site_candidate
-
-        new_entities.extend(
-            _build_health_entities(hass, entry, coordinator_data.health)
-        )
-        new_entities.extend(_build_vpn_entities(entry, coordinator_data))
 
         entity_registry = er.async_get(hass)
         pending_unique_ids: set[str] = set()
@@ -307,7 +162,6 @@ async def async_setup_entry(
 
     _sync_dynamic()
     entry.async_on_unload(coordinator.async_add_listener(_sync_dynamic))
-    # Ensure first refresh happens immediately; dynamic VPN entities will be created.
     await coordinator.async_request_refresh()
 
 
@@ -619,258 +473,6 @@ def _normalize_vpn_label(value: Any) -> Optional[str]:
         return cleaned
     normalized = "".join(ch for ch in cleaned if ch.isalnum())
     return normalized or None
-
-
-class _GatewayDynamicSensor(SensorEntity):
-    """Base helper for dynamically created sensors that manage their payload."""
-
-    _attr_should_poll = False
-
-    def __init__(
-        self,
-        unique_id: str,
-        name: str,
-        controller_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        self._attr_unique_id = unique_id
-        self._attr_name = name
-        self._attr_available = False
-        self._state: Optional[Any] = None
-        self._attrs: Dict[str, Any] = {}
-        self._payload: Dict[str, Any] = {}
-        self._controller_context: Dict[str, Any] = {}
-        if controller_context:
-            self.update_context(controller_context)
-        self._default_icon = getattr(self, "_attr_icon", None)
-
-    def update_context(self, context: Optional[Dict[str, Any]]) -> None:
-        if not context:
-            return
-        for key, value in context.items():
-            if value in (None, "", [], {}):
-                continue
-            self._controller_context[key] = value
-
-    @property
-    def native_value(self) -> Optional[Any]:
-        return self._state
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        attrs = dict(self._controller_context)
-        attrs.update(self._attrs)
-        return attrs
-
-    @property
-    def payload(self) -> Dict[str, Any]:
-        return self._payload
-
-    def _async_write_state(self) -> None:
-        if self.hass:
-            self.async_write_ha_state()
-
-    def mark_stale(self) -> None:
-        self._payload = {}
-        self._state = None
-        self._attrs = {}
-        self._attr_available = False
-        self._async_write_state()
-
-
-class HealthSensor(_GatewayDynamicSensor):
-    """Sensor exposing controller health per subsystem."""
-
-    def __init__(
-        self,
-        unique_id: str,
-        name: str,
-        payload: Dict[str, Any],
-        controller_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        super().__init__(unique_id, name, controller_context)
-        self._subsystem = name.lower()
-        self.set_payload(payload, controller_context=controller_context)
-
-    def set_payload(
-        self,
-        payload: Optional[Dict[str, Any]],
-        controller_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        if controller_context:
-            self.update_context(controller_context)
-        self._payload = dict(payload or {})
-        if self._payload.get("subsystem"):
-            self._subsystem = str(self._payload.get("subsystem")).lower()
-        self._attr_available = bool(payload)
-        status = self._payload.get("status") or self._payload.get("state")
-        if isinstance(status, str):
-            cleaned = status.strip()
-            self._state = cleaned.upper() if cleaned else None
-        else:
-            self._state = status
-        attrs = {
-            key: value for key, value in self._payload.items() if key != "subsystem"
-        }
-        attrs["subsystem"] = self._payload.get("subsystem") or self._subsystem
-        self._attrs = attrs
-        self._async_write_state()
-
-    def mark_stale(self) -> None:  # type: ignore[override]
-        self._payload = {}
-        self._attr_available = False
-        self._state = None
-        self._attrs = {"subsystem": self._subsystem}
-        self._async_write_state()
-
-    @property
-    def icon(self) -> Optional[str]:
-        status = str(self._state or "").lower()
-        if status in {"ok", "online", "up", "healthy", "connected"}:
-            return "mdi:check-circle"
-        if status in {"warning", "notice", "degraded", "partial"}:
-            return "mdi:alert"
-        if status in {"error", "critical", "down", "offline", "disconnected"}:
-            return "mdi:alert-circle"
-        if status in {"disabled", "not_configured", "notconfigured"}:
-            return "mdi:power-plug-off"
-        return self._default_icon
-
-
-class VpnDiagSensor(_GatewayDynamicSensor):
-    """Aggregated VPN diagnostics sensor."""
-
-    _attr_icon = "mdi:shield-search"
-
-    def __init__(
-        self,
-        unique_id: str,
-        name: str,
-        site: str,
-        payload: Dict[str, Any],
-        diagnostics: Optional[Dict[str, Any]] = None,
-        configured_vpn: Optional[Dict[str, Any]] = None,
-        controller_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        super().__init__(unique_id, name, controller_context)
-        self._site = site
-        self.set_payload(
-            payload,
-            diagnostics=diagnostics,
-            configured_vpn=configured_vpn,
-            site=site,
-            controller_context=controller_context,
-        )
-
-    def set_payload(
-        self,
-        summary: Optional[Dict[str, Any]],
-        *,
-        diagnostics: Optional[Dict[str, Any]] = None,
-        configured_vpn: Optional[Dict[str, Any]] = None,
-        site: Optional[str] = None,
-        controller_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        if site:
-            self._site = site
-        if controller_context:
-            self.update_context(controller_context)
-        summary_payload = dict(summary or {})
-        self._payload = summary_payload
-        diagnostics_payload = dict(diagnostics or {})
-
-        cfg = {
-            "remote_users": list((configured_vpn or {}).get("remote_users") or []),
-            "s2s_peers": list((configured_vpn or {}).get("s2s_peers") or []),
-            "teleport_servers": list((configured_vpn or {}).get("teleport_servers") or []),
-            "teleport_clients": list((configured_vpn or {}).get("teleport_clients") or []),
-        }
-
-        counts = diagnostics_payload.get("counts")
-        if not isinstance(counts, dict):
-            counts = {}
-        derived_counts = {
-            "remote_users": len(cfg["remote_users"]),
-            "s2s_peers": len(cfg["s2s_peers"]),
-            "teleport_servers": len(cfg["teleport_servers"]),
-            "teleport_clients": len(cfg["teleport_clients"]),
-        }
-        for key, value in derived_counts.items():
-            counts.setdefault(key, value)
-        diagnostics_payload["counts"] = counts
-
-        status = summary_payload.get("state")
-        if isinstance(status, str) and status.strip():
-            normalized = status.strip().lower()
-        else:
-            normalized = None
-        if not normalized:
-            for source in (summary_payload, diagnostics_payload):
-                if not isinstance(source, dict):
-                    continue
-                for key in ("status", "state", "result", "outcome", "health"):
-                    value = source.get(key)
-                    if isinstance(value, str) and value.strip():
-                        normalized = value.strip().lower()
-                        break
-                if normalized:
-                    break
-        if not normalized:
-            healthy = summary_payload.get("healthy")
-            if isinstance(healthy, bool):
-                normalized = "ok" if healthy else "error"
-        self._state = normalized or "unknown"
-        self._attr_available = bool(summary_payload or diagnostics_payload or cfg)
-
-        attrs: Dict[str, Any] = {
-            "site": self._site,
-            "summary": summary_payload,
-            "diagnostics": diagnostics_payload,
-            "counts": counts,
-            "configured_vpn": cfg,
-        }
-        family = diagnostics_payload.get("family") or summary_payload.get("family")
-        if family is not None:
-            attrs["family"] = family
-        fallback = diagnostics_payload.get("fallback_used")
-        if fallback is None:
-            fallback = summary_payload.get("fallback_used")
-        if fallback is not None:
-            attrs["fallback_used"] = fallback
-        attempts = diagnostics_payload.get("attempts")
-        if attempts is not None:
-            attrs["attempts"] = attempts
-        winner_paths = diagnostics_payload.get("winner_paths")
-        if isinstance(winner_paths, dict) and winner_paths:
-            attrs["winner_paths"] = winner_paths
-        fetch_errors = diagnostics_payload.get("fetch_errors")
-        if fetch_errors not in (None, "", [], {}):
-            attrs["fetch_errors"] = fetch_errors
-        errors_payload = diagnostics_payload.get("errors")
-        if errors_payload not in (None, "", [], {}):
-            attrs["errors"] = errors_payload
-        errors_text = summary_payload.get("errors_text")
-        if errors_text not in (None, "", [], {}):
-            attrs.setdefault("errors_text", errors_text)
-        self._attrs = attrs
-        self._async_write_state()
-
-    def mark_stale(self) -> None:  # type: ignore[override]
-        self._payload = {}
-        self._state = None
-        self._attr_available = False
-        self._attrs = {"site": self._site, "configured_vpn": {}}
-        self._async_write_state()
-
-    @property
-    def icon(self) -> Optional[str]:
-        status = str(self._state or "").upper()
-        if status in {"OK", "ONLINE", "CONNECTED", "HEALTHY"}:
-            return "mdi:shield-check"
-        if status in {"ERROR", "FAILED", "CRITICAL"}:
-            return "mdi:shield-alert"
-        if status in {"WARNING", "WARN", "NOTICE"}:
-            return "mdi:shield-alert-outline"
-        return self._default_icon
 
 
 class UniFiGatewaySensorBase(
