@@ -1,7 +1,7 @@
 {
   "domain": "unifi_gateway_refactored",
   "name": "UniFi Gateway (Refactored)",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "config_flow": true,
   "documentation": "https://github.com/rupert12pl/unifi_gatway_refacoty",
   "issue_tracker": "https://github.com/rupert12pl/unifi_gatway_refacoty/issues",
