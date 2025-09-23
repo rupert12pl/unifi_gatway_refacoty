@@ -83,8 +83,15 @@ async def async_setup_entry(
             seen.add(uid)
             entity = health_entities.get(uid)
             if entity is None:
-                if ent_reg.async_get_entity_id("sensor", DOMAIN, uid):
-                    continue
+                entity_id = ent_reg.async_get_entity_id("sensor", DOMAIN, uid)
+                if entity_id:
+                    registry_entry = ent_reg.async_get(entity_id)
+                    if (
+                        registry_entry
+                        and getattr(registry_entry, "config_entry_id", None)
+                        != entry.entry_id
+                    ):
+                        continue
                 entity = HealthSensor(
                     unique_id=uid,
                     name=subsystem.upper(),
