@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import ipaddress
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
@@ -12,9 +12,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
 
-from .const import DOMAIN
+from .const import DEFAULT_SITE, DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
-from .unifi_client import UniFiOSClient, vpn_peer_identity
+from .unifi_client import UniFiOSClient, VpnConfigList
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -108,13 +108,13 @@ async def async_setup_entry(
         nonlocal vpn_diag_entity
 
         ents: List[SensorEntity] = []
-        controller_site = client.get_site() or "default"
+        controller_site = client.get_site() or DEFAULT_SITE
         controller_context = {
             "controller_api": client.get_controller_api_url(),
             "controller_ui": client.get_controller_url(),
             "controller_site": controller_site,
         }
-        vpn_state: Dict[str, Any] = {}
+        vpn_config: VpnConfigList | None = None
         diagnostics_payload: Dict[str, Any] = {}
 
         if isinstance(data, UniFiGatewayData):
@@ -130,26 +130,29 @@ async def async_setup_entry(
                 ui_candidate = controller_info.get("url")
                 if isinstance(ui_candidate, str) and ui_candidate:
                     controller_context["controller_ui"] = ui_candidate
-            vpn_state = dict(data.vpn_state or {})
-            diagnostics_payload = dict(vpn_state.get("diagnostics") or data.vpn_diagnostics or {})
+            vpn_config = data.vpn_config_list
+            diagnostics_payload = dict(data.vpn_diagnostics or {})
         elif isinstance(data, dict):
-            vpn_state = dict(data.get("vpn_state") or {})
+            potential = data.get("vpn_config_list")
+            if isinstance(potential, VpnConfigList):
+                vpn_config = potential
             diagnostics_payload = dict(data.get("vpn_diagnostics") or {})
 
-        counts = dict(vpn_state.get("counts") or {})
-        teleport_payload = vpn_state.get("teleport") or {}
-        remote_users = list(vpn_state.get("remote_users") or [])
-        s2s_peers = list(vpn_state.get("s2s_peers") or [])
-        teleport_servers = list(teleport_payload.get("servers") or [])
-        teleport_clients = list(teleport_payload.get("clients") or [])
+        remote_users = list(vpn_config.remote_users if vpn_config else [])
+        s2s_peers = list(vpn_config.s2s_peers if vpn_config else [])
+        teleport_servers = list(vpn_config.teleport_servers if vpn_config else [])
+        teleport_clients = list(vpn_config.teleport_clients if vpn_config else [])
 
-        total_connections = sum(counts.values()) if counts else 0
-        diag_errors = (
-            diagnostics_payload.get("errors")
-            if isinstance(diagnostics_payload, dict)
-            else {}
-        )
-        if diag_errors:
+        counts = {
+            "remote_users": len(remote_users),
+            "s2s_peers": len(s2s_peers),
+            "teleport_servers": len(teleport_servers),
+            "teleport_clients": len(teleport_clients),
+        }
+        total_connections = sum(counts.values())
+
+        diag_errors = diagnostics_payload.get("errors")
+        if isinstance(diag_errors, dict) and diag_errors:
             state_token = "error"
         elif total_connections > 0:
             state_token = "ok"
@@ -159,13 +162,14 @@ async def async_setup_entry(
         summary_payload = {
             "state": state_token,
             "counts": counts,
-            "family": diagnostics_payload.get("family"),
-            "fallback_used": diagnostics_payload.get("fallback_used"),
         }
+        winner_paths = diagnostics_payload.get("winner_paths")
+        if isinstance(winner_paths, dict):
+            summary_payload["winner_paths"] = dict(winner_paths)
 
-        vpn_payload_diag = {
+        configured_vpn = {
             "remote_users": remote_users,
-            "site_to_site": s2s_peers,
+            "s2s_peers": s2s_peers,
             "teleport_servers": teleport_servers,
             "teleport_clients": teleport_clients,
         }
@@ -178,7 +182,7 @@ async def async_setup_entry(
                 site=controller_site,
                 payload=summary_payload,
                 diagnostics=diagnostics_payload,
-                vpn_payload=vpn_payload_diag,
+                configured_vpn=configured_vpn,
                 controller_context=controller_context,
             )
             ents.append(vpn_diag_entity)
@@ -186,7 +190,7 @@ async def async_setup_entry(
             vpn_diag_entity.set_payload(
                 summary_payload,
                 diagnostics=diagnostics_payload,
-                vpn_payload=vpn_payload_diag,
+                configured_vpn=configured_vpn,
                 site=controller_site,
                 controller_context=controller_context,
             )
@@ -221,22 +225,6 @@ async def async_setup_entry(
             _build_health_entities(hass, entry, coordinator_data.health)
         )
         new_entities.extend(_build_vpn_entities(entry, coordinator_data))
-
-        vpn_state_payload = getattr(coordinator_data, "vpn_state", {}) or {}
-        diagnostics_payload = dict(vpn_state_payload.get("diagnostics") or {})
-        counts_payload = dict(vpn_state_payload.get("counts") or {})
-        if counts_payload:
-            _LOGGER.debug(
-                "VPN counts for entry %s: %s",
-                entry.entry_id,
-                counts_payload,
-            )
-        if diagnostics_payload:
-            _LOGGER.debug(
-                "VPN diagnostics for entry %s: %s",
-                entry.entry_id,
-                diagnostics_payload,
-            )
 
         entity_registry = er.async_get(hass)
         pending_unique_ids: set[str] = set()
@@ -390,63 +378,6 @@ def _first_non_empty(record: Dict[str, Any], keys: Iterable[str]) -> Optional[st
             continue
         return str(value)
     return None
-
-
-def _stable_peer_key(kind: str, record: Dict[str, Any]) -> str:
-    def _norm(value: Any) -> Optional[str]:
-        if value in (None, "", [], {}):
-            return None
-        text = str(value).strip()
-        return text or None
-
-    def _hash(basis: str) -> str:
-        return hashlib.sha256(basis.encode()).hexdigest()[:12]
-
-    if kind == "remote_user":
-        for field in ("username", "name", "user"):
-            token = _norm(record.get(field))
-            if token:
-                return _sanitize_stable_key(token)
-        for field in ("remote_user_id", "remoteuser_id", "user_id", "userid"):
-            token = _norm(record.get(field))
-            if token:
-                return _sanitize_stable_key(token)
-        identity = vpn_peer_identity(record)
-        return _sanitize_stable_key(f"ru-{_hash(identity)}")
-
-    if kind == "site_to_site":
-        for field in (
-            "peer_name",
-            "peer",
-            "name",
-            "remote",
-            "peer_ip",
-            "gateway",
-            "tunnel_id",
-        ):
-            token = _norm(record.get(field))
-            if token:
-                return _sanitize_stable_key(token)
-        subnets = record.get("remote_subnets") or record.get("client_networks")
-        if isinstance(subnets, list):
-            parts = [str(item).strip() for item in subnets if item not in (None, "", [], {})]
-            if parts:
-                joined = ",".join(sorted(parts))
-                return _sanitize_stable_key(f"s2s-{_hash(joined)}")
-        identity = vpn_peer_identity(record)
-        return _sanitize_stable_key(f"s2s-{_hash(identity)}")
-
-    if kind in {"teleport_client", "teleport_server"}:
-        for field in ("public_key", "peer_id", "uuid", "id", "name"):
-            token = _norm(record.get(field))
-            if token:
-                return _sanitize_stable_key(token)
-        identity = vpn_peer_identity(record)
-        prefix = "tp" if kind == "teleport_client" else "ts"
-        return _sanitize_stable_key(f"{prefix}-{_hash(identity)}")
-
-    identity = vpn_peer_identity(record)
-    return _sanitize_stable_key(f"peer-{_hash(identity)}")
 
 
 def _wan_identifier_candidates(
@@ -690,29 +621,6 @@ def _normalize_vpn_label(value: Any) -> Optional[str]:
     return normalized or None
 
 
-def _vpn_network_strings(value: Any) -> List[str]:
-    if value in (None, "", [], {}):
-        return []
-    if isinstance(value, str):
-        raw = value.replace(";", ",").replace("|", ",")
-        parts = [part.strip() for part in raw.split(",") if part.strip()]
-        if len(parts) == 1:
-            # also attempt to split on whitespace for strings like "10.0.0.0/24 10.0.1.0/24"
-            parts = [part.strip() for part in raw.split() if part.strip()]
-        return parts
-    if isinstance(value, (list, tuple, set)):
-        out: List[str] = []
-        for item in value:
-            out.extend(_vpn_network_strings(item))
-        return out
-    if isinstance(value, dict):
-        out: List[str] = []
-        for item in value.values():
-            out.extend(_vpn_network_strings(item))
-        return out
-    return [str(value)]
-
-
 class _GatewayDynamicSensor(SensorEntity):
     """Base helper for dynamically created sensors that manage their payload."""
 
@@ -828,167 +736,6 @@ class HealthSensor(_GatewayDynamicSensor):
         return self._default_icon
 
 
-class VpnRemoteUserSensor(_GatewayDynamicSensor):
-    """Sensor describing VPN remote user sessions."""
-
-    _attr_icon = "mdi:account-lock-outline"
-
-    def __init__(
-        self,
-        unique_id: str,
-        name: str,
-        site: str,
-        payload: Dict[str, Any],
-        controller_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        super().__init__(unique_id, name, controller_context)
-        self._site = site
-        self.set_payload(payload, site=site, controller_context=controller_context)
-
-    def set_payload(
-        self,
-        payload: Optional[Dict[str, Any]],
-        *,
-        site: Optional[str] = None,
-        controller_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        if site:
-            self._site = site
-        if controller_context:
-            self.update_context(controller_context)
-        self._payload = dict(payload or {})
-        self._attr_available = bool(payload)
-        state = _vpn_peer_state(self._payload, []) if self._payload else None
-        if isinstance(state, str):
-            self._state = state.upper()
-        else:
-            self._state = state
-        client_count = _vpn_peer_client_count(self._payload, []) if payload else None
-        attrs: Dict[str, Any] = {
-            "site": self._site,
-            "state": self._state,
-        }
-        for key in (
-            "name",
-            "username",
-            "ip",
-            "remote_ip",
-            "tunnel_ip",
-            "mac",
-            "profile",
-            "vpn_type",
-            "role",
-            "server_addr",
-            "server",
-            "connection_name",
-            "connected_at",
-            "last_connected",
-            "last_state_change",
-        ):
-            value = self._payload.get(key)
-            if value not in (None, "", [], {}):
-                attrs[key] = value
-        if client_count is not None:
-            attrs["client_count"] = client_count
-        errors = self._payload.get("errors") or self._payload.get("error")
-        if errors not in (None, "", [], {}):
-            attrs["errors"] = errors
-        if self._payload:
-            attrs["raw"] = self._payload
-        self._attrs = attrs
-        self._async_write_state()
-
-    def mark_stale(self) -> None:  # type: ignore[override]
-        self._payload = {}
-        self._state = None
-        self._attr_available = False
-        self._attrs = {"site": self._site}
-        self._async_write_state()
-
-    @property
-    def icon(self) -> Optional[str]:
-        return _vpn_icon_for_state(self._state, self._default_icon)
-
-
-class VpnS2SSensor(_GatewayDynamicSensor):
-    """Sensor describing VPN site-to-site tunnels."""
-
-    _attr_icon = "mdi:lan-lock"
-
-    def __init__(
-        self,
-        unique_id: str,
-        name: str,
-        site: str,
-        payload: Dict[str, Any],
-        controller_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        super().__init__(unique_id, name, controller_context)
-        self._site = site
-        self.set_payload(payload, site=site, controller_context=controller_context)
-
-    def set_payload(
-        self,
-        payload: Optional[Dict[str, Any]],
-        *,
-        site: Optional[str] = None,
-        controller_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        if site:
-            self._site = site
-        if controller_context:
-            self.update_context(controller_context)
-        self._payload = dict(payload or {})
-        self._attr_available = bool(payload)
-        state = _vpn_peer_state(self._payload, []) if self._payload else None
-        if isinstance(state, str):
-            self._state = state.upper()
-        else:
-            self._state = state
-        attrs: Dict[str, Any] = {
-            "site": self._site,
-            "state": self._state,
-        }
-        for key in (
-            "peer",
-            "name",
-            "remote",
-            "description",
-            "vpn_type",
-            "interface",
-            "ifname",
-            "remote_ip",
-            "remote_host",
-            "public_ip",
-            "tunnel_ip",
-            "tunnel_subnet",
-            "client_subnet",
-            "gateway",
-            "last_state_change",
-        ):
-            value = self._payload.get(key)
-            if value not in (None, "", [], {}):
-                attrs[key] = value
-        count = _vpn_peer_client_count(self._payload, []) if payload else None
-        if count is not None:
-            attrs["client_count"] = count
-        if self._payload:
-            attrs["raw"] = self._payload
-        self._attrs = attrs
-        self._async_write_state()
-
-    def mark_stale(self) -> None:  # type: ignore[override]
-        self._payload = {}
-        self._state = None
-        self._attr_available = False
-        self._attrs = {"site": self._site}
-        self._async_write_state()
-
-    @property
-    def icon(self) -> Optional[str]:
-        return _vpn_icon_for_state(self._state, self._default_icon)
-
-
 class VpnDiagSensor(_GatewayDynamicSensor):
     """Aggregated VPN diagnostics sensor."""
 
@@ -1001,7 +748,7 @@ class VpnDiagSensor(_GatewayDynamicSensor):
         site: str,
         payload: Dict[str, Any],
         diagnostics: Optional[Dict[str, Any]] = None,
-        vpn_payload: Optional[Dict[str, Any]] = None,
+        configured_vpn: Optional[Dict[str, Any]] = None,
         controller_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__(unique_id, name, controller_context)
@@ -1009,7 +756,7 @@ class VpnDiagSensor(_GatewayDynamicSensor):
         self.set_payload(
             payload,
             diagnostics=diagnostics,
-            vpn_payload=vpn_payload,
+            configured_vpn=configured_vpn,
             site=site,
             controller_context=controller_context,
         )
@@ -1019,7 +766,7 @@ class VpnDiagSensor(_GatewayDynamicSensor):
         summary: Optional[Dict[str, Any]],
         *,
         diagnostics: Optional[Dict[str, Any]] = None,
-        vpn_payload: Optional[Dict[str, Any]] = None,
+        configured_vpn: Optional[Dict[str, Any]] = None,
         site: Optional[str] = None,
         controller_context: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -1030,55 +777,56 @@ class VpnDiagSensor(_GatewayDynamicSensor):
         summary_payload = dict(summary or {})
         self._payload = summary_payload
         diagnostics_payload = dict(diagnostics or {})
+
+        cfg = {
+            "remote_users": list((configured_vpn or {}).get("remote_users") or []),
+            "s2s_peers": list((configured_vpn or {}).get("s2s_peers") or []),
+            "teleport_servers": list((configured_vpn or {}).get("teleport_servers") or []),
+            "teleport_clients": list((configured_vpn or {}).get("teleport_clients") or []),
+        }
+
         counts = diagnostics_payload.get("counts")
         if not isinstance(counts, dict):
             counts = {}
-        vpn_payload = dict(vpn_payload or {})
         derived_counts = {
-            "servers": len(vpn_payload.get("servers") or []),
-            "clients": len(vpn_payload.get("clients") or []),
-            "remote_users": len(vpn_payload.get("remote_users") or []),
-            "site_to_site": len(vpn_payload.get("site_to_site") or []),
+            "remote_users": len(cfg["remote_users"]),
+            "s2s_peers": len(cfg["s2s_peers"]),
+            "teleport_servers": len(cfg["teleport_servers"]),
+            "teleport_clients": len(cfg["teleport_clients"]),
         }
-        if "teleport_clients" in vpn_payload:
-            derived_counts["teleport_clients"] = len(
-                vpn_payload.get("teleport_clients") or []
-            )
-        if "teleport_servers" in vpn_payload:
-            derived_counts["teleport_servers"] = len(
-                vpn_payload.get("teleport_servers") or []
-            )
-        counts.update({k: v for k, v in derived_counts.items() if k not in counts})
+        for key, value in derived_counts.items():
+            counts.setdefault(key, value)
         diagnostics_payload["counts"] = counts
 
-        state_token = summary_payload.get("state")
-        status: Optional[str] = (
-            state_token.strip().lower()
-            if isinstance(state_token, str) and state_token.strip()
-            else None
-        )
-        for source in (summary_payload, diagnostics_payload):
-            if not isinstance(source, dict):
-                continue
-            for key in ("status", "state", "result", "outcome", "health"):
-                value = source.get(key)
-                if isinstance(value, str) and value.strip():
-                    status = value.strip().lower()
+        status = summary_payload.get("state")
+        if isinstance(status, str) and status.strip():
+            normalized = status.strip().lower()
+        else:
+            normalized = None
+        if not normalized:
+            for source in (summary_payload, diagnostics_payload):
+                if not isinstance(source, dict):
+                    continue
+                for key in ("status", "state", "result", "outcome", "health"):
+                    value = source.get(key)
+                    if isinstance(value, str) and value.strip():
+                        normalized = value.strip().lower()
+                        break
+                if normalized:
                     break
-            if status:
-                break
-        if not status:
+        if not normalized:
             healthy = summary_payload.get("healthy")
             if isinstance(healthy, bool):
-                status = "ok" if healthy else "error"
-        self._state = status or "unknown"
-        self._attr_available = bool(summary_payload or diagnostics_payload or vpn_payload)
+                normalized = "ok" if healthy else "error"
+        self._state = normalized or "unknown"
+        self._attr_available = bool(summary_payload or diagnostics_payload or cfg)
 
         attrs: Dict[str, Any] = {
             "site": self._site,
             "summary": summary_payload,
             "diagnostics": diagnostics_payload,
             "counts": counts,
+            "configured_vpn": cfg,
         }
         family = diagnostics_payload.get("family") or summary_payload.get("family")
         if family is not None:
@@ -1091,6 +839,9 @@ class VpnDiagSensor(_GatewayDynamicSensor):
         attempts = diagnostics_payload.get("attempts")
         if attempts is not None:
             attrs["attempts"] = attempts
+        winner_paths = diagnostics_payload.get("winner_paths")
+        if isinstance(winner_paths, dict) and winner_paths:
+            attrs["winner_paths"] = winner_paths
         fetch_errors = diagnostics_payload.get("fetch_errors")
         if fetch_errors not in (None, "", [], {}):
             attrs["fetch_errors"] = fetch_errors
@@ -1100,15 +851,6 @@ class VpnDiagSensor(_GatewayDynamicSensor):
         errors_text = summary_payload.get("errors_text")
         if errors_text not in (None, "", [], {}):
             attrs.setdefault("errors_text", errors_text)
-        if vpn_payload:
-            attrs["remote_users"] = vpn_payload.get("remote_users")
-            attrs["site_to_site"] = vpn_payload.get("site_to_site")
-            attrs["servers"] = vpn_payload.get("servers")
-            attrs["clients"] = vpn_payload.get("clients")
-            if vpn_payload.get("teleport_servers") is not None:
-                attrs["teleport_servers"] = vpn_payload.get("teleport_servers")
-            if vpn_payload.get("teleport_clients") is not None:
-                attrs["teleport_clients"] = vpn_payload.get("teleport_clients")
         self._attrs = attrs
         self._async_write_state()
 
@@ -1116,7 +858,7 @@ class VpnDiagSensor(_GatewayDynamicSensor):
         self._payload = {}
         self._state = None
         self._attr_available = False
-        self._attrs = {"site": self._site}
+        self._attrs = {"site": self._site, "configured_vpn": {}}
         self._async_write_state()
 
     @property
@@ -1259,12 +1001,24 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
                 total_found = True
             if total_found:
                 attrs["num_user_total"] = total
-        if (
-            self._subsystem == "vpn"
-            and data
-            and getattr(data, "vpn_diagnostics", None)
-        ):
-            attrs["vpn_diagnostics"] = data.vpn_diagnostics
+        if self._subsystem == "vpn" and data:
+            diag_payload = dict(getattr(data, "vpn_diagnostics", {}) or {})
+            if diag_payload:
+                attrs["vpn_diagnostics"] = diag_payload
+            config = getattr(data, "vpn_config_list", None)
+            configured_vpn = {
+                "remote_users": list(config.remote_users) if config else [],
+                "s2s_peers": list(config.s2s_peers) if config else [],
+                "teleport_servers": list(config.teleport_servers) if config else [],
+                "teleport_clients": list(config.teleport_clients) if config else [],
+            }
+            attrs["configured_vpn"] = configured_vpn
+            attempts = diag_payload.get("attempts") if diag_payload else None
+            if attempts is not None:
+                attrs["attempts"] = attempts
+            winner_paths = diag_payload.get("winner_paths") if diag_payload else None
+            if isinstance(winner_paths, dict):
+                attrs["winner_paths"] = winner_paths
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -1303,12 +1057,32 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
         if record.get("vpn_status") in {"disabled", "off"}:
             return True
 
-        if not (
-            data.vpn_servers
-            or data.vpn_clients
-            or getattr(data, "vpn_site_to_site", [])
-        ):
-            return True
+        config = getattr(data, "vpn_config_list", None)
+        if config:
+            if not (
+                config.remote_users
+                or config.s2s_peers
+                or config.teleport_servers
+                or config.teleport_clients
+            ):
+                return True
+        else:
+            diag_payload = getattr(data, "vpn_diagnostics", {})
+            counts: Dict[str, Any] = {}
+            if isinstance(diag_payload, dict):
+                raw_counts = diag_payload.get("counts")
+                if isinstance(raw_counts, dict):
+                    counts = raw_counts
+            if counts:
+                total = 0
+                for value in counts.values():
+                    coerced = _coerce_int(value)
+                    if coerced:
+                        total += coerced
+                if total == 0:
+                    return True
+            else:
+                return True
 
         return False
 
@@ -1728,255 +1502,6 @@ class UniFiGatewayWlanClientsSensor(UniFiGatewaySensorBase):
             "enabled": self._wlan.get("enabled", True),
         }
         attrs.update(self._controller_attrs())
-        return attrs
-
-
-class UniFiVpnPeerSensorBase(UniFiGatewaySensorBase):
-    """Base class for per-peer VPN sensors backed by ``vpn_state``."""
-
-    _attr_should_poll = False
-
-    def __init__(
-        self,
-        coordinator: UniFiGatewayDataUpdateCoordinator,
-        client: UniFiOSClient,
-        entry_id: str,
-        data_key: str,
-        unique_prefix: str,
-        peer_id: str,
-        name: str,
-    ) -> None:
-        unique_id = f"{entry_id}::{unique_prefix}::{peer_id}"
-        super().__init__(coordinator, client, unique_id, name)
-        self._data_key = data_key
-        self._peer_id = peer_id
-        self._unique_prefix = unique_prefix
-
-    def _records(self) -> List[Dict[str, Any]]:
-        data = self.coordinator.data
-        if not data:
-            return []
-        vpn_state = getattr(data, "vpn_state", {}) or {}
-        if not isinstance(vpn_state, dict):
-            return []
-        if self._data_key == "remote_users":
-            return list(vpn_state.get("remote_users") or [])
-        if self._data_key == "s2s_peers":
-            return list(vpn_state.get("s2s_peers") or [])
-        if self._data_key == "teleport_servers":
-            teleport = vpn_state.get("teleport") or {}
-            return list(teleport.get("servers") or [])
-        if self._data_key == "teleport_clients":
-            teleport = vpn_state.get("teleport") or {}
-            return list(teleport.get("clients") or [])
-        return []
-
-    def _record(self) -> Optional[Dict[str, Any]]:
-        for record in self._records():
-            rid = record.get("id") or record.get("_id")
-            if isinstance(rid, str) and rid == self._peer_id:
-                return record
-        return None
-
-    def _connected(self, record: Optional[Dict[str, Any]]) -> Optional[bool]:
-        if not record:
-            return None
-        connected = record.get("connected")
-        if isinstance(connected, bool):
-            return connected
-        state = record.get("state")
-        if isinstance(state, str):
-            token = state.strip().lower()
-            if token in {"connected", "on", "up", "online"}:
-                return True
-            if token in {"disconnected", "off", "down", "offline"}:
-                return False
-        return None
-
-    @property
-    def native_value(self) -> Optional[str]:
-        record = self._record()
-        connected = self._connected(record)
-        if connected is None:
-            return None
-        return "on" if connected else "off"
-
-    def _base_attributes(self, record: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        attrs: Dict[str, Any] = {
-            "kind": self._data_key,
-            "peer_id": self._peer_id,
-        }
-        if record:
-            attrs.update(
-                {
-                    "state": record.get("state"),
-                    "connected": self._connected(record),
-                    "rx_bytes": record.get("rx_bytes"),
-                    "tx_bytes": record.get("tx_bytes"),
-                    "last_seen": record.get("last_seen"),
-                    "client_count": record.get("client_count"),
-                    "peer_addr": record.get("peer_addr")
-                    or record.get("remote_ip")
-                    or record.get("public_ip"),
-                }
-            )
-            if record.get("networks"):
-                attrs["networks"] = record.get("networks")
-        attrs.update(self._controller_attrs())
-        return {k: v for k, v in attrs.items() if v not in (None, "", [], {})}
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        return self._base_attributes(self._record())
-
-
-class UniFiVpnRemoteUserSensor(UniFiVpnPeerSensorBase):
-    _attr_icon = "mdi:account-lock-outline"
-
-    def __init__(
-        self,
-        coordinator: UniFiGatewayDataUpdateCoordinator,
-        client: UniFiOSClient,
-        entry_id: str,
-        peer_id: str,
-        name: str,
-    ) -> None:
-        super().__init__(
-            coordinator,
-            client,
-            entry_id,
-            "remote_users",
-            "vpn_remote_user",
-            peer_id,
-            name,
-        )
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        attrs = dict(super().extra_state_attributes)
-        record = self._record()
-        if record:
-            for key in ("username", "user", "name", "remote_ip", "peer_addr"):
-                value = record.get(key)
-                if value not in (None, "", [], {}):
-                    attrs[key] = value
-        return attrs
-
-
-class UniFiVpnSiteToSitePeerSensor(UniFiVpnPeerSensorBase):
-    _attr_icon = "mdi:lan-lock"
-
-    def __init__(
-        self,
-        coordinator: UniFiGatewayDataUpdateCoordinator,
-        client: UniFiOSClient,
-        entry_id: str,
-        peer_id: str,
-        name: str,
-    ) -> None:
-        super().__init__(
-            coordinator,
-            client,
-            entry_id,
-            "s2s_peers",
-            "vpn_s2s",
-            peer_id,
-            name,
-        )
-
-    @property
-    def native_value(self) -> Optional[str]:
-        record = self._record()
-        if not record:
-            return "unknown"
-        state = record.get("state")
-        if isinstance(state, str) and state.strip():
-            token = state.strip().lower()
-            if token in {"connected", "up", "on", "online"}:
-                return "up"
-            if token in {"disconnected", "down", "off", "offline"}:
-                return "down"
-            return token
-        connected = self._connected(record)
-        if connected is None:
-            return "unknown"
-        return "up" if connected else "down"
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        attrs = dict(super().extra_state_attributes)
-        record = self._record()
-        if record:
-            for key in ("peer_addr", "public_ip", "remote_subnets", "networks"):
-                value = record.get(key)
-                if value not in (None, "", [], {}):
-                    attrs[key] = value
-        return attrs
-
-
-class UniFiTeleportClientSensor(UniFiVpnPeerSensorBase):
-    _attr_icon = "mdi:account-arrow-right"
-
-    def __init__(
-        self,
-        coordinator: UniFiGatewayDataUpdateCoordinator,
-        client: UniFiOSClient,
-        entry_id: str,
-        peer_id: str,
-        name: str,
-    ) -> None:
-        super().__init__(
-            coordinator,
-            client,
-            entry_id,
-            "teleport_clients",
-            "vpn_teleport_client",
-            peer_id,
-            name,
-        )
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        attrs = dict(super().extra_state_attributes)
-        record = self._record()
-        if record:
-            for key in ("public_key", "peer_id", "name"):
-                value = record.get(key)
-                if value not in (None, "", [], {}):
-                    attrs[key] = value
-        return attrs
-
-
-class UniFiTeleportServerSensor(UniFiVpnPeerSensorBase):
-    _attr_icon = "mdi:account-arrow-left"
-
-    def __init__(
-        self,
-        coordinator: UniFiGatewayDataUpdateCoordinator,
-        client: UniFiOSClient,
-        entry_id: str,
-        peer_id: str,
-        name: str,
-    ) -> None:
-        super().__init__(
-            coordinator,
-            client,
-            entry_id,
-            "teleport_servers",
-            "vpn_teleport_server",
-            peer_id,
-            name,
-        )
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        attrs = dict(super().extra_state_attributes)
-        record = self._record()
-        if record:
-            for key in ("public_key", "peer_id", "name"):
-                value = record.get(key)
-                if value not in (None, "", [], {}):
-                    attrs[key] = value
         return attrs
 
 

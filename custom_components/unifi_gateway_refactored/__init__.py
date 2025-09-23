@@ -33,7 +33,6 @@ from .const import (
 )
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .sensor import (
-    _stable_peer_key,
     _sanitize_stable_key,
     _wan_identifier_candidates,
     build_lan_unique_id,
@@ -109,7 +108,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     await _async_migrate_interface_unique_ids(hass, entry, client, coordinator.data)
-    await _async_migrate_vpn_unique_ids(hass, entry, client, coordinator.data)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     _LOGGER.info("UniFi Gateway entry %s fully initialized", entry.entry_id)
@@ -196,59 +194,3 @@ async def _async_migrate_interface_unique_ids(
     )
 
 
-async def _async_migrate_vpn_unique_ids(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    client: UniFiOSClient,
-    data: UniFiGatewayData | None,
-) -> None:
-    """Ensure VPN entity unique IDs include the role/template suffix."""
-
-    mapping: dict[str, str] = {}
-
-    if not data:
-        return
-
-    vpn_state = getattr(data, "vpn_state", {}) or {}
-
-    def _map_records(records: list[dict[str, Any]] | None, kind: str, prefix: str) -> None:
-        if not records:
-            return
-        for record in records:
-            if not isinstance(record, dict):
-                continue
-            stable = _stable_peer_key(kind, record)
-            old_uid = f"{entry.entry_id}::vpn::{kind}::{stable}"
-            peer_id = record.get("id")
-            if not isinstance(peer_id, str) or not peer_id:
-                peer_id = _sanitize_stable_key(stable)
-            new_uid = f"{entry.entry_id}::{prefix}::{peer_id}"
-            mapping[old_uid] = new_uid
-
-    _map_records(vpn_state.get("remote_users"), "remote_user", "vpn_remote_user")
-    _map_records(vpn_state.get("s2s_peers"), "site_to_site", "vpn_s2s")
-    teleport = vpn_state.get("teleport") or {}
-    if isinstance(teleport, dict):
-        _map_records(teleport.get("clients"), "teleport_client", "vpn_teleport_client")
-        _map_records(teleport.get("servers"), "teleport_server", "vpn_teleport_server")
-
-    if not mapping:
-        _LOGGER.debug("No VPN unique ID migrations required for entry %s", entry.entry_id)
-        return
-
-    registry = er.async_get(hass)
-
-    async def _migrate(entity_entry: er.RegistryEntry) -> dict[str, str] | None:
-        if entity_entry.config_entry_id != entry.entry_id:
-            return None
-        new_uid = mapping.get(entity_entry.unique_id)
-        if new_uid:
-            return {"new_unique_id": new_uid}
-        return None
-
-    await er.async_migrate_entries(hass, DOMAIN, _migrate)
-    _LOGGER.info(
-        "Migrated %s VPN entities to new unique IDs for entry %s",
-        len(mapping),
-        entry.entry_id,
-    )
