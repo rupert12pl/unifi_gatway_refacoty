@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 import hashlib
 import logging
 import ipaddress
@@ -11,13 +12,24 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
+try:  # pragma: no cover - optional dependency for tests
+    from homeassistant.util import Throttle
+except ModuleNotFoundError:  # pragma: no cover - simple fallback for test envs
+    def Throttle(min_time):  # type: ignore[misc]
+        def decorator(func):
+            return func
 
-from .const import DOMAIN
+        return decorator
+
+from .const import CONF_HOST, DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
-from .unifi_client import UniFiOSClient
+from .unifi_client import APIError, UniFiOSClient
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=30)
 
 
 SUBSYSTEM_SENSORS: Dict[str, tuple[str, str]] = {
@@ -37,6 +49,8 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     client: UniFiOSClient = data["client"]
     coordinator: UniFiGatewayDataUpdateCoordinator = data["coordinator"]
+
+    base_name = entry.title or entry.data.get(CONF_HOST) or "UniFi Gateway"
 
     static_entities: List[SensorEntity] = []
     for subsystem, (label, icon) in SUBSYSTEM_SENSORS.items():
@@ -59,6 +73,7 @@ async def async_setup_entry(
     known_wan: set[str] = set()
     known_lan: set[str] = set()
     known_wlan: set[str] = set()
+    known_vpn: set[str] = set()
 
     def _sync_dynamic() -> None:
         _LOGGER.debug(
@@ -142,6 +157,22 @@ async def async_setup_entry(
                 UniFiGatewayWlanClientsSensor(coordinator, client, entry.entry_id, wlan)
             )
             pending_unique_ids.add(unique_id)
+
+        vpn_peers = list(getattr(coordinator_data, "vpn_peers", []) or [])
+        if vpn_peers:
+            vpn_entities: List[SensorEntity] = []
+            for idx, peer in enumerate(vpn_peers, start=1):
+                entity = UnifiVpnPeerSensor(hass, client, base_name, peer, idx)
+                unique_id = entity.unique_id
+                if unique_id in pending_unique_ids or _should_skip(unique_id):
+                    continue
+                if unique_id in known_vpn:
+                    continue
+                vpn_entities.append(entity)
+                pending_unique_ids.add(unique_id)
+                known_vpn.add(unique_id)
+            if vpn_entities:
+                new_entities.extend(vpn_entities)
 
         if new_entities:
             names = [
@@ -621,6 +652,9 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
             winner_paths = diag_payload.get("winner_paths") if diag_payload else None
             if isinstance(winner_paths, dict):
                 attrs["winner_paths"] = winner_paths
+            peers = getattr(data, "vpn_peers", None)
+            if peers:
+                attrs["vpn_peers"] = peers
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -1198,6 +1232,167 @@ class UniFiGatewaySpeedtestPingSensor(UniFiGatewaySpeedtestSensor):
         if record and record.get("latency_ms") is not None:
             return round(float(record["latency_ms"]), 1)
         return None
+
+
+class UnifiVpnPeerSensor(SensorEntity):
+    """One entity per configured VPN peer on the UniFi gateway."""
+
+    _attr_icon = "mdi:lock"
+    _attr_native_unit_of_measurement = "clients"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        ctrl: UniFiOSClient,
+        base_name: str,
+        peer: Dict[str, Any],
+        index: int,
+    ) -> None:
+        self._ctrl = ctrl
+        self._peer = peer
+        self._peer_id = peer.get("_id") or peer.get("id") or f"peer{index}"
+        name = (
+            peer.get("name")
+            or peer.get("peer_name")
+            or peer.get("description")
+            or f"VPN {index}"
+        )
+        self._name = f"{base_name} VPN {name}"
+        self._attr_name = self._name
+
+        self._public_ip = (
+            peer.get("public_ip")
+            or peer.get("peer_addr")
+            or peer.get("remote_ip")
+        )
+        self._subnet_str = (
+            peer.get("tunnel_network")
+            or peer.get("subnet")
+            or peer.get("client_subnet")
+            or peer.get("ip_subnet")
+        )
+        self._ipnet = None
+        if self._subnet_str:
+            try:
+                self._ipnet = ipaddress.ip_network(self._subnet_str, strict=False)
+            except Exception:  # pragma: no cover - defensive
+                self._ipnet = None
+
+        self._state = 0
+        self._attributes = {
+            "vpn_name": name,
+            "public_ip": self._public_ip,
+            "tunnel_subnet": self._subnet_str,
+            "client_count": 0,
+            "controller_ui": ctrl.get_controller_url(),
+            "controller_site": ctrl.get_site(),
+            "instance": base_name,
+        }
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def unit_of_measurement(self) -> str:
+        return "clients"
+
+    @property
+    def unique_id(self) -> str:
+        return f"unifigw_{self._ctrl.instance_key()}_vpn_{self._peer_id}"
+
+    @property
+    def device_info(self) -> Dict[str, Any]:
+        return {
+            "identifiers": {("unifigateway", self._ctrl.instance_key())},
+            "manufacturer": "Ubiquiti Networks",
+            "name": self._name.split(" VPN ")[0],
+        }
+
+    @property
+    def native_value(self) -> int:
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        return self._attributes
+
+    @property
+    def state_attributes(self) -> Dict[str, Any]:  # back-compat
+        return self._attributes
+
+    @staticmethod
+    def _norm(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        return "".join(ch for ch in value.lower() if ch.isalnum())
+
+    @Throttle(MIN_TIME_BETWEEN_UPDATES)
+    def update(self) -> None:
+        """Refresh the VPN peer client count."""
+        cnt = (
+            self._peer.get("num_clients")
+            or self._peer.get("clients")
+            or (
+                len(self._peer.get("connected_clients", []))
+                if isinstance(self._peer.get("connected_clients"), list)
+                else 0
+            )
+        )
+        if isinstance(cnt, list):
+            cnt = len(cnt)
+        cnt = int(cnt or 0)
+
+        if cnt == 0:
+            wanted = self._norm(self._attributes.get("vpn_name"))
+            try:
+                clients = self._ctrl.get_clients()
+                for client in clients or []:
+                    label = (
+                        client.get("network")
+                        or client.get("vpn_name")
+                        or client.get("remote_user_vpn")
+                        or client.get("tunnel")
+                        or client.get("gateway")
+                        or ""
+                    )
+                    if label:
+                        normalized = self._norm(label)
+                        if (
+                            normalized == wanted
+                            or wanted in normalized
+                            or normalized in wanted
+                        ):
+                            cnt += 1
+            except APIError as ex:  # pragma: no cover - network guard
+                _LOGGER.debug(
+                    "clients fetch failed for VPN %s: %s",
+                    self._peer_id,
+                    ex,
+                )
+
+        if cnt == 0 and self._ipnet:
+            try:
+                clients = self._ctrl.get_clients()
+                for client in clients or []:
+                    ip = client.get("ip")
+                    if not ip:
+                        continue
+                    try:
+                        if ipaddress.ip_address(ip) in self._ipnet:
+                            cnt += 1
+                    except Exception:  # pragma: no cover - defensive guard
+                        continue
+            except APIError as ex:  # pragma: no cover - network guard
+                _LOGGER.debug(
+                    "clients fetch by subnet failed for VPN %s: %s",
+                    self._peer_id,
+                    ex,
+                )
+
+        self._state = int(cnt)
+        self._attributes["client_count"] = int(cnt)
 
 
 def _to_ip_network(value: Optional[str]):
