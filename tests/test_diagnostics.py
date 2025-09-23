@@ -1,11 +1,10 @@
 import asyncio
 
+import pytest
 
 from tests.helpers import REDACTED, load_stubs
 
 load_stubs()
-
-# ruff: noqa: E402
 
 from homeassistant.config_entries import ConfigEntry
 

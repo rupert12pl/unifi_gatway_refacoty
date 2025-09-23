@@ -98,9 +98,7 @@ def load_stubs() -> None:
         sys.modules["urllib3.util.retry"] = retry_stub
 
     if "homeassistant.components" not in sys.modules:
-        sys.modules["homeassistant.components"] = types.ModuleType(
-            "homeassistant.components"
-        )
+        sys.modules["homeassistant.components"] = types.ModuleType("homeassistant.components")
 
     if "homeassistant.components.sensor" not in sys.modules:
         sensor_stub = types.ModuleType("homeassistant.components.sensor")
@@ -124,12 +122,8 @@ def load_stubs() -> None:
     if "homeassistant.components.diagnostics" not in sys.modules:
         diagnostics_stub = types.ModuleType("homeassistant.components.diagnostics")
 
-        def async_redact_data(
-            data: Dict[str, Any], to_redact: Iterable[str]
-        ) -> Dict[str, Any]:
-            return _async_redact_data(
-                data, set(to_redact)
-            )  # pragma: no cover - simple passthrough
+        def async_redact_data(data: Dict[str, Any], to_redact: Iterable[str]) -> Dict[str, Any]:
+            return _async_redact_data(data, set(to_redact))  # pragma: no cover - simple passthrough
 
         diagnostics_stub.async_redact_data = async_redact_data
         diagnostics_stub.REDACTED = REDACTED
@@ -193,9 +187,7 @@ def load_stubs() -> None:
         def async_get(_hass: Any) -> _DummyRegistry:  # pragma: no cover - helper
             return _DummyRegistry()
 
-        async def async_migrate_entries(
-            *_args: Any, **_kwargs: Any
-        ) -> None:  # pragma: no cover
+        async def async_migrate_entries(*_args: Any, **_kwargs: Any) -> None:  # pragma: no cover
             return None
 
         er_stub.async_get = async_get
@@ -234,3 +226,4 @@ def load_stubs() -> None:
         coordinator_stub.DataUpdateCoordinator = DataUpdateCoordinator
         coordinator_stub.UpdateFailed = UpdateFailed
         sys.modules["homeassistant.helpers.update_coordinator"] = coordinator_stub
+
