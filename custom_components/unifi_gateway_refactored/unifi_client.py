@@ -216,11 +216,14 @@ class UniFiOSClient:
 
     @staticmethod
     def _login_endpoint_label(url: str) -> str:
-        """Return a sanitized label for login endpoint logging."""
+        """Return a sanitized label for login endpoint logging, always redacting credentials."""
 
         parts = urlsplit(url)
         path = parts.path or "/"
         host = parts.hostname or parts.netloc
+        # Redact credentials if present
+        if parts.username or parts.password:
+            host = "REDACTED"
         if host:
             return f"{host}{path}"
         return path
