@@ -570,7 +570,15 @@ class UniFiOSClient:
             "stat/wan",
             "rest/internet",
         ):
-            links = self._get_list(self._site_path(path))
+            try:
+                links = self._get_list(self._site_path(path))
+            except APIError as err:
+                if err.status_code == 400:
+                    LOGGER.debug(
+                        "UniFi endpoint %s unavailable (HTTP 400): %s", path, err
+                    )
+                    continue
+                raise
             if links:
                 return links
         return []
