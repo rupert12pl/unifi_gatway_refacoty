@@ -59,12 +59,12 @@ def _build_health_entities(
             entity_id = ent_reg.async_get_entity_id("sensor", DOMAIN, uid)
             if entity_id:
                 entry_record = ent_reg.async_get(entity_id)
-                if (
-                    entry_record
-                    and getattr(entry_record, "config_entry_id", None)
-                    != entry.entry_id
-                ):
-                    continue
+                if entry_record is not None:
+                    registry_owner = getattr(
+                        entry_record, "config_entry_id", entry.entry_id
+                    )
+                    if registry_owner != entry.entry_id:
+                        continue
             entity = HealthSensor(
                 unique_id=uid,
                 name=subsystem.upper(),
