@@ -40,7 +40,7 @@ class UniFiGatewayData:
     vpn_diagnostics: dict[str, Any] = field(default_factory=dict)
     vpn_errors: dict[str, Any] = field(default_factory=dict)
     vpn: dict[str, Any] = field(default_factory=dict)
-    vpn_state: dict[str, Any] = field(default_factory=dict)
+    vpn_state: dict[str, Any] | None = None
 
 
 class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData]):
@@ -100,11 +100,12 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         except (ConnectivityError, APIError) as err:
             raise UpdateFailed(str(err)) from err
 
-    def _fetch_data(self, vpn_state: Dict[str, Any]) -> UniFiGatewayData:
+    def _fetch_data(self, vpn_state: Dict[str, Any] | None) -> UniFiGatewayData:
         _LOGGER.debug(
             "Starting UniFi Gateway data fetch for instance %s",
             self._client.instance_key(),
         )
+        vpn_state = dict(vpn_state or {})
         controller_api_url = self._client.get_controller_api_url()
         controller_site = self._client.get_site()
         controller_info = {
@@ -223,7 +224,6 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             vpn_summary=vpn_summary_payload,
             vpn_errors=vpn_errors_payload,
             vpn=network_map,
-            vpn_snapshot=None,
             vpn_state=vpn_state,
         )
         _LOGGER.debug(
