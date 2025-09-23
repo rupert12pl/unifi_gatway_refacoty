@@ -89,6 +89,46 @@ def test_build_health_entities_recreates_sensor_for_same_entry(
     assert health_entities[uid] is created[0]
 
 
+def test_build_health_entities_restores_sensor_after_restart(
+    monkeypatch: pytest.MonkeyPatch, config_entry: ConfigEntry
+) -> None:
+    """Simulate Home Assistant restart with matching registry entry ownership."""
+
+    registry = DummyRegistry(config_entry.entry_id)
+    monkeypatch.setattr(sensor.er, "async_get", lambda _hass: registry)
+
+    payload = [{"subsystem": "www", "status": "ok"}]
+
+    # First run populates the registry and active health entity mapping.
+    initial_entities: dict[str, sensor.HealthSensor] = {}
+    first_created = sensor._build_health_entities(
+        hass=object(),
+        entry=config_entry,
+        health=payload,
+        health_entities=initial_entities,
+        client=DummyClient(),
+    )
+
+    uid = f"{config_entry.entry_id}-health-www"
+    assert len(first_created) == 1
+    assert uid in initial_entities
+
+    # On restart, the mapping is empty but the registry still owns the entity.
+    restarted_entities: dict[str, sensor.HealthSensor] = {}
+    restarted_created = sensor._build_health_entities(
+        hass=object(),
+        entry=config_entry,
+        health=payload,
+        health_entities=restarted_entities,
+        client=DummyClient(),
+    )
+
+    uid = f"{config_entry.entry_id}-health-www"
+    assert registry.requested_unique_ids == [uid, uid]
+    assert len(restarted_created) == 1
+    assert restarted_entities[uid] is restarted_created[0]
+
+
 def test_build_health_entities_skips_foreign_registry_owner(
     monkeypatch: pytest.MonkeyPatch, config_entry: ConfigEntry
 ) -> None:
