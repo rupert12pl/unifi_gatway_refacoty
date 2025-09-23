@@ -1,7 +1,7 @@
 {
   "domain": "unifi_gateway_refactored",
   "name": "UniFi Gateway (Refactored)",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "config_flow": true,
   "documentation": "https://github.com/rupert12pl/unifi_gatway_refacoty",
   "issue_tracker": "https://github.com/rupert12pl/unifi_gatway_refacoty/issues",
@@ -14,7 +14,9 @@
   ],
   "integration_type": "hub",
   "loggers": [
-    "custom_components.unifi_gateway_refactored"
+    "custom_components.unifi_gateway_refactored",
+    "custom_components.unifi_gateway_refactored.unifi_client",
+    "custom_components.unifi_gateway_refactored.coordinator"
   ],
   "logo": "logo.svg",
   "icon": "icon.svg"

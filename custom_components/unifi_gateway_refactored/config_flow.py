@@ -18,11 +18,14 @@ from .const import (
     CONF_USE_PROXY_PREFIX,
     CONF_SITE_ID,
     CONF_TIMEOUT,
+    CONF_VPN_FAMILY_OVERRIDE,
     DEFAULT_PORT,
     DEFAULT_SITE,
     DEFAULT_VERIFY_SSL,
     DEFAULT_USE_PROXY_PREFIX,
     DEFAULT_TIMEOUT,
+    VPN_FAMILY_AUTO,
+    VpnFamily,
 )
 from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 
@@ -158,7 +161,16 @@ class OptionsFlow(config_entries.OptionsFlow):
             vol.Optional(CONF_PASSWORD, default=self._entry.data.get(CONF_PASSWORD)): str,
             vol.Optional(CONF_SITE_ID, default=self._entry.data.get(CONF_SITE_ID, DEFAULT_SITE)): str,
             vol.Optional(CONF_VERIFY_SSL, default=self._entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL)): bool,
-            vol.Optional(CONF_USE_PROXY_PREFIX, default=self._entry.data.get(CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX)): bool,
+            vol.Optional(
+                CONF_USE_PROXY_PREFIX,
+                default=self._entry.data.get(CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX),
+            ): bool,
             vol.Optional(CONF_TIMEOUT, default=self._entry.data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT)): int,
+            vol.Optional(
+                CONF_VPN_FAMILY_OVERRIDE,
+                default=self._entry.options.get(CONF_VPN_FAMILY_OVERRIDE, VPN_FAMILY_AUTO),
+            ): vol.In(
+                [VPN_FAMILY_AUTO, VpnFamily.V2.value, VpnFamily.LEGACY.value]
+            ),
         })
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

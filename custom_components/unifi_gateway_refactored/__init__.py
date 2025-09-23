@@ -21,6 +21,7 @@ from .const import (
     CONF_USE_PROXY_PREFIX,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
+    CONF_VPN_FAMILY_OVERRIDE,
     DEFAULT_PORT,
     DEFAULT_SITE,
     DEFAULT_TIMEOUT,
@@ -28,6 +29,7 @@ from .const import (
     DEFAULT_VERIFY_SSL,
     DOMAIN,
     PLATFORMS,
+    VPN_FAMILY_AUTO,
 )
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .sensor import (
@@ -72,6 +74,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         client_kwargs["password"] = password
 
     client_kwargs["instance_hint"] = entry.entry_id  # ensures stable unique_id across restarts
+
+    vpn_family_override = entry.options.get(
+        CONF_VPN_FAMILY_OVERRIDE,
+        entry.data.get(CONF_VPN_FAMILY_OVERRIDE, VPN_FAMILY_AUTO),
+    )
+    client_kwargs["vpn_family_override"] = vpn_family_override
 
     client_factory = partial(UniFiOSClient, **client_kwargs)
 
