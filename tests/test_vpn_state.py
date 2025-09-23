@@ -8,16 +8,16 @@ from custom_components.unifi_gateway_refactored.unifi_client import (
 
 def test_vpn_state_mapping_preserves_payload() -> None:
     state = VpnState(
-        counts={"remote_users": 1, "s2s_peers": 1},
-        configured_list="Alice, HQ",
         remote_users=[{"id": "ru1", "name": "Alice"}],
         site_to_site_peers=[{"id": "peer1", "name": "HQ"}],
+        teleport_servers=[{"id": "srv1", "name": "TeleportServer"}],
+        teleport_clients=[{"id": "cl1", "name": "TeleportClient"}],
         attempts=[
             VpnAttempt(
                 path="gateway/health/overview", status=200, ok=True, snippet="{}"
             )
         ],
-        errors=["remote users not available"],
+        errors={"remote_users": "not available"},
     )
 
     data = UniFiGatewayData(controller={}, vpn_state=state)
@@ -25,7 +25,7 @@ def test_vpn_state_mapping_preserves_payload() -> None:
     assert data.vpn_state is state
     assert data.vpn_state.remote_users[0]["name"] == "Alice"
     assert data.vpn_state.attempts[0].path == "gateway/health/overview"
-    assert data.vpn_state.errors[0] == "remote users not available"
+    assert data.vpn_state.errors["remote_users"] == "not available"
 
 
 def test_redact_text_masks_sensitive_tokens() -> None:

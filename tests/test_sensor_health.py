@@ -87,7 +87,7 @@ def test_build_health_entities_recreates_sensor_for_same_entry(
         created_unique_ids=created_unique_ids,
     )
 
-    uid = f"{config_entry.entry_id}|site|health|{sensor._sanitize_stable_key('www')}"
+    uid = f"{config_entry.entry_id}|site|health::{sensor._sanitize_stable_key('www')}"
     assert registry.requested_unique_ids == [uid]
     assert len(created) == 1
     assert uid in health_entities
@@ -117,7 +117,7 @@ def test_build_health_entities_restores_sensor_after_restart(
         created_unique_ids=created_unique_ids,
     )
 
-    uid = f"{config_entry.entry_id}|site|health|{sensor._sanitize_stable_key('www')}"
+    uid = f"{config_entry.entry_id}|site|health::{sensor._sanitize_stable_key('www')}"
     assert len(first_created) == 1
     assert uid in initial_entities
 
