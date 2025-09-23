@@ -434,7 +434,7 @@ class UniFiOSClient:
                 continue
             if status >= 400:
                 LOGGER.debug(
-                    "Login attempt via %s returned HTTP %s", url, status
+                    "Login attempt via endpoint %s returned HTTP %s", path, status
                 )
                 last_error = APIError(
                     f"Login attempt failed with HTTP {status}",
