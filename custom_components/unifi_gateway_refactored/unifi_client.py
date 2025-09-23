@@ -1788,6 +1788,20 @@ class UniFiOSClient:
         _LOGGER.warning("No client data returned by controller")
         return []
 
+    def get_vpn_peers(self) -> List[Dict[str, Any]]:
+        for path in ("list/remoteuser", "list/vpn", "stat/vpn", "internet/vpn/peers"):
+            try:
+                data = self._get(path)
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, dict):
+                    for value in data.values():
+                        if isinstance(value, list):
+                            return value
+            except APIError:
+                continue
+        return []
+
     def get_wan_links(self) -> List[Dict[str, Any]]:
         """Return list of WAN links. Robust to various controller versions."""
         paths = [

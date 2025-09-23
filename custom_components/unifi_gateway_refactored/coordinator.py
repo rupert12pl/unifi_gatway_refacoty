@@ -33,6 +33,7 @@ class UniFiGatewayData:
     clients: list[dict[str, Any]] = field(default_factory=list)
     speedtest: Optional[dict[str, Any]] = None
     vpn_diagnostics: dict[str, Any] = field(default_factory=dict)
+    vpn_peers: list[dict[str, Any]] = field(default_factory=list)
     vpn_config_list: VpnConfigList | None = None
 
 
@@ -216,6 +217,12 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         clients_all = self._client.get_clients() or []
         _LOGGER.debug("Retrieved %s clients", len(clients_all))
 
+        vpn_peers = self._client.get_vpn_peers() or []
+        if vpn_peers:
+            _LOGGER.debug("Retrieved %s VPN peers", len(vpn_peers))
+        else:
+            _LOGGER.debug("Controller returned no VPN peer data")
+
         try:
             speedtest = self._client.get_last_speedtest(cache_sec=5)
             if speedtest:
@@ -247,6 +254,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             clients=clients_all,
             speedtest=speedtest,
             vpn_diagnostics=vpn_diagnostics,
+            vpn_peers=vpn_peers,
             vpn_config_list=vpn_config,
         )
         _LOGGER.debug(
