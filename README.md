@@ -10,6 +10,9 @@ fully UI-driven configuration flow.
 - **Live validation on save**: during setup we log in and read `/stat/health` and `/self/sites`.
 - **Options Flow**: you can change host/credentials/site/etc. later from the integration's Options.
 - **Diagnostics**: menu "Download diagnostics" dumps controller URL, current site, health, sites.
+- **Per-connection VPN metrics**: remote-access users, site-to-site peers, and Teleport
+  servers/clients are discovered across UniFi Network API generations with per-entity sensors
+  and aggregated diagnostics.
 
 Authentication uses a local **username/password** (the same approach as in
 [`sirkirby/unifi-network-rules`](https://github.com/sirkirby/unifi-network-rules)).
@@ -55,4 +58,8 @@ logger:
     custom_components.unifi_gateway_refactored.unifi_client: debug
     custom_components.unifi_gateway_refactored.coordinator: debug
 ```
+
+When debug logging is enabled the integration records each UniFi Network HTTP request
+and, for non-2xx responses, includes a sanitized preview of the response body (first 1 kB)
+to simplify troubleshooting endpoint discovery issues.
 

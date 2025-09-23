@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
-from .unifi_client import APIError, ConnectivityError, UniFiOSClient, VpnSnapshot
+from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ class UniFiGatewayData:
     vpn_diagnostics: dict[str, Any] = field(default_factory=dict)
     vpn_errors: dict[str, Any] = field(default_factory=dict)
     vpn: dict[str, Any] = field(default_factory=dict)
-    vpn_snapshot: Optional[VpnSnapshot] = None
+    vpn_state: dict[str, Any] = field(default_factory=dict)
 
 
 class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData]):
@@ -59,97 +59,48 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         client = self._client
 
         try:
-            snapshot = await self.hass.async_add_executor_job(
-                client.fetch_vpn_snapshot
-            )
+            vpn_state = await client.get_vpn_state()
         except Exception as err:  # pragma: no cover - defensive guard
             _LOGGER.debug(
-                "Fetching VPN snapshot failed: %s",
+                "Fetching VPN state failed: %s",
                 err,
                 exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
             )
-            diagnostics = {
-                "controller_api": client.get_controller_api_url(),
-                "controller_ui": client.get_controller_url(),
-                "site": client.get_site(),
-                "summary": {
-                    "cache_hit": False,
-                    "probes_attempted": 0,
-                    "probes_succeeded": 0,
-                    "total_candidates": 0,
-                    "peers_collected": 0,
-                    "fallback_used": False,
-                },
-                "errors": [str(err)],
+            vpn_state = {
+                "remote_users": [],
+                "s2s_peers": [],
+                "teleport": {"servers": [], "clients": []},
+                "counts": {},
+                "diagnostics": {"errors": {"exception": str(err)}},
             }
-            snapshot = VpnSnapshot([], [], [], [], diagnostics)
 
-        vpn_diag: Dict[str, Any] = dict(snapshot.diagnostics or {})
-        vpn_summary = dict(vpn_diag.get("summary") or {})
-        errors_value = vpn_diag.get("errors")
-        if isinstance(errors_value, list):
-            vpn_errors_payload: Dict[str, Any] = {"errors": list(errors_value)}
-        elif isinstance(errors_value, dict):
-            vpn_errors_payload = dict(errors_value)
-        else:
-            vpn_errors_payload = {}
-
-        vpn_counts = {
-            "remote_users": len(snapshot.remote_users),
-            "site_to_site": len(snapshot.site_to_site),
-            "teleport_clients": len(snapshot.teleport_clients),
-            "teleport_servers": len(snapshot.teleport_servers),
-        }
-        peers_total = sum(vpn_counts.values())
+        diagnostics = dict(vpn_state.get("diagnostics") or {})
+        vpn_counts = dict(vpn_state.get("counts") or {})
+        peers_total = sum(vpn_counts.values()) if vpn_counts else 0
 
         _LOGGER.info(
-            "VPN snapshot: remote_users=%d site_to_site=%d teleport_clients=%d teleport_servers=%d",
-            vpn_counts["remote_users"],
-            vpn_counts["site_to_site"],
-            vpn_counts["teleport_clients"],
-            vpn_counts["teleport_servers"],
+            "VPN state: remote_users=%d site_to_site=%d teleport_clients=%d teleport_servers=%d",
+            vpn_counts.get("remote_users", 0),
+            vpn_counts.get("s2s_peers", 0),
+            vpn_counts.get("teleport_clients", 0),
+            vpn_counts.get("teleport_servers", 0),
         )
-        _LOGGER.debug("VPN diagnostics summary: %s", vpn_summary)
-        if vpn_diag.get("errors"):
-            _LOGGER.debug("VPN diagnostics errors: %s", vpn_diag.get("errors"))
+        if diagnostics.get("errors"):
+            _LOGGER.debug("VPN diagnostics errors: %s", diagnostics.get("errors"))
         if peers_total == 0:
             _LOGGER.warning(
-                "VPN snapshot returned no peers for site %s", client.get_site()
+                "VPN state returned no connections for site %s", client.get_site()
             )
-
-        vpn_servers = list(snapshot.teleport_servers)
-        vpn_clients = list(snapshot.teleport_clients)
-        vpn_site_to_site = list(snapshot.site_to_site)
-        vpn_remote_users = list(snapshot.remote_users)
 
         try:
             return await self.hass.async_add_executor_job(
                 self._fetch_data,
-                vpn_servers,
-                vpn_clients,
-                vpn_site_to_site,
-                vpn_diag,
-                None,
-                vpn_remote_users,
-                vpn_summary,
-                vpn_errors_payload,
-                snapshot,
+                vpn_state,
             )
         except (ConnectivityError, APIError) as err:
             raise UpdateFailed(str(err)) from err
 
-    def _fetch_data(
-        self,
-        vpn_servers: Optional[List[Dict[str, Any]]] = None,
-        vpn_clients: Optional[List[Dict[str, Any]]] = None,
-        vpn_site_to_site: Optional[List[Dict[str, Any]]] = None,
-        vpn_diag: Optional[Dict[str, Any]] = None,
-        vpn_fetch_error: Optional[str] = None,
-        vpn_remote_users: Optional[List[Dict[str, Any]]] = None,
-        vpn_summary: Optional[Dict[str, Any]] = None,
-        vpn_errors: Optional[Dict[str, Any]] = None,
-        vpn_snapshot: Optional[VpnSnapshot] = None,
-    ) -> UniFiGatewayData:
+    def _fetch_data(self, vpn_state: Dict[str, Any]) -> UniFiGatewayData:
         _LOGGER.debug(
             "Starting UniFi Gateway data fetch for instance %s",
             self._client.instance_key(),
@@ -178,9 +129,6 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             if subsystem in {"wan", "www", "internet"}:
                 wan_health.append(record)
         if not wan_health and health:
-            # Some controllers omit WAN-specific subsystem entries; keep full
-            # health payload as a fallback so sensors can surface something
-            # meaningful instead of reporting missing data entirely.
             wan_health = list(health)
 
         alerts_raw = self._client.get_alerts() or []
@@ -241,220 +189,19 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         _LOGGER.debug("Retrieved %s WLAN configurations", len(wlans))
         clients_all = self._client.get_clients() or []
         _LOGGER.debug("Retrieved %s clients", len(clients_all))
-        vpn_servers_list: List[Dict[str, Any]] = list(vpn_servers or [])
-        vpn_clients_list: List[Dict[str, Any]] = list(vpn_clients or [])
-        vpn_site_to_site_list: List[Dict[str, Any]] = list(vpn_site_to_site or [])
-        vpn_remote_users_list: List[Dict[str, Any]] = list(vpn_remote_users or [])
+
+        teleport = vpn_state.get("teleport") or {}
+        vpn_servers_list: List[Dict[str, Any]] = list(teleport.get("servers") or [])
+        vpn_clients_list: List[Dict[str, Any]] = list(teleport.get("clients") or [])
+        vpn_site_to_site_list: List[Dict[str, Any]] = list(vpn_state.get("s2s_peers") or [])
+        vpn_remote_users_list: List[Dict[str, Any]] = list(vpn_state.get("remote_users") or [])
         vpn_diag_payload: Dict[str, Any] = (
-            dict(vpn_diag) if isinstance(vpn_diag, dict) else {}
+            dict(vpn_state.get("diagnostics") or {})
         )
         vpn_diag_payload.setdefault("controller_api", controller_api_url)
         vpn_diag_payload.setdefault("site", controller_site)
-        vpn_fetch_error_value: Optional[str] = vpn_fetch_error
-        vpn_summary_payload: Dict[str, Any] = (
-            dict(vpn_summary) if isinstance(vpn_summary, dict) else {}
-        )
-        if isinstance(vpn_errors, dict):
-            vpn_errors_payload: Dict[str, Any] = dict(vpn_errors)
-        elif isinstance(vpn_errors, list):
-            vpn_errors_payload = {"errors": list(vpn_errors)}
-        else:
-            vpn_errors_payload = {}
-        if vpn_errors_payload and "errors" not in vpn_diag_payload:
-            vpn_diag_payload["errors"] = vpn_errors_payload
-
-        if vpn_servers is None:
-            try:
-                vpn_servers_list = self._client.get_vpn_servers() or []
-            except Exception as err:  # pragma: no cover - defensive guard
-                message = str(err)
-                vpn_fetch_error_value = (
-                    f"{vpn_fetch_error_value}; {message}"
-                    if vpn_fetch_error_value
-                    else message
-                )
-                _LOGGER.warning(
-                    "VPN server discovery failed during fallback fetch: %s",
-                    err,
-                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-                )
-        if vpn_clients is None:
-            try:
-                vpn_clients_list = self._client.get_vpn_clients() or []
-            except Exception as err:  # pragma: no cover - defensive guard
-                message = str(err)
-                vpn_fetch_error_value = (
-                    f"{vpn_fetch_error_value}; {message}"
-                    if vpn_fetch_error_value
-                    else message
-                )
-                _LOGGER.warning(
-                    "VPN client discovery failed during fallback fetch: %s",
-                    err,
-                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-                )
-        if vpn_site_to_site is None:
-            try:
-                vpn_site_to_site_list = self._client.get_vpn_site_to_site() or []
-            except Exception as err:  # pragma: no cover - defensive guard
-                message = str(err)
-                vpn_fetch_error_value = (
-                    f"{vpn_fetch_error_value}; {message}"
-                    if vpn_fetch_error_value
-                    else message
-                )
-                _LOGGER.warning(
-                    "VPN site-to-site discovery failed during fallback fetch: %s",
-                    err,
-                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-                )
-
-        if vpn_remote_users is None:
-            try:
-                vpn_remote_users_list = self._client.get_vpn_remote_users() or []
-            except Exception as err:  # pragma: no cover - defensive guard
-                message = str(err)
-                vpn_fetch_error_value = (
-                    f"{vpn_fetch_error_value}; {message}"
-                    if vpn_fetch_error_value
-                    else message
-                )
-                _LOGGER.warning(
-                    "VPN remote user discovery failed during fallback fetch: %s",
-                    err,
-                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-                )
-
-        if vpn_diag is None or "summary" not in vpn_diag_payload:
-            try:
-                vpn_diag_payload["summary"] = self._client.vpn_probe_summary()
-            except Exception as err:  # pragma: no cover - defensive guard
-                _LOGGER.debug(
-                    "Fetching VPN probe summary during fallback failed: %s",
-                    err,
-                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-                )
-                vpn_diag_payload.setdefault("summary", None)
-        if vpn_diag is None or "errors" not in vpn_diag_payload:
-            try:
-                vpn_diag_payload["errors"] = self._client.vpn_probe_errors()
-            except Exception as err:  # pragma: no cover - defensive guard
-                _LOGGER.debug(
-                    "Fetching VPN probe errors during fallback failed: %s",
-                    err,
-                    exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
-                )
-                errors = vpn_diag_payload.get("errors")
-                fallback_error = {
-                    "reason": "vpn_diagnostics_fetch_failed",
-                    "message": str(err),
-                }
-                if isinstance(errors, list):
-                    errors.append(fallback_error)
-                elif errors in (None, "", [], {}):
-                    vpn_diag_payload["errors"] = [fallback_error]
-                else:
-                    vpn_diag_payload["errors"] = [errors, fallback_error]
-
-        vpn_servers = vpn_servers_list
-        vpn_clients = vpn_clients_list
-        vpn_site_to_site = vpn_site_to_site_list
-        vpn_remote_users = vpn_remote_users_list
-        vpn_diag = vpn_diag_payload
-        vpn_fetch_error = vpn_fetch_error_value
-        if not vpn_summary_payload:
-            vpn_summary_payload = (
-                vpn_diag_payload.get("summary")
-                if isinstance(vpn_diag_payload.get("summary"), dict)
-                else {}
-            )
-        else:
-            vpn_diag_payload.setdefault("summary", vpn_summary_payload)
-
-        vpn_counts = {
-            "servers": len(vpn_servers or []),
-            "clients": len(vpn_clients or []),
-            "site_to_site": len(vpn_site_to_site or []),
-            "remote_users": len(vpn_remote_users or []),
-        }
-        if vpn_snapshot is not None:
-            vpn_counts.setdefault("teleport_servers", len(vpn_snapshot.teleport_servers))
-            vpn_counts.setdefault("teleport_clients", len(vpn_snapshot.teleport_clients))
-        vpn_diag.setdefault("summary", None)
-        errors_value = vpn_diag.get("errors")
-        if isinstance(errors_value, tuple):
-            vpn_diag["errors"] = list(errors_value)
-        elif isinstance(errors_value, str):
-            stripped = errors_value.strip()
-            vpn_diag["errors"] = [stripped] if stripped else []
-        elif isinstance(errors_value, dict):
-            if not errors_value:
-                vpn_diag["errors"] = {}
-        elif errors_value in (None, "", {}):
-            vpn_diag["errors"] = []
-        counts_value = vpn_diag.get("counts")
-        if isinstance(counts_value, dict):
-            counts_value.setdefault("servers", vpn_counts["servers"])
-            counts_value.setdefault("clients", vpn_counts["clients"])
-            counts_value.setdefault("site_to_site", vpn_counts["site_to_site"])
-            counts_value.setdefault("remote_users", vpn_counts["remote_users"])
-        else:
-            vpn_diag["counts"] = vpn_counts
-        if vpn_fetch_error:
-            fetch_errors = vpn_diag.setdefault("fetch_errors", {})
-            if isinstance(fetch_errors, dict):
-                fetch_errors.setdefault("exception", vpn_fetch_error)
-            else:
-                vpn_diag["fetch_errors"] = {"exception": vpn_fetch_error}
-
-        errors_section = vpn_errors_payload or vpn_diag_payload.get("errors")
-        if isinstance(errors_section, dict):
-            errors_value: Any = dict(errors_section)
-        elif isinstance(errors_section, list):
-            errors_value = list(errors_section)
-        else:
-            errors_value = []
-
-        vpn_payload = {
-            "servers": list(vpn_servers or []),
-            "clients": list(vpn_clients or []),
-            "remote_users": list(vpn_remote_users or []),
-            "site_to_site": list(vpn_site_to_site or []),
-            "summary": dict(vpn_summary_payload or {}),
-            "diagnostics": dict(vpn_diag),
-            "errors": errors_value,
-        }
-
-        _LOGGER.debug(
-            "VPN discovery summary for %s (api=%s, site=%s): %s",
-            self._client.instance_key(),
-            controller_api_url,
-            controller_site,
-            vpn_counts,
-        )
-
-        _LOGGER.debug(
-            "VPN records for instance %s: servers=%s clients=%s site_to_site=%s",
-            self._client.instance_key(),
-            vpn_counts["servers"],
-            vpn_counts["clients"],
-            vpn_counts["site_to_site"],
-        )
-
-        try:
-            speedtest = self._client.get_last_speedtest(cache_sec=5)
-            if speedtest:
-                _LOGGER.debug("Retrieved cached speedtest result")
-        except APIError as err:
-            _LOGGER.warning("Fetching last speedtest failed: %s", err)
-            speedtest = None
-
-        # fire and forget — the method is safe if controller does not support speedtests
-        try:
-            self._client.maybe_start_speedtest(cooldown_sec=3600)
-            _LOGGER.debug("Speedtest trigger evaluated")
-        except APIError as err:
-            _LOGGER.debug("Speedtest trigger failed: %s", err)
+        vpn_summary_payload: Dict[str, Any] = dict(vpn_diag_payload.get("summary") or {})
+        vpn_errors_payload: Dict[str, Any] = dict(vpn_diag_payload.get("errors") or {})
 
         data = UniFiGatewayData(
             controller=controller_info,
@@ -469,22 +216,19 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             network_map=network_map,
             wlans=wlans,
             clients=clients_all,
-            vpn_servers=vpn_servers,
-            vpn_clients=vpn_clients,
-            vpn_site_to_site=vpn_site_to_site,
-            vpn_remote_users=vpn_remote_users,
+            vpn_servers=vpn_servers_list,
+            vpn_clients=vpn_clients_list,
+            vpn_site_to_site=vpn_site_to_site_list,
+            vpn_remote_users=vpn_remote_users_list,
             vpn_summary=vpn_summary_payload,
-            speedtest=speedtest,
-            vpn_diagnostics=vpn_diag_payload,
             vpn_errors=vpn_errors_payload,
-            vpn=vpn_payload,
-            vpn_snapshot=vpn_snapshot,
+            vpn=network_map,
+            vpn_snapshot=None,
+            vpn_state=vpn_state,
         )
         _LOGGER.debug(
-            "Completed data fetch: health=%s alerts=%s devices=%s",
-            len(data.health),
-            len(data.alerts),
-            len(data.devices),
+            "Completed UniFi Gateway data fetch for instance %s",
+            self._client.instance_key(),
         )
         return data
 

@@ -29,6 +29,7 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
+from .sensor import _stable_peer_key, _sanitize_stable_key
 from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -119,26 +120,31 @@ async def _async_migrate_vpn_unique_ids(
 
     mapping: dict[str, str] = {}
 
-    def _collect(records: list[dict[str, Any]] | None, prefix: str) -> None:
+    if not data:
+        return
+
+    vpn_state = getattr(data, "vpn_state", {}) or {}
+
+    def _map_records(records: list[dict[str, Any]] | None, kind: str, prefix: str) -> None:
         if not records:
             return
         for record in records:
             if not isinstance(record, dict):
                 continue
-            legacy = record.get("_ha_legacy_peer_id") or record.get("_legacy_peer_id")
-            new = record.get("_ha_peer_id")
-            if not legacy or not new or legacy == new:
-                continue
-            old_uid = f"unifigw_{client.instance_key()}_{prefix}_{legacy}"
-            new_uid = f"unifigw_{client.instance_key()}_{prefix}_{new}"
+            stable = _stable_peer_key(kind, record)
+            old_uid = f"{entry.entry_id}::vpn::{kind}::{stable}"
+            peer_id = record.get("id")
+            if not isinstance(peer_id, str) or not peer_id:
+                peer_id = _sanitize_stable_key(stable)
+            new_uid = f"{entry.entry_id}::{prefix}::{peer_id}"
             mapping[old_uid] = new_uid
 
-    if not data:
-        return
-
-    _collect(getattr(data, "vpn_servers", None), "vpn_server")
-    _collect(getattr(data, "vpn_clients", None), "vpn_client")
-    _collect(getattr(data, "vpn_site_to_site", None), "vpn_site_to_site")
+    _map_records(vpn_state.get("remote_users"), "remote_user", "vpn_remote_user")
+    _map_records(vpn_state.get("s2s_peers"), "site_to_site", "vpn_s2s")
+    teleport = vpn_state.get("teleport") or {}
+    if isinstance(teleport, dict):
+        _map_records(teleport.get("clients"), "teleport_client", "vpn_teleport_client")
+        _map_records(teleport.get("servers"), "teleport_server", "vpn_teleport_server")
 
     if not mapping:
         _LOGGER.debug("No VPN unique ID migrations required for entry %s", entry.entry_id)
