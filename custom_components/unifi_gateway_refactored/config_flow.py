@@ -1,14 +1,10 @@
 from __future__ import annotations
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
-
-if TYPE_CHECKING:
-    from homeassistant.data_entry_flow import FlowResult
-else:  # pragma: no cover - fallback for older Home Assistant
-    FlowResult = Dict[str, Any]  # type: ignore[misc, assignment]
+from homeassistant.data_entry_flow import FlowResult
 import voluptuous as vol
 
 from .const import (
