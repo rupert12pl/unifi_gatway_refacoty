@@ -119,15 +119,8 @@ class VpnEndpoints:
     teleport_clients: Optional[str] = None
     probes_attempted: int = 0
     last_errors: Dict[str, str] = field(default_factory=dict)
+    winner_paths: Dict[str, str] = field(default_factory=dict)
 
-
-@dataclass
-class VpnSnapshot:
-    remote_users: List[Dict[str, Any]]
-    site_to_site: List[Dict[str, Any]]
-    teleport_clients: List[Dict[str, Any]]
-    teleport_servers: List[Dict[str, Any]]
-    diagnostics: Dict[str, Any]
 
 _VPN_EXPECTED_ERROR_CODES: Tuple[int, ...] = (400, 404)
 
@@ -702,6 +695,7 @@ class UniFiOSClient:
         self._ssl_verify = ssl_verify
         self._timeout = timeout
         self._use_proxy_prefix = use_proxy_prefix
+        self._path_prefix = "/proxy/network" if use_proxy_prefix else ""
         self._site_name = site_id
         self._site = site_id
         self._site_id: Optional[str] = None
@@ -726,7 +720,7 @@ class UniFiOSClient:
         except socket.gaierror as ex:
             raise ConnectivityError(f"DNS resolution failed for {host}: {ex}") from ex
 
-        self._base = self._join(f"api/s/{site_id}")
+        self._base = self._join(self._site_path())
 
         # Stable instance identifier – must NOT depend on autodetected _base so that
         # Home Assistant keeps existing entities when the controller path changes
@@ -744,11 +738,6 @@ class UniFiOSClient:
         self._vpn_expected_errors_reported = False
         self._vpn_last_probe_errors: Dict[str, str] = {}
         self._vpn_last_probe_summary: Dict[str, Any] = {}
-        self._vpn_optional_404_paths: set[str] = {
-            "stat/teleport",
-            "stat/teleport/clients",
-            "stat/teleport/servers",
-        }
         self._vpn_endpoints: Optional[VpnEndpoints] = None
         self._vpn_endpoint_winners: Dict[str, str] = {}
         self._vpn_probe_candidates: Dict[str, List[str]] = {}
@@ -757,19 +746,42 @@ class UniFiOSClient:
         """Return the normalized base URL for UniFi Network requests."""
 
         base = f"{self._scheme}://{self._host}:{self._port}"
-        if self._use_proxy_prefix:
-            return f"{base}/proxy/network"
+        prefix = self._path_prefix.strip("/")
+        if prefix:
+            return f"{base}/{prefix}"
         return base
 
     def _join(self, path: str) -> str:
         """Join ``path`` onto the normalized UniFi Network base."""
 
-        base = self._net_base()
-        if not path:
-            return base
-        if path.startswith("/"):
-            return base + path
-        return f"{base}/{path}"
+        base = self._net_base().rstrip("/")
+        cleaned = str(path or "").lstrip("/")
+        if cleaned.startswith("proxy/network/"):
+            cleaned = cleaned[len("proxy/network/") :]
+        if cleaned.startswith("network/") and self._path_prefix.strip("/") == "network":
+            cleaned = cleaned[len("network/") :]
+        prefix = self._path_prefix.strip("/")
+        if prefix and cleaned.startswith(f"{prefix}/"):
+            cleaned = cleaned[len(prefix) + 1 :]
+        return f"{base}/{cleaned}" if cleaned else base
+
+    def _site_path(self, path: str = "") -> str:
+        """Return the controller API path for the configured site."""
+
+        base = f"api/s/{self._site_name}".rstrip("/")
+        if path:
+            return f"{base}/{path.lstrip('/')}"
+        return base
+
+    def site_name(self) -> str:
+        """Return the textual site name used for API requests."""
+
+        return self._site_name
+
+    def site_id(self) -> Optional[str]:
+        """Return the cached GUID-style site identifier if known."""
+
+        return self._site_id
 
     async def _async_ensure_site_id(self) -> Optional[str]:
         """Fetch and cache the GUID-style site identifier."""
@@ -899,6 +911,7 @@ class UniFiOSClient:
         self._vpn_endpoints = endpoints
         self._vpn_endpoint_winners = winner_paths
         endpoints.last_errors = dict(endpoints.last_errors)
+        endpoints.winner_paths = dict(winner_paths)
         return endpoints
 
     async def get_vpn_state(self) -> Dict[str, Any]:
@@ -907,7 +920,7 @@ class UniFiOSClient:
         endpoints = await self._discover_vpn_endpoints()
 
         diagnostics_errors = dict(endpoints.last_errors)
-        winner_paths = dict(self._vpn_endpoint_winners)
+        winner_paths = dict(endpoints.winner_paths or self._vpn_endpoint_winners)
         families_tried = dict(self._vpn_probe_candidates)
 
         async def _load(path: Optional[str], family: str) -> List[Dict[str, Any]]:
@@ -1130,11 +1143,14 @@ class UniFiOSClient:
         ports = [443, 8443]
         for pr in prefixes:
             for po in ports:
-                base_api = f"https://{self._host}:{po}{pr}/api/s/{self._site}"
+                base_api = f"https://{self._host}:{po}{pr}/api/s/{self._site_name}"
                 try:
                     self._sync_request("GET", f"{base_api}/stat/health")
                     self._base = base_api
                     self._port = po
+                    self._path_prefix = pr or ""
+                    self._use_proxy_prefix = self._path_prefix == "/proxy/network"
+                    self._site_name = self._site
                     _LOGGER.info("Autodetected base: %s", self._base)
                     return
                 except APIError:
@@ -1147,14 +1163,23 @@ class UniFiOSClient:
                     names = [s.get("name") for s in sites if isinstance(s, dict)]
                 except APIError:
                     continue
-                for candidate in [self._site] + [n for n in names if n and n != self._site]:
+                for candidate in [self._site_name] + [
+                    n for n in names if n and n != self._site_name
+                ]:
                     base_api = f"{root_api}/s/{candidate}"
                     try:
                         self._sync_request("GET", f"{base_api}/stat/health")
                         self._site = candidate
+                        self._site_name = candidate
                         self._base = base_api
                         self._port = po
-                        _LOGGER.info("Autodetected via sites: %s (site=%s)", self._base, self._site)
+                        self._path_prefix = pr or ""
+                        self._use_proxy_prefix = self._path_prefix == "/proxy/network"
+                        _LOGGER.info(
+                            "Autodetected via sites: %s (site=%s)",
+                            self._base,
+                            self._site_name,
+                        )
                         return
                     except APIError:
                         continue
@@ -1163,11 +1188,16 @@ class UniFiOSClient:
     def _sync_request(
         self,
         method: str,
-        url: str,
+        path_or_url: str,
         payload: Optional[Dict[str, Any]] = None,
         *,
         expected_errors: Optional[Collection[int]] = None,
     ) -> Any:
+        candidate = str(path_or_url)
+        if candidate.startswith("http"):
+            url = candidate
+        else:
+            url = self._join(candidate)
         if _LOGGER.isEnabledFor(logging.DEBUG):
             _LOGGER.debug(
                 "UniFi request %s %s (payload=%s)",
@@ -1287,22 +1317,20 @@ class UniFiOSClient:
             LOGGER.error("HTTP %s %s failed: %r", method, url, exc)
             raise
 
-        parsed = urlsplit(url)
-        path_only = parsed.path
-        if parsed.query:
-            path_only = f"{path_only}?{parsed.query}"
-        if LOGGER.isEnabledFor(logging.DEBUG):
-            LOGGER.debug("HTTP %s %s -> %s", method, path_only, resp.status_code)
+        status = getattr(resp, "status_code", None)
+        if status is None:
+            status = getattr(resp, "status", None)
 
-        if resp.status_code >= 400:
-            snippet = text[:1024]
+        if status is not None and status >= 400:
             LOGGER.warning(
                 "HTTP %s %s -> %s ; body[0..1024]=%r",
                 method,
-                path_only,
-                resp.status_code,
-                snippet,
+                url,
+                status,
+                text[:1024],
             )
+        else:
+            LOGGER.debug("HTTP %s %s -> %s", method, url, status)
 
         return resp, text
 
@@ -1456,300 +1484,6 @@ class UniFiOSClient:
             body=getattr(last_error, "body", None),
         ) from last_error
 
-    def _probe_paths(
-        self, site: str, paths: List[str]
-    ) -> Tuple[Optional[Any], Optional[str]]:
-        """Attempt VPN discovery via the provided relative paths."""
-
-        base = self._api_site_base(site)
-        tracker = getattr(self, "_active_probe_state", None)
-
-        for raw_path in paths:
-            normalized = raw_path.lstrip("/")
-            url = f"{base}/{normalized}"
-            if tracker is not None:
-                tracker["attempts"] = tracker.get("attempts", 0) + 1
-            try:
-                payload = self._sync_request("GET", url)
-            except APIError as err:
-                short_error = self._vpn_error_snippet(err)
-                status_text = (
-                    str(err.status_code) if err.status_code is not None else "n/a"
-                )
-                entry = f"{normalized}: {status_text} {short_error}".strip()
-                if tracker is not None:
-                    tracker.setdefault("errors", []).append(entry)
-                log_level = logging.WARNING
-                if err.status_code == 404 and normalized in self._vpn_optional_404_paths:
-                    log_level = logging.DEBUG
-                _LOGGER.log(
-                    log_level,
-                    "VPN probe failed: %s %s – %s",
-                    "GET",
-                    normalized,
-                    short_error,
-                )
-                continue
-            except ConnectivityError as err:
-                entry = f"{normalized}: connectivity {err}"
-                if tracker is not None:
-                    tracker.setdefault("errors", []).append(entry)
-                _LOGGER.warning(
-                    "VPN probe failed: %s %s – %s", "GET", normalized, err
-                )
-                continue
-
-            if tracker is not None:
-                tracker["succeeded"] = True
-            return payload, normalized
-
-        return None, None
-
-    def _discover_vpn_paths_from_openapi(self, site: str) -> List[str]:
-        """Inspect the controller OpenAPI schema for VPN-related endpoints."""
-
-        base_root = self._base.split("/api/s/")[0].rstrip("/")
-        discovered: List[str] = []
-        candidates = ["/proxy/network/openapi.json", "/proxy/network/api-docs"]
-
-        for rel in candidates:
-            url = f"{base_root}{rel}"
-            try:
-                document = self._sync_request("GET", url)
-            except APIError as err:
-                short_error = self._vpn_error_snippet(err)
-                _LOGGER.debug(
-                    "OpenAPI probe failed: %s %s – %s",
-                    "GET",
-                    rel.lstrip("/"),
-                    short_error,
-                )
-                continue
-
-            paths = None
-            if isinstance(document, dict):
-                paths = document.get("paths")
-            if not isinstance(paths, dict):
-                continue
-
-            for raw_path in paths:
-                if not isinstance(raw_path, str):
-                    continue
-                lowered = raw_path.lower()
-                if not any(
-                    token in lowered
-                    for token in ("/vpn", "/remoteuser", "/teleport", "/site-to-site")
-                ):
-                    continue
-                normalized = raw_path.strip()
-                if not normalized:
-                    continue
-                normalized = normalized.lstrip("/")
-                normalized = (
-                    normalized.replace("{siteId}", site)
-                    .replace("{site}", site)
-                    .replace("{site_id}", site)
-                )
-                if normalized.startswith("proxy/network/"):
-                    normalized = normalized[len("proxy/network/") :]
-                if "/proxy/network/" in normalized:
-                    normalized = normalized.split("/proxy/network/", 1)[1]
-                if normalized.startswith("api/s/"):
-                    normalized = normalized[len("api/s/") :]
-                elif "/api/s/" in normalized:
-                    normalized = normalized.split("/api/s/", 1)[1]
-                if normalized.startswith("s/"):
-                    normalized = normalized[2:]
-                if normalized.startswith("v2/") or "/v2/" in normalized:
-                    continue
-                normalized = normalized.replace("//", "/")
-                if normalized:
-                    discovered.append(normalized)
-
-        unique = sorted({path for path in discovered if path})
-        if unique:
-            _LOGGER.info(
-                "Discovered VPN-related endpoints via OpenAPI: %s",
-                ", ".join(unique),
-            )
-        else:
-            _LOGGER.debug("No VPN endpoints discovered via OpenAPI schema")
-        return unique
-
-    def fetch_vpn_snapshot(self) -> VpnSnapshot:
-        """Collect VPN status information from the controller."""
-
-        site = self._site or "default"
-        summary_state = {"attempts": 0, "successes": 0}
-        errors: List[str] = []
-        successful_paths: List[str] = []
-        all_candidates: List[Dict[str, Any]] = []
-        fallback_used = False
-        discovered_paths: List[str] = []
-
-        self._vpn_last_probe_errors = {}
-        self._vpn_last_probe_summary = {}
-
-        def _run_probe(
-            paths: List[str], hint: Optional[str] = None
-        ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-            state: Dict[str, Any] = {"attempts": 0, "errors": []}
-            self._active_probe_state = state
-            payload, used_path = self._probe_paths(site, paths)
-            self._active_probe_state = None
-            summary_state["attempts"] += int(state.get("attempts", 0))
-            for entry in state.get("errors", []):
-                errors.append(entry)
-                path_key, _, message = entry.partition(":")
-                if path_key:
-                    self._vpn_last_probe_errors[path_key.strip()] = message.strip()
-            normalized: List[Dict[str, Any]] = []
-            if payload is not None:
-                normalized = self._normalize_vpn_payload(
-                    payload,
-                    path=used_path or (paths[0] if paths else ""),
-                    default_category=hint,
-                ) or []
-            if used_path:
-                summary_state["successes"] += 1
-                successful_paths.append(used_path)
-                self._vpn_last_probe_errors.pop(used_path, None)
-            return normalized, used_path
-
-        remote_sessions, _ = _run_probe(
-            ["stat/remoteuser", "stat/remote-user"], "remote_user"
-        )
-        remote_metadata, _ = _run_probe(["list/remoteuser"], "remote_user")
-        stat_vpn, _ = _run_probe(["stat/vpn"], None)
-        stat_s2s, _ = _run_probe(["stat/s2s", "stat/s2speer"], "site_to_site")
-        stat_teleport, _ = _run_probe(["stat/teleport"], "teleport")
-        stat_teleport_clients, _ = _run_probe(
-            ["stat/teleport/clients"], "teleport"
-        )
-        stat_teleport_servers, _ = _run_probe(
-            ["stat/teleport/servers"], "teleport"
-        )
-
-        for bucket in (
-            remote_sessions,
-            remote_metadata,
-            stat_vpn,
-            stat_s2s,
-            stat_teleport,
-            stat_teleport_clients,
-            stat_teleport_servers,
-        ):
-            all_candidates.extend(bucket)
-
-        if summary_state["successes"] == 0:
-            fallback_used = True
-            discovered_paths = self._discover_vpn_paths_from_openapi(site)
-            for candidate in discovered_paths:
-                normalized, used_path = _run_probe([candidate], None)
-                all_candidates.extend(normalized)
-                if used_path:
-                    successful_paths.append(used_path)
-
-        aggregated: Dict[str, Dict[str, Any]] = {}
-        total_candidates = 0
-        for peer in all_candidates:
-            total_candidates += 1
-            peer_id = peer.get("_ha_peer_id") or vpn_peer_identity(peer)
-            if peer_id in aggregated:
-                aggregated[peer_id] = self._merge_vpn_peer(aggregated[peer_id], peer)
-            else:
-                aggregated[peer_id] = peer
-
-        finalized = [self._finalize_vpn_peer(peer) for peer in aggregated.values()]
-
-        def _sources(record: Dict[str, Any]) -> set[str]:
-            raw_sources: set[str] = set()
-            base = record.get("_ha_source")
-            if isinstance(base, str) and base:
-                raw_sources.add(base)
-            nested = record.get("_ha_sources")
-            if isinstance(nested, list):
-                raw_sources.update(
-                    str(item) for item in nested if isinstance(item, str) and item
-                )
-            elif isinstance(nested, str) and nested:
-                raw_sources.add(nested)
-            return raw_sources
-
-        remote_sources = {"stat/remoteuser", "stat/remote-user"}
-        remote_users = [
-            peer for peer in finalized if _sources(peer) & remote_sources
-        ]
-        if not remote_users:
-            remote_users = [
-                peer
-                for peer in self._filter_vpn_peers(
-                    finalized, {"remote_user", "remoteuser", "remote_access"}
-                )
-                if _sources(peer) - {"list/remoteuser"}
-            ]
-
-        s2s_sources = {"stat/s2s", "stat/s2speer"}
-        site_to_site = [
-            peer for peer in finalized if _sources(peer) & s2s_sources
-        ]
-        if not site_to_site:
-            site_to_site = self._filter_vpn_peers(
-                finalized, {"site_to_site", "uid", "uid_vpn", "s2s"}
-            )
-
-        teleport_candidates = self._filter_vpn_peers(finalized, {"teleport"})
-        teleport_clients: List[Dict[str, Any]] = []
-        teleport_servers: List[Dict[str, Any]] = []
-        for peer in teleport_candidates:
-            role_token = _normalize_token(peer.get("_ha_role")) or _normalize_token(
-                peer.get("role")
-            )
-            if role_token == "server":
-                teleport_servers.append(peer)
-            else:
-                teleport_clients.append(peer)
-
-        peers_collected = (
-            len(remote_users)
-            + len(site_to_site)
-            + len(teleport_clients)
-            + len(teleport_servers)
-        )
-
-        summary_payload = {
-            "cache_hit": False,
-            "probes_attempted": summary_state["attempts"],
-            "probes_succeeded": summary_state["successes"],
-            "total_candidates": total_candidates,
-            "peers_collected": peers_collected,
-            "fallback_used": fallback_used,
-        }
-
-        self._vpn_last_probe_summary = dict(summary_payload)
-
-        diagnostics = {
-            "controller_api": self.get_controller_api_url(),
-            "controller_ui": self.get_controller_url(),
-            "site": site,
-            "summary": summary_payload,
-            "errors": list(errors),
-        }
-        if successful_paths:
-            diagnostics["successful_paths"] = list(dict.fromkeys(successful_paths))
-        if discovered_paths:
-            diagnostics["openapi_candidates"] = discovered_paths
-
-        self._active_probe_state = None
-
-        return VpnSnapshot(
-            remote_users=remote_users,
-            site_to_site=site_to_site,
-            teleport_clients=teleport_clients,
-            teleport_servers=teleport_servers,
-            diagnostics=diagnostics,
-        )
-
     def _vpn_get_internet(
         self,
         path: str,
@@ -1774,9 +1508,10 @@ class UniFiOSClient:
         expected_errors: Optional[Collection[int]] = None,
     ):
         _LOGGER.debug("GET %s", path)
+        site_path = self._site_path(path)
         return self._sync_request(
             "GET",
-            f"{self._base}/{path.lstrip('/')}",
+            site_path,
             expected_errors=expected_errors,
         )
 
@@ -1788,9 +1523,10 @@ class UniFiOSClient:
         expected_errors: Optional[Collection[int]] = None,
     ):
         _LOGGER.debug("POST %s", path)
+        site_path = self._site_path(path)
         return self._sync_request(
             "POST",
-            f"{self._base}/{path.lstrip('/')}",
+            site_path,
             payload,
             expected_errors=expected_errors,
         )
@@ -1798,7 +1534,12 @@ class UniFiOSClient:
     # ----------- public helpers used by sensors / diagnostics -----------
     def ping(self) -> Dict[str, Any]:
         health = self._get("stat/health") or []
-        return {"ok": True, "health_count": len(health), "base": self._base, "site": self._site}
+        return {
+            "ok": True,
+            "health_count": len(health),
+            "base": self._base,
+            "site": self._site_name,
+        }
 
     def get_healthinfo(self):
         return self._get("stat/health")
@@ -2827,7 +2568,7 @@ class UniFiOSClient:
         return self._base.split("/api", 1)[0].rstrip("/")
 
     def get_site(self) -> str:
-        return self._site
+        return self._site_name
 
     def get_network_map(self) -> Dict[str, Dict[str, Any]]:
         """Map networkconf_id -> metadata for quick lookups from WLANs/clients."""
