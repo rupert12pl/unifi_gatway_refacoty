@@ -10,9 +10,6 @@ fully UI-driven configuration flow.
 - **Live validation on save**: during setup we log in and read `/stat/health` and `/self/sites`.
 - **Options Flow**: you can change host/credentials/site/etc. later from the integration's Options.
 - **Diagnostics**: menu "Download diagnostics" dumps controller URL, current site, health, sites.
-- **Per-connection VPN metrics**: remote-access users, site-to-site peers, and Teleport
-  servers/clients are discovered across UniFi Network API generations with per-entity sensors
-  and aggregated diagnostics.
 
 Authentication uses a local **username/password** (the same approach as in
 [`sirkirby/unifi-network-rules`](https://github.com/sirkirby/unifi-network-rules)).
@@ -46,9 +43,8 @@ The generated release contains the complete repository (including the
 
 ## Enable verbose logging
 
-To collect detailed diagnostics (including VPN probe information), add the
-following snippet to your Home Assistant `configuration.yaml` and reload the
-logger integration:
+To collect detailed diagnostics, add the following snippet to your Home Assistant
+`configuration.yaml` and reload the logger integration:
 
 ```yaml
 logger:

@@ -1,6 +1,4 @@
 
-from enum import Enum
-
 from homeassistant.const import Platform
 
 DOMAIN = "unifi_gateway_refactored"
@@ -20,15 +18,3 @@ DEFAULT_SITE = "default"
 DEFAULT_VERIFY_SSL = False
 DEFAULT_USE_PROXY_PREFIX = True
 DEFAULT_TIMEOUT = 10
-
-
-class VpnFamily(Enum):
-    """Supported UniFi VPN API families."""
-
-    V2 = "v2"
-    LEGACY = "legacy"
-
-
-CONF_VPN_FAMILY_OVERRIDE = "vpn_family_override"
-
-VPN_FAMILY_AUTO = "auto"
