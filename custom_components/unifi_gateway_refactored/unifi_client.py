@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from .const import VpnFamily, VPN_FAMILY_AUTO
 
 def _normalize_peer_field(peer: Dict[str, Any], *keys: str) -> Optional[str]:
     for key in keys:
@@ -109,17 +110,43 @@ LOGGER = logging.getLogger(__name__)
 _LOGGER = LOGGER
 
 
-@dataclass
-class VpnEndpoints:
-    """Container describing discovered VPN endpoints per family."""
+@dataclass(slots=True)
+class VpnProbeAttempt:
+    """Record describing an attempted VPN API request."""
 
-    remote_users: Optional[str] = None
-    s2s_peers: Optional[str] = None
-    teleport_servers: Optional[str] = None
-    teleport_clients: Optional[str] = None
-    probes_attempted: int = 0
-    last_errors: Dict[str, str] = field(default_factory=dict)
-    winner_paths: Dict[str, str] = field(default_factory=dict)
+    path: str
+    status: int
+    ok: bool
+    snippet: str
+
+
+@dataclass(slots=True)
+class VpnSnapshot:
+    """Normalized VPN state for a UniFi site."""
+
+    family: VpnFamily
+    site: str
+    remote_users: List[Dict[str, Any]]
+    s2s_peers: List[Dict[str, Any]]
+    teleport_servers: List[Dict[str, Any]]
+    teleport_clients: List[Dict[str, Any]]
+    attempts: List[VpnProbeAttempt]
+    fallback_used: bool = False
+
+
+class VpnProbeError(RuntimeError):
+    """Raised when VPN probing fails for a specific family."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        attempts: List[VpnProbeAttempt],
+        family: VpnFamily,
+    ) -> None:
+        super().__init__(message)
+        self.attempts: List[VpnProbeAttempt] = list(attempts)
+        self.family: VpnFamily = family
 
 
 _VPN_EXPECTED_ERROR_CODES: Tuple[int, ...] = (400, 404)
@@ -687,6 +714,7 @@ class UniFiOSClient:
         ssl_verify: bool = False,
         use_proxy_prefix: bool = True,
         timeout: int = 10,
+        vpn_family_override: str | None = None,
         instance_hint: str | None = None,
     ):
         self._scheme = "https"
@@ -738,9 +766,20 @@ class UniFiOSClient:
         self._vpn_expected_errors_reported = False
         self._vpn_last_probe_errors: Dict[str, str] = {}
         self._vpn_last_probe_summary: Dict[str, Any] = {}
-        self._vpn_endpoints: Optional[VpnEndpoints] = None
+        self._vpn_endpoints = None  # legacy attribute retained for compatibility
         self._vpn_endpoint_winners: Dict[str, str] = {}
         self._vpn_probe_candidates: Dict[str, List[str]] = {}
+        override_token = (vpn_family_override or VPN_FAMILY_AUTO).strip().lower()
+        try:
+            self._vpn_family_override: Optional[VpnFamily]
+            if override_token in {"", VPN_FAMILY_AUTO}:
+                self._vpn_family_override = None
+            else:
+                self._vpn_family_override = VpnFamily(override_token)
+        except ValueError:
+            self._vpn_family_override = None
+        self._vpn_family_cache: Dict[str, VpnFamily] = {}
+        self._vpn_snapshot_cache: Dict[str, Tuple[float, VpnSnapshot]] = {}
 
     def _net_base(self) -> str:
         """Return the normalized base URL for UniFi Network requests."""
@@ -832,265 +871,577 @@ class UniFiOSClient:
         LOGGER.debug("Falling back to site name for site-id lookups: %s", self._site_name)
         return None
 
-    async def _discover_vpn_endpoints(self, force: bool = False) -> VpnEndpoints:
-        """Probe UniFi Network endpoints to locate VPN resources."""
+    async def _vpn_probe_json(
+        self,
+        path: str,
+        *,
+        family: VpnFamily,
+        attempts: List[VpnProbeAttempt],
+        allow_statuses: Collection[int] = (),
+        timeout: int = 8,
+    ) -> Tuple[int, Any]:
+        """Issue a VPN HTTP GET request and capture diagnostics."""
 
-        if self._vpn_endpoints and not force:
-            return self._vpn_endpoints
+        allow = set(allow_statuses)
+        try:
+            resp, text = await self._request("GET", path, timeout=timeout)
+        except Exception as err:
+            snippet = str(err).strip().replace("\n", " ")[:200]
+            attempts.append(
+                VpnProbeAttempt(path=path, status=0, ok=False, snippet=snippet)
+            )
+            LOGGER.debug("VPN HTTP GET %s failed: %s", path, snippet)
+            raise VpnProbeError(
+                f"Request error while fetching {path}: {err}",
+                attempts=list(attempts),
+                family=family,
+            ) from err
 
-        site_name = self._site_name
-        site_id = await self._async_ensure_site_id()
+        status = getattr(resp, "status_code", None) or 0
+        snippet = (text or "").replace("\n", " ").replace("\r", " ").strip()[:200]
+        LOGGER.debug("VPN HTTP GET %s -> %s payload=%s", path, status, snippet)
+        attempts.append(
+            VpnProbeAttempt(path=path, status=status, ok=200 <= status < 300, snippet=snippet)
+        )
 
-        def _candidate(path: str) -> str:
-            return path.format(site=site_name, site_name=site_name, site_id=site_id)
+        if status >= 400 and status not in allow:
+            raise VpnProbeError(
+                f"HTTP {status} for {path}", attempts=list(attempts), family=family
+            )
 
-        families: Dict[str, List[str]] = {
-            "remote_users": [
-                "/v1/sites/{site_id}/vpn/remote-access/users" if site_id else "",
-                "/v2/api/site/{site}/internet/vpn/remote-access/users",
-                f"/api/s/{site_name}/stat/remote-user",
-                f"/api/s/{site_name}/stat/remoteuser",
-                f"/api/s/{site_name}/list/remoteuser",
-            ],
-            "s2s_peers": [
-                "/v1/sites/{site_id}/vpn/site-to-site/peers" if site_id else "",
-                "/v2/api/site/{site}/internet/vpn/site-to-site/peers",
-                f"/api/s/{site_name}/stat/s2speer",
-                f"/api/s/{site_name}/stat/s2s",
-            ],
-            "teleport_servers": [
-                "/v1/sites/{site_id}/vpn/teleport/servers" if site_id else "",
-                "/v2/api/site/{site}/internet/vpn/teleport/servers",
-                f"/api/s/{site_name}/stat/teleport/servers",
-                f"/api/s/{site_name}/stat/teleport",
-            ],
-            "teleport_clients": [
-                "/v1/sites/{site_id}/vpn/teleport/clients" if site_id else "",
-                "/v2/api/site/{site}/internet/vpn/teleport/clients",
-                f"/api/s/{site_name}/stat/teleport/clients",
-            ],
-        }
-
-        endpoints = VpnEndpoints()
-        winner_paths: Dict[str, str] = {}
-
-        self._vpn_probe_candidates = {}
-
-        for family, candidates in families.items():
-            last_error: Optional[str] = None
-            resolved_candidates: List[str] = []
-            for raw in candidates:
-                if not raw:
-                    continue
-                path = _candidate(raw)
-                resolved_candidates.append(path)
-                endpoints.probes_attempted += 1
-                try:
-                    resp, text = await self._request("GET", path, timeout=4)
-                except Exception as err:  # pragma: no cover - defensive
-                    last_error = str(err)
-                    continue
-
-                status = getattr(resp, "status_code", None)
-                if status is None:
-                    continue
-                if 200 <= status < 300:
-                    setattr(endpoints, family, path)
-                    winner_paths[family] = path
-                    last_error = None
-                    break
-
-                snippet = (text or "").strip().replace("\n", " ")[:200]
-                last_error = f"{status} {snippet}".strip()
-                endpoints.last_errors[family] = last_error
-            if last_error and family not in endpoints.last_errors:
-                endpoints.last_errors[family] = last_error
-            if resolved_candidates:
-                self._vpn_probe_candidates[family] = resolved_candidates
-
-        self._vpn_endpoints = endpoints
-        self._vpn_endpoint_winners = winner_paths
-        endpoints.last_errors = dict(endpoints.last_errors)
-        endpoints.winner_paths = dict(winner_paths)
-        return endpoints
-
-    async def get_vpn_state(self) -> Dict[str, Any]:
-        """Return normalized VPN state across all discovered endpoints."""
-
-        endpoints = await self._discover_vpn_endpoints()
-
-        diagnostics_errors = dict(endpoints.last_errors)
-        winner_paths = dict(endpoints.winner_paths or self._vpn_endpoint_winners)
-        families_tried = dict(self._vpn_probe_candidates)
-
-        async def _load(path: Optional[str], family: str) -> List[Dict[str, Any]]:
-            if not path:
-                return []
-            try:
-                resp, text = await self._request("GET", path, timeout=8)
-            except Exception as err:  # pragma: no cover - defensive
-                diagnostics_errors[family] = str(err)
-                return []
-
-            status = getattr(resp, "status_code", None) or 0
-            if status >= 400:
-                diagnostics_errors[family] = f"{status}"
-                return []
-
-            if not text:
-                return []
-
+        payload: Any = None
+        if text:
             try:
                 payload = json.loads(text)
-            except json.JSONDecodeError:
-                diagnostics_errors[family] = f"{status} invalid json"
-                return []
+            except json.JSONDecodeError as err:
+                raise VpnProbeError(
+                    f"Invalid JSON from {path}",
+                    attempts=list(attempts),
+                    family=family,
+                ) from err
 
-            return _flatten_vpn_records(payload)
+        return status, payload
 
-        def _bytes(record: Dict[str, Any], *keys: str) -> int:
-            for key in keys:
-                value = _coerce_int(record.get(key))
-                if value is not None:
-                    return value
-            return 0
+    @staticmethod
+    def _vpn_extract_records(payload: Any) -> List[Dict[str, Any]]:
+        """Return a list of dictionaries from UniFi VPN API payloads."""
 
-        def _normalize_remote_user(record: Dict[str, Any]) -> Dict[str, Any]:
-            clients = _peer_clients(record) or []
-            client_count = _extract_count(record.get("client_count"))
-            if client_count is None:
-                client_count = len(clients) if clients else None
-            state = _derive_peer_state(record, client_count)
-            username = _first_value(record, "username", "name", "user")
-            identity = vpn_peer_identity(record)
-            return {
-                "id": identity,
-                "name": username or identity,
-                "username": username or identity,
-                "state": state or "UNKNOWN",
-                "connected": (state or "").upper() == "CONNECTED",
-                "rx_bytes": _bytes(record, "rx_bytes", "rx", "bytes_r"),
-                "tx_bytes": _bytes(record, "tx_bytes", "tx", "bytes_t"),
-                "last_seen": _coerce_int(
-                    _first_value(record, "last_seen", "lastSeen", "connected_at")
-                ),
-                "remote_ip": _first_value(
-                    record,
-                    "remote_ip",
-                    "client_ip",
-                    "assigned_ip",
-                    "ip_address",
-                    "peer_addr",
-                ),
-                "peer_addr": _first_value(
-                    record,
-                    "server_addr",
-                    "server_address",
-                    "peer_addr",
-                    "gateway",
-                ),
-                "client_count": client_count or 0,
-                "clients": clients,
-            }
+        if payload is None:
+            return []
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            for key in (
+                "data",
+                "items",
+                "item",
+                "list",
+                "records",
+                "results",
+                "entries",
+                "users",
+                "remote_users",
+                "remoteUsers",
+                "peers",
+                "servers",
+                "clients",
+                "teleport_servers",
+                "teleport_clients",
+            ):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+            return [payload]
+        return []
 
-        def _normalize_s2s(record: Dict[str, Any]) -> Dict[str, Any]:
-            clients = _peer_clients(record) or []
-            client_count = _extract_count(record.get("client_count"))
-            if client_count is None:
-                client_count = len(clients) if clients else None
-            state = _derive_peer_state(record, client_count)
-            name = _first_value(
-                record,
-                "peer_name",
-                "name",
-                "description",
-                "remote",
-                "connection_name",
-            )
-            identity = vpn_peer_identity(record)
-            return {
-                "id": identity,
-                "name": name or identity,
-                "state": state or "UNKNOWN",
-                "connected": (state or "").upper() == "CONNECTED",
-                "rx_bytes": _bytes(record, "rx_bytes", "rx", "bytes_r"),
-                "tx_bytes": _bytes(record, "tx_bytes", "tx", "bytes_t"),
-                "peer_addr": _first_value(record, "peer_addr", "remote_ip", "gateway"),
-                "networks": _vpn_network_strings(
-                    record.get("remote_subnets") or record.get("client_networks")
-                ),
-                "client_count": client_count or 0,
-                "clients": clients,
-            }
+    @staticmethod
+    def _vpn_bytes(record: Dict[str, Any], *keys: str) -> int:
+        for key in keys:
+            value = _coerce_int(record.get(key))
+            if value is not None:
+                return value
+        return 0
 
-        def _normalize_teleport_server(record: Dict[str, Any]) -> Dict[str, Any]:
-            state = _derive_peer_state(record, None)
-            name = _first_value(record, "name", "server_name", "description")
-            identity = vpn_peer_identity(record)
-            return {
-                "id": identity,
-                "name": name or identity,
-                "state": state or "UNKNOWN",
-                "connected": (state or "").upper() == "CONNECTED",
-                "public_ip": _first_value(record, "public_ip", "server_addr"),
-                "peer_addr": _first_value(record, "peer_addr", "endpoint"),
-            }
+    @staticmethod
+    def _vpn_last_seen(record: Dict[str, Any]) -> Optional[int]:
+        value = _first_value(
+            record,
+            "last_state_change",
+            "last_connected",
+            "last_connection",
+            "last_activity",
+            "last_contact",
+            "last_handshake",
+            "connected_since",
+            "connected_at",
+            "last_seen",
+        )
+        return _coerce_int(value)
 
-        def _normalize_teleport_client(record: Dict[str, Any]) -> Dict[str, Any]:
-            state = _derive_peer_state(record, None)
-            name = _first_value(record, "name", "client_name", "description")
-            identity = vpn_peer_identity(record)
-            return {
-                "id": identity,
-                "name": name or identity,
-                "state": state or "UNKNOWN",
-                "connected": (state or "").upper() == "CONNECTED",
-                "server_id": _first_value(
-                    record,
-                    "server_id",
-                    "peer_id",
-                    "remote_user_id",
-                ),
-                "peer_addr": _first_value(record, "peer_addr", "endpoint"),
-            }
+    @staticmethod
+    def _vpn_phase(record: Dict[str, Any]) -> Optional[str]:
+        phase = _first_value(
+            record,
+            "phase",
+            "connection_state",
+            "connection_status",
+            "state",
+            "status",
+        )
+        if isinstance(phase, str) and phase.strip():
+            return phase.strip()
+        return None
 
-        remote_users_raw = await _load(endpoints.remote_users, "remote_users")
-        s2s_raw = await _load(endpoints.s2s_peers, "s2s_peers")
-        teleport_servers_raw = await _load(endpoints.teleport_servers, "teleport_servers")
-        teleport_clients_raw = await _load(endpoints.teleport_clients, "teleport_clients")
-
-        remote_users = [_normalize_remote_user(record) for record in remote_users_raw]
-        s2s_peers = [_normalize_s2s(record) for record in s2s_raw]
-        teleport_servers = [
-            _normalize_teleport_server(record) for record in teleport_servers_raw
-        ]
-        teleport_clients = [
-            _normalize_teleport_client(record) for record in teleport_clients_raw
-        ]
-
-        counts = {
-            "remote_users": len(remote_users),
-            "s2s_peers": len(s2s_peers),
-            "teleport_servers": len(teleport_servers),
-            "teleport_clients": len(teleport_clients),
-        }
-
-        diagnostics = {
-            "probes_attempted": endpoints.probes_attempted,
-            "families": families_tried,
-            "winner_paths": winner_paths,
-            "errors": diagnostics_errors,
-            "counts": counts,
-            "site_name": self._site_name,
-            "site_id": self._site_id,
-        }
-
+    def _normalize_remote_user_connection(
+        self,
+        record: Dict[str, Any],
+        *,
+        family: VpnFamily,
+        site: str,
+    ) -> Dict[str, Any]:
+        clients = _peer_clients(record) or []
+        client_count = _extract_count(record.get("client_count"))
+        if client_count is None and clients:
+            client_count = len(clients)
+        state = _derive_peer_state(record, client_count)
+        username = _first_value(record, "username", "name", "user", "display_name")
+        identity = vpn_peer_identity(record)
         return {
-            "remote_users": remote_users,
-            "s2s_peers": s2s_peers,
+            "id": identity,
+            "kind": "remote_user",
+            "name": username or identity,
+            "connected": (state or "").upper() == "CONNECTED",
+            "rx_bytes": self._vpn_bytes(record, "rx_bytes", "rx", "bytes_r"),
+            "tx_bytes": self._vpn_bytes(record, "tx_bytes", "tx", "bytes_t"),
+            "remote_ip": _first_value(
+                record,
+                "remote_ip",
+                "client_ip",
+                "assigned_ip",
+                "ip_address",
+                "peer_addr",
+            ),
+            "local_ip": _first_value(
+                record,
+                "local_ip",
+                "server_addr",
+                "server_address",
+                "gateway",
+            ),
+            "last_seen": self._vpn_last_seen(record),
+            "phase": self._vpn_phase(record),
+            "state": state or "UNKNOWN",
+            "family": family.value,
+            "site": site,
+            "client_count": client_count or 0,
+        }
+
+    def _normalize_s2s_connection(
+        self,
+        record: Dict[str, Any],
+        *,
+        family: VpnFamily,
+        site: str,
+    ) -> Dict[str, Any]:
+        clients = _peer_clients(record) or []
+        client_count = _extract_count(record.get("client_count"))
+        if client_count is None and clients:
+            client_count = len(clients)
+        state = _derive_peer_state(record, client_count)
+        name = _first_value(
+            record,
+            "peer_name",
+            "name",
+            "description",
+            "remote",
+            "connection_name",
+        )
+        identity = vpn_peer_identity(record)
+        return {
+            "id": identity,
+            "kind": "s2s_peer",
+            "name": name or identity,
+            "connected": (state or "").upper() == "CONNECTED",
+            "rx_bytes": self._vpn_bytes(record, "rx_bytes", "rx", "bytes_r"),
+            "tx_bytes": self._vpn_bytes(record, "tx_bytes", "tx", "bytes_t"),
+            "remote_ip": _first_value(record, "peer_addr", "remote_ip", "gateway"),
+            "local_ip": _first_value(record, "local_ip", "server_addr", "server_address"),
+            "last_seen": self._vpn_last_seen(record),
+            "phase": self._vpn_phase(record),
+            "state": state or "UNKNOWN",
+            "family": family.value,
+            "site": site,
+            "networks": _vpn_network_strings(
+                record.get("remote_subnets") or record.get("client_networks")
+            ),
+            "client_count": client_count or 0,
+        }
+
+    def _normalize_teleport_server_connection(
+        self,
+        record: Dict[str, Any],
+        *,
+        family: VpnFamily,
+        site: str,
+    ) -> Dict[str, Any]:
+        state = _derive_peer_state(record, None)
+        name = _first_value(record, "name", "server_name", "description")
+        identity = vpn_peer_identity(record)
+        return {
+            "id": identity,
+            "kind": "teleport_server",
+            "name": name or identity,
+            "connected": (state or "").upper() == "CONNECTED",
+            "rx_bytes": self._vpn_bytes(record, "rx_bytes", "rx", "bytes_r"),
+            "tx_bytes": self._vpn_bytes(record, "tx_bytes", "tx", "bytes_t"),
+            "remote_ip": _first_value(record, "public_ip", "peer_addr", "server_addr"),
+            "local_ip": _first_value(record, "local_ip", "gateway", "lan_ip"),
+            "last_seen": self._vpn_last_seen(record),
+            "phase": self._vpn_phase(record),
+            "state": state or "UNKNOWN",
+            "family": family.value,
+            "site": site,
+        }
+
+    def _normalize_teleport_client_connection(
+        self,
+        record: Dict[str, Any],
+        *,
+        family: VpnFamily,
+        site: str,
+    ) -> Dict[str, Any]:
+        state = _derive_peer_state(record, None)
+        name = _first_value(record, "name", "client_name", "description")
+        identity = vpn_peer_identity(record)
+        return {
+            "id": identity,
+            "kind": "teleport_client",
+            "name": name or identity,
+            "connected": (state or "").upper() == "CONNECTED",
+            "rx_bytes": self._vpn_bytes(record, "rx_bytes", "rx", "bytes_r"),
+            "tx_bytes": self._vpn_bytes(record, "tx_bytes", "tx", "bytes_t"),
+            "remote_ip": _first_value(
+                record,
+                "public_ip",
+                "client_ip",
+                "peer_addr",
+                "endpoint",
+            ),
+            "local_ip": _first_value(record, "local_ip", "gateway", "lan_ip"),
+            "last_seen": self._vpn_last_seen(record),
+            "phase": self._vpn_phase(record),
+            "state": state or "UNKNOWN",
+            "family": family.value,
+            "site": site,
+            "server_id": _first_value(record, "server_id", "peer_id", "remote_user_id"),
+        }
+
+    async def _probe_v2(self, site: str) -> VpnSnapshot:
+        """Probe UniFi Network v2 VPN endpoints."""
+
+        attempts: List[VpnProbeAttempt] = []
+        family = VpnFamily.V2
+
+        remote_path = f"v2/api/site/{site}/internet/vpn/remote-access/users"
+        status, payload = await self._vpn_probe_json(
+            remote_path, family=family, attempts=attempts
+        )
+        if status in {400, 404}:
+            raise VpnProbeError(
+                f"Remote access users unavailable at {remote_path}",
+                attempts=list(attempts),
+                family=family,
+            )
+        remote_records = self._vpn_extract_records(payload)
+
+        s2s_path = f"v2/api/site/{site}/internet/vpn/site-to-site/peers"
+        status, payload = await self._vpn_probe_json(
+            s2s_path, family=family, attempts=attempts
+        )
+        if status in {400, 404}:
+            raise VpnProbeError(
+                f"Site-to-site peers unavailable at {s2s_path}",
+                attempts=list(attempts),
+                family=family,
+            )
+        s2s_records = self._vpn_extract_records(payload)
+
+        teleport_server_path = f"v2/api/site/{site}/internet/vpn/teleport/servers"
+        _, payload = await self._vpn_probe_json(
+            teleport_server_path,
+            family=family,
+            attempts=attempts,
+            allow_statuses={400, 404, 204},
+        )
+        teleport_server_records = self._vpn_extract_records(payload)
+
+        teleport_client_path = f"v2/api/site/{site}/internet/vpn/teleport/clients"
+        _, payload = await self._vpn_probe_json(
+            teleport_client_path,
+            family=family,
+            attempts=attempts,
+            allow_statuses={400, 404, 204},
+        )
+        teleport_client_records = self._vpn_extract_records(payload)
+
+        snapshot = VpnSnapshot(
+            family=family,
+            site=site,
+            remote_users=[
+                self._normalize_remote_user_connection(record, family=family, site=site)
+                for record in remote_records
+                if isinstance(record, dict)
+            ],
+            s2s_peers=[
+                self._normalize_s2s_connection(record, family=family, site=site)
+                for record in s2s_records
+                if isinstance(record, dict)
+            ],
+            teleport_servers=[
+                self._normalize_teleport_server_connection(
+                    record, family=family, site=site
+                )
+                for record in teleport_server_records
+                if isinstance(record, dict)
+            ],
+            teleport_clients=[
+                self._normalize_teleport_client_connection(
+                    record, family=family, site=site
+                )
+                for record in teleport_client_records
+                if isinstance(record, dict)
+            ],
+            attempts=list(attempts),
+        )
+        return snapshot
+
+    async def _probe_legacy(self, site: str) -> VpnSnapshot:
+        """Probe legacy UniFi Network VPN endpoints."""
+
+        attempts: List[VpnProbeAttempt] = []
+        family = VpnFamily.LEGACY
+
+        remote_records: List[Dict[str, Any]] = []
+        for remote_path in (
+            f"api/s/{site}/list/remoteuser",
+            f"api/s/{site}/stat/remote-user",
+        ):
+            status, payload = await self._vpn_probe_json(
+                remote_path,
+                family=family,
+                attempts=attempts,
+                allow_statuses={400, 404},
+            )
+            if status in {400, 404}:
+                continue
+            remote_records.extend(self._vpn_extract_records(payload))
+            break
+        else:
+            raise VpnProbeError(
+                "Legacy remote user endpoints unavailable",
+                attempts=list(attempts),
+                family=family,
+            )
+
+        s2s_records: List[Dict[str, Any]] = []
+        s2s_success = False
+        for s2s_path in (
+            f"api/s/{site}/stat/s2speer",
+            f"api/s/{site}/stat/s2s",
+        ):
+            status, payload = await self._vpn_probe_json(
+                s2s_path,
+                family=family,
+                attempts=attempts,
+                allow_statuses={400, 404},
+            )
+            if status in {400, 404}:
+                continue
+            s2s_records.extend(self._vpn_extract_records(payload))
+            s2s_success = True
+        if not s2s_success:
+            raise VpnProbeError(
+                "Legacy site-to-site endpoints unavailable",
+                attempts=list(attempts),
+                family=family,
+            )
+
+        teleport_server_records: List[Dict[str, Any]] = []
+        status, payload = await self._vpn_probe_json(
+            f"api/s/{site}/stat/teleport/servers",
+            family=family,
+            attempts=attempts,
+            allow_statuses={400, 404},
+        )
+        if status not in {400, 404}:
+            teleport_server_records = self._vpn_extract_records(payload)
+
+        teleport_client_records: List[Dict[str, Any]] = []
+        status, payload = await self._vpn_probe_json(
+            f"api/s/{site}/stat/teleport/clients",
+            family=family,
+            attempts=attempts,
+            allow_statuses={400, 404},
+        )
+        if status not in {400, 404}:
+            teleport_client_records = self._vpn_extract_records(payload)
+
+        snapshot = VpnSnapshot(
+            family=family,
+            site=site,
+            remote_users=[
+                self._normalize_remote_user_connection(record, family=family, site=site)
+                for record in remote_records
+                if isinstance(record, dict)
+            ],
+            s2s_peers=[
+                self._normalize_s2s_connection(record, family=family, site=site)
+                for record in s2s_records
+                if isinstance(record, dict)
+            ],
+            teleport_servers=[
+                self._normalize_teleport_server_connection(
+                    record, family=family, site=site
+                )
+                for record in teleport_server_records
+                if isinstance(record, dict)
+            ],
+            teleport_clients=[
+                self._normalize_teleport_client_connection(
+                    record, family=family, site=site
+                )
+                for record in teleport_client_records
+                if isinstance(record, dict)
+            ],
+            attempts=list(attempts),
+        )
+        return snapshot
+
+    async def get_vpn_snapshot(
+        self,
+        site: Optional[str] = None,
+        *,
+        cache_seconds: int = 0,
+    ) -> VpnSnapshot:
+        """Return the detected VPN snapshot for ``site``."""
+
+        site_name = site or self._site_name
+        now = time.time()
+        if cache_seconds > 0:
+            cached = self._vpn_snapshot_cache.get(site_name)
+            if cached and (now - cached[0]) <= cache_seconds:
+                return cached[1]
+
+        if self._vpn_family_override:
+            families: List[VpnFamily] = [self._vpn_family_override]
+        else:
+            cached_family = self._vpn_family_cache.get(site_name)
+            families = []
+            if cached_family:
+                families.append(cached_family)
+            for candidate in (VpnFamily.V2, VpnFamily.LEGACY):
+                if candidate not in families:
+                    families.append(candidate)
+
+        attempts: List[VpnProbeAttempt] = []
+        fallback_used = False
+        last_error: Optional[VpnProbeError] = None
+
+        for index, family in enumerate(families):
+            try:
+                if family == VpnFamily.V2:
+                    snapshot = await self._probe_v2(site_name)
+                else:
+                    snapshot = await self._probe_legacy(site_name)
+            except VpnProbeError as err:
+                attempts.extend(err.attempts)
+                last_error = err
+                if self._vpn_family_override:
+                    break
+                fallback_used = fallback_used or index < len(families) - 1
+                continue
+
+            snapshot.attempts = attempts + snapshot.attempts
+            snapshot.fallback_used = fallback_used or index > 0
+            self._vpn_family_cache[site_name] = snapshot.family
+            self._vpn_snapshot_cache[site_name] = (now, snapshot)
+
+            counts = {
+                "remote_users": len(snapshot.remote_users),
+                "s2s_peers": len(snapshot.s2s_peers),
+                "teleport_servers": len(snapshot.teleport_servers),
+                "teleport_clients": len(snapshot.teleport_clients),
+            }
+            self._vpn_last_probe_errors = {
+                attempt.path: f"{attempt.status}"
+                for attempt in snapshot.attempts
+                if not attempt.ok
+            }
+            self._vpn_last_probe_summary = {
+                "family": snapshot.family.value,
+                "fallback_used": snapshot.fallback_used,
+                "attempts": len(snapshot.attempts),
+                "counts": counts,
+                "site": site_name,
+            }
+
+            return snapshot
+
+        if last_error is None:
+            last_error = VpnProbeError(
+                f"VPN probing failed for site {site_name}",
+                attempts=list(attempts),
+                family=families[-1] if families else VpnFamily.V2,
+            )
+
+        self._vpn_last_probe_errors = {
+            attempt.path: f"{attempt.status}"
+            for attempt in attempts or last_error.attempts
+        }
+        self._vpn_last_probe_summary = {
+            "family": last_error.family.value,
+            "fallback_used": True,
+            "attempts": len(attempts or last_error.attempts),
+            "site": site_name,
+        }
+
+        raise VpnProbeError(
+            str(last_error),
+            attempts=attempts or last_error.attempts,
+            family=last_error.family,
+        ) from last_error
+
+    async def get_vpn_state(self) -> Dict[str, Any]:
+        """Return a legacy dictionary representation of the VPN snapshot."""
+
+        snapshot = await self.get_vpn_snapshot(self._site_name)
+        counts = {
+            "remote_users": len(snapshot.remote_users),
+            "s2s_peers": len(snapshot.s2s_peers),
+            "teleport_servers": len(snapshot.teleport_servers),
+            "teleport_clients": len(snapshot.teleport_clients),
+        }
+        diagnostics = {
+            "family": snapshot.family.value,
+            "fallback_used": snapshot.fallback_used,
+            "attempts": [
+                {
+                    "path": attempt.path,
+                    "status": attempt.status,
+                    "ok": attempt.ok,
+                    "snippet": attempt.snippet,
+                }
+                for attempt in snapshot.attempts
+            ],
+            "counts": counts,
+            "site": snapshot.site,
+        }
+        return {
+            "remote_users": snapshot.remote_users,
+            "s2s_peers": snapshot.s2s_peers,
             "teleport": {
-                "servers": teleport_servers,
-                "clients": teleport_clients,
+                "servers": snapshot.teleport_servers,
+                "clients": snapshot.teleport_clients,
             },
             "counts": counts,
             "diagnostics": diagnostics,

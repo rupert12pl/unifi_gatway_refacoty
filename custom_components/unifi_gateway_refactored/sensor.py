@@ -57,10 +57,6 @@ async def async_setup_entry(
     async_add_entities(static_entities)
 
     health_entities: Dict[str, HealthSensor] = {}
-    vpn_remote_user_entities: Dict[str, UniFiVpnRemoteUserSensor] = {}
-    vpn_s2s_entities: Dict[str, UniFiVpnSiteToSitePeerSensor] = {}
-    vpn_teleport_client_entities: Dict[str, UniFiTeleportClientSensor] = {}
-    vpn_teleport_server_entities: Dict[str, UniFiTeleportServerSensor] = {}
     vpn_diag_entity: Optional[VpnDiagSensor] = None
 
     def _build_health_entities(
@@ -147,9 +143,24 @@ async def async_setup_entry(
         teleport_servers = list(teleport_payload.get("servers") or [])
         teleport_clients = list(teleport_payload.get("clients") or [])
 
+        total_connections = sum(counts.values()) if counts else 0
+        diag_errors = (
+            diagnostics_payload.get("errors")
+            if isinstance(diagnostics_payload, dict)
+            else {}
+        )
+        if diag_errors:
+            state_token = "error"
+        elif total_connections > 0:
+            state_token = "ok"
+        else:
+            state_token = "unknown"
+
         summary_payload = {
-            "state": "OK" if sum(counts.values()) else "ERROR",
+            "state": state_token,
             "counts": counts,
+            "family": diagnostics_payload.get("family"),
+            "fallback_used": diagnostics_payload.get("fallback_used"),
         }
 
         vpn_payload_diag = {
@@ -179,193 +190,6 @@ async def async_setup_entry(
                 site=controller_site,
                 controller_context=controller_context,
             )
-
-        def _friendly_name(kind: str, record: Dict[str, Any], fallback: str) -> str:
-            label = record.get("name") or record.get("username")
-            if isinstance(label, str) and label.strip():
-                return label.strip()
-            if kind == "remote_users":
-                return f"VPN Remote User {fallback}"
-            if kind == "s2s_peers":
-                return f"VPN Site-to-Site {fallback}"
-            if kind == "teleport_clients":
-                return f"Teleport Client {fallback}"
-            if kind == "teleport_servers":
-                return f"Teleport Server {fallback}"
-            return fallback
-
-        def _sync_entities(
-            records: List[Dict[str, Any]],
-            data_key: str,
-            unique_prefix: str,
-            store: Dict[str, SensorEntity],
-            factory: Callable[[str, str], SensorEntity],
-        ) -> None:
-            for record in records:
-                if not isinstance(record, dict):
-                    continue
-                peer_id = record.get("id") or record.get("_id")
-                if not isinstance(peer_id, str) or not peer_id:
-                    peer_id = _stable_peer_key(data_key, record)
-                unique_id = f"{entry.entry_id}::{unique_prefix}::{peer_id}"
-                entity = store.get(unique_id)
-                display = _friendly_name(data_key, record, peer_id)
-                if entity is None:
-                    entity = factory(peer_id, display)
-                    store[unique_id] = entity
-                    ents.append(entity)
-                else:
-                    entity._attr_name = display  # type: ignore[attr-defined]
-
-        _sync_entities(
-            remote_users,
-            "remote_users",
-            "vpn_remote_user",
-            vpn_remote_user_entities,
-            lambda peer_id, name: UniFiVpnRemoteUserSensor(
-                coordinator,
-                client,
-                entry.entry_id,
-                peer_id,
-                name,
-            ),
-        )
-        _sync_entities(
-            s2s_peers,
-            "s2s_peers",
-            "vpn_s2s",
-            vpn_s2s_entities,
-            lambda peer_id, name: UniFiVpnSiteToSitePeerSensor(
-                coordinator,
-                client,
-                entry.entry_id,
-                peer_id,
-                name,
-            ),
-        )
-        _sync_entities(
-            teleport_clients,
-            "teleport_clients",
-            "vpn_teleport_client",
-            vpn_teleport_client_entities,
-            lambda peer_id, name: UniFiTeleportClientSensor(
-                coordinator,
-                client,
-                entry.entry_id,
-                peer_id,
-                name,
-            ),
-        )
-        _sync_entities(
-            teleport_servers,
-            "teleport_servers",
-            "vpn_teleport_server",
-            vpn_teleport_server_entities,
-            lambda peer_id, name: UniFiTeleportServerSensor(
-                coordinator,
-                client,
-                entry.entry_id,
-                peer_id,
-                name,
-            ),
-        )
-
-        return ents
-
-        def _friendly_name(kind: str, record: Dict[str, Any], fallback: str) -> str:
-            if kind == "remote_user":
-                for key in ("username", "name", "user"):
-                    value = record.get(key)
-                    if isinstance(value, str) and value.strip():
-                        return f"VPN Remote User {value.strip()}"
-                return f"VPN Remote User {fallback}"
-            if kind == "site_to_site":
-                for key in ("peer_name", "peer", "name", "remote"):
-                    value = record.get(key)
-                    if isinstance(value, str) and value.strip():
-                        return f"VPN Site-to-Site {value.strip()}"
-                return f"VPN Site-to-Site {fallback}"
-            if kind == "teleport_client":
-                for key in ("name", "peer_name", "client_name"):
-                    value = record.get(key)
-                    if isinstance(value, str) and value.strip():
-                        return f"Teleport Client {value.strip()}"
-                return f"Teleport Client {fallback}"
-            if kind == "teleport_server":
-                for key in ("name", "peer_name", "server_name"):
-                    value = record.get(key)
-                    if isinstance(value, str) and value.strip():
-                        return f"Teleport Server {value.strip()}"
-                return f"Teleport Server {fallback}"
-            return fallback
-
-        def _sync_entities(
-            records: List[Dict[str, Any]],
-            kind: str,
-            store: Dict[str, SensorEntity],
-            factory: Callable[[str, str], SensorEntity],
-        ) -> None:
-            for record in records:
-                if not isinstance(record, dict):
-                    continue
-                stable_key = _stable_peer_key(kind, record)
-                unique_id = f"{entry.entry_id}::vpn::{kind}::{stable_key}"
-                entity = store.get(unique_id)
-                if entity is None:
-                    display = _friendly_name(kind, record, stable_key)
-                    entity = factory(stable_key, display)
-                    store[unique_id] = entity
-                    ents.append(entity)
-
-        _sync_entities(
-            list(snapshot.remote_users),
-            "remote_user",
-            vpn_remote_user_entities,
-            lambda stable_key, name: UniFiVpnRemoteUserSensor(
-                coordinator,
-                client,
-                entry.entry_id,
-                stable_key,
-                name,
-            ),
-        )
-        _sync_entities(
-            list(snapshot.site_to_site),
-            "site_to_site",
-            vpn_s2s_entities,
-            lambda stable_key, name: UniFiVpnSiteToSitePeerSensor(
-                coordinator,
-                client,
-                entry.entry_id,
-                stable_key,
-                name,
-            ),
-        )
-        _sync_entities(
-            list(snapshot.teleport_clients),
-            "teleport_client",
-            vpn_teleport_client_entities,
-            lambda stable_key, name: UniFiTeleportClientSensor(
-                coordinator,
-                client,
-                entry.entry_id,
-                stable_key,
-                name,
-            ),
-        )
-        _sync_entities(
-            list(snapshot.teleport_servers),
-            "teleport_server",
-            vpn_teleport_server_entities,
-            lambda stable_key, name: UniFiTeleportServerSensor(
-                coordinator,
-                client,
-                entry.entry_id,
-                stable_key,
-                name,
-            ),
-        )
-
         return ents
 
     known_wan: set[str] = set()
@@ -1229,7 +1053,7 @@ class VpnDiagSensor(_GatewayDynamicSensor):
 
         state_token = summary_payload.get("state")
         status: Optional[str] = (
-            state_token.strip().upper()
+            state_token.strip().lower()
             if isinstance(state_token, str) and state_token.strip()
             else None
         )
@@ -1239,15 +1063,15 @@ class VpnDiagSensor(_GatewayDynamicSensor):
             for key in ("status", "state", "result", "outcome", "health"):
                 value = source.get(key)
                 if isinstance(value, str) and value.strip():
-                    status = value.strip().upper()
+                    status = value.strip().lower()
                     break
             if status:
                 break
         if not status:
             healthy = summary_payload.get("healthy")
             if isinstance(healthy, bool):
-                status = "OK" if healthy else "ERROR"
-        self._state = status or "UNKNOWN"
+                status = "ok" if healthy else "error"
+        self._state = status or "unknown"
         self._attr_available = bool(summary_payload or diagnostics_payload or vpn_payload)
 
         attrs: Dict[str, Any] = {
@@ -1256,6 +1080,17 @@ class VpnDiagSensor(_GatewayDynamicSensor):
             "diagnostics": diagnostics_payload,
             "counts": counts,
         }
+        family = diagnostics_payload.get("family") or summary_payload.get("family")
+        if family is not None:
+            attrs["family"] = family
+        fallback = diagnostics_payload.get("fallback_used")
+        if fallback is None:
+            fallback = summary_payload.get("fallback_used")
+        if fallback is not None:
+            attrs["fallback_used"] = fallback
+        attempts = diagnostics_payload.get("attempts")
+        if attempts is not None:
+            attrs["attempts"] = attempts
         fetch_errors = diagnostics_payload.get("fetch_errors")
         if fetch_errors not in (None, "", [], {}):
             attrs["fetch_errors"] = fetch_errors
