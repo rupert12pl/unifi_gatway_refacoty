@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from functools import partial
 from typing import Any
@@ -29,7 +30,14 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
-from .sensor import _stable_peer_key, _sanitize_stable_key
+from .sensor import (
+    _stable_peer_key,
+    _sanitize_stable_key,
+    _wan_identifier_candidates,
+    build_lan_unique_id,
+    build_wan_unique_id,
+    build_wlan_unique_id,
+)
 from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -92,6 +100,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.entry_id,
     )
 
+    await _async_migrate_interface_unique_ids(hass, entry, client, coordinator.data)
     await _async_migrate_vpn_unique_ids(hass, entry, client, coordinator.data)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -108,6 +117,75 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             stored.pop(entry.entry_id)
         _LOGGER.debug("UniFi Gateway entry %s unloaded", entry.entry_id)
     return unload_ok
+
+
+async def _async_migrate_interface_unique_ids(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    client: UniFiOSClient,
+    data: UniFiGatewayData | None,
+) -> None:
+    """Normalize WAN/LAN/WLAN sensor unique IDs."""
+
+    if not data:
+        return
+
+    mapping: dict[str, str] = {}
+    instance_prefix = f"unifigw_{client.instance_key()}"
+
+    for link in data.wan_links:
+        if not isinstance(link, dict):
+            continue
+        link_id = str(link.get("id") or link.get("_id") or link.get("ifname") or "wan")
+        link_name = link.get("name") or link_id
+        identifiers = _wan_identifier_candidates(link_id, link_name, link)
+        canonical = (sorted(identifiers) or [link_id])[0]
+        old_key = hashlib.sha256(canonical.encode()).hexdigest()[:12]
+        for suffix in ("status", "ip", "isp"):
+            old_uid = f"{instance_prefix}_wan_{old_key}_{suffix}"
+            new_uid = build_wan_unique_id(entry.entry_id, link, suffix)
+            mapping[old_uid] = new_uid
+
+    for network in data.lan_networks:
+        if not isinstance(network, dict):
+            continue
+        net_id = str(
+            network.get("_id") or network.get("id") or network.get("name") or "lan"
+        )
+        old_uid = f"{instance_prefix}_lan_{net_id}_clients"
+        new_uid = build_lan_unique_id(entry.entry_id, network)
+        mapping[old_uid] = new_uid
+
+    for wlan in data.wlans:
+        if not isinstance(wlan, dict):
+            continue
+        ssid = wlan.get("name") or wlan.get("ssid") or wlan.get("_id") or wlan.get("id")
+        if not ssid:
+            continue
+        old_uid = f"{instance_prefix}_wlan_{ssid}_clients"
+        new_uid = build_wlan_unique_id(entry.entry_id, wlan)
+        mapping[old_uid] = new_uid
+
+    if not mapping:
+        _LOGGER.debug("No interface unique ID migrations required for entry %s", entry.entry_id)
+        return
+
+    registry = er.async_get(hass)
+
+    async def _migrate(entity_entry: er.RegistryEntry) -> dict[str, str] | None:
+        if entity_entry.config_entry_id != entry.entry_id:
+            return None
+        new_uid = mapping.get(entity_entry.unique_id)
+        if new_uid:
+            return {"new_unique_id": new_uid}
+        return None
+
+    await er.async_migrate_entries(hass, DOMAIN, _migrate)
+    _LOGGER.info(
+        "Migrated %s interface entities to normalized unique IDs for entry %s",
+        len(mapping),
+        entry.entry_id,
+    )
 
 
 async def _async_migrate_vpn_unique_ids(

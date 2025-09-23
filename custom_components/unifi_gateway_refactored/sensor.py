@@ -414,36 +414,67 @@ async def async_setup_entry(
                 diagnostics_payload,
             )
 
+        entity_registry = er.async_get(hass)
+        pending_unique_ids: set[str] = set()
+
+        def _should_skip(unique_id: str) -> bool:
+            entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+            if not entity_id:
+                return False
+            entry_entry = entity_registry.async_get(entity_id)
+            if entry_entry and entry_entry.config_entry_id != entry.entry_id:
+                _LOGGER.warning(
+                    "Skipping entity with unique_id %s for entry %s; already owned by %s",
+                    unique_id,
+                    entry.entry_id,
+                    entity_id,
+                )
+                return True
+            return False
+
         for link in coordinator_data.wan_links:
-            link_id = str(link.get("id"))
-            if link_id in known_wan:
+            link_key = wan_interface_key(link)
+            if link_key in known_wan:
                 continue
-            known_wan.add(link_id)
-            new_entities.extend(
-                [
-                    UniFiGatewayWanStatusSensor(coordinator, client, link),
-                    UniFiGatewayWanIpSensor(coordinator, client, link),
-                    UniFiGatewayWanIspSensor(coordinator, client, link),
-                ]
-            )
+            known_wan.add(link_key)
+            for cls, suffix in (
+                (UniFiGatewayWanStatusSensor, "status"),
+                (UniFiGatewayWanIpSensor, "ip"),
+                (UniFiGatewayWanIspSensor, "isp"),
+            ):
+                unique_id = build_wan_unique_id(entry.entry_id, link, suffix)
+                if unique_id in pending_unique_ids or _should_skip(unique_id):
+                    continue
+                new_entities.append(
+                    cls(coordinator, client, entry.entry_id, link)
+                )
+                pending_unique_ids.add(unique_id)
 
         for network in coordinator_data.lan_networks:
-            net_id = str(network.get("_id") or network.get("id") or network.get("name"))
-            if net_id in known_lan:
+            key = lan_interface_key(network)
+            if key in known_lan:
                 continue
-            known_lan.add(net_id)
+            known_lan.add(key)
+            unique_id = build_lan_unique_id(entry.entry_id, network)
+            if unique_id in pending_unique_ids or _should_skip(unique_id):
+                continue
             new_entities.append(
-                UniFiGatewayLanClientsSensor(coordinator, client, network)
+                UniFiGatewayLanClientsSensor(coordinator, client, entry.entry_id, network)
             )
+            pending_unique_ids.add(unique_id)
 
         for wlan in coordinator_data.wlans:
-            ssid = wlan.get("name") or wlan.get("ssid")
-            if not ssid:
+            ssid_key = wlan_interface_key(wlan)
+            if ssid_key in known_wlan:
                 continue
-            if ssid in known_wlan:
+            known_wlan.add(ssid_key)
+            unique_id = build_wlan_unique_id(entry.entry_id, wlan)
+            if unique_id in pending_unique_ids or _should_skip(unique_id):
                 continue
-            known_wlan.add(ssid)
-            new_entities.append(UniFiGatewayWlanClientsSensor(coordinator, client, wlan))
+            new_entities.append(
+                UniFiGatewayWlanClientsSensor(coordinator, client, entry.entry_id, wlan)
+            )
+            pending_unique_ids.add(unique_id)
 
         if new_entities:
             names = [
@@ -475,6 +506,43 @@ def _sanitize_stable_key(value: str) -> str:
         sanitized = sanitized.replace("__", "_")
     digest = hashlib.sha256(cleaned.encode()).hexdigest()
     return sanitized.strip("_") or digest[:12]
+
+
+def wan_interface_key(link: Dict[str, Any]) -> str:
+    link_id = str(link.get("id") or link.get("_id") or link.get("ifname") or "wan")
+    link_name = link.get("name") or link_id
+    identifiers = _wan_identifier_candidates(link_id, link_name, link)
+    canonical = (sorted(identifiers) or [link_id])[0]
+    return _sanitize_stable_key(canonical or link_id)
+
+
+def lan_interface_key(network: Dict[str, Any]) -> str:
+    token = (
+        network.get("_id")
+        or network.get("id")
+        or network.get("name")
+        or network.get("network_id")
+        or network.get("vlan")
+        or "lan"
+    )
+    return _sanitize_stable_key(str(token))
+
+
+def wlan_interface_key(wlan: Dict[str, Any]) -> str:
+    ssid = wlan.get("name") or wlan.get("ssid") or wlan.get("_id") or wlan.get("id") or "wlan"
+    return _sanitize_stable_key(str(ssid))
+
+
+def build_wan_unique_id(entry_id: str, link: Dict[str, Any], suffix: str) -> str:
+    return f"{entry_id}::wan::{wan_interface_key(link)}::{suffix}"
+
+
+def build_lan_unique_id(entry_id: str, network: Dict[str, Any]) -> str:
+    return f"{entry_id}::lan::{lan_interface_key(network)}::clients"
+
+
+def build_wlan_unique_id(entry_id: str, wlan: Dict[str, Any]) -> str:
+    return f"{entry_id}::wlan::{wlan_interface_key(wlan)}::clients"
 
 
 def _first_non_empty(record: Dict[str, Any], keys: Iterable[str]) -> Optional[str]:
@@ -1159,7 +1227,12 @@ class VpnDiagSensor(_GatewayDynamicSensor):
         counts.update({k: v for k, v in derived_counts.items() if k not in counts})
         diagnostics_payload["counts"] = counts
 
-        status: Optional[str] = None
+        state_token = summary_payload.get("state")
+        status: Optional[str] = (
+            state_token.strip().upper()
+            if isinstance(state_token, str) and state_token.strip()
+            else None
+        )
         for source in (summary_payload, diagnostics_payload):
             if not isinstance(source, dict):
                 continue
@@ -1261,19 +1334,20 @@ class UniFiGatewayWanSensorBase(UniFiGatewaySensorBase):
         self,
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
+        entry_id: str,
         link: Dict[str, Any],
         suffix: str,
         name_suffix: str = "",
     ) -> None:
-        self._link_id = str(link.get("id"))
+        self._entry_id = entry_id
+        self._link_id = str(link.get("id") or link.get("_id") or link.get("ifname") or "wan")
         self._link_name = link.get("name") or self._link_id
         self._identifiers = _wan_identifier_candidates(
             self._link_id, self._link_name, link
         )
         canonical = (sorted(self._identifiers) or [self._link_id])[0]
         self._uid_source = canonical
-        self._uid_key = hashlib.sha256(canonical.encode()).hexdigest()[:12]
-        unique_id = f"unifigw_{client.instance_key()}_wan_{self._uid_key}_{suffix}"
+        unique_id = build_wan_unique_id(entry_id, link, suffix)
         super().__init__(
             coordinator, client, unique_id, f"WAN {self._link_name}{name_suffix}"
         )
@@ -1468,9 +1542,10 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
         self,
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
+        entry_id: str,
         link: Dict[str, Any],
     ) -> None:
-        super().__init__(coordinator, client, link, "status")
+        super().__init__(coordinator, client, entry_id, link, "status")
         self._default_icon = getattr(self, "_attr_icon", None)
 
     def _wan_health_record(self) -> Optional[Dict[str, Any]]:
@@ -1550,9 +1625,10 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
         self,
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
+        entry_id: str,
         link: Dict[str, Any],
     ) -> None:
-        super().__init__(coordinator, client, link, "ip", " IP")
+        super().__init__(coordinator, client, entry_id, link, "ip", " IP")
         self._last_ip: Optional[str] = None
         self._last_source: Optional[str] = None
 
@@ -1620,9 +1696,10 @@ class UniFiGatewayWanIspSensor(UniFiGatewayWanSensorBase):
         self,
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
+        entry_id: str,
         link: Dict[str, Any],
     ) -> None:
-        super().__init__(coordinator, client, link, "isp", " ISP")
+        super().__init__(coordinator, client, entry_id, link, "isp", " ISP")
         self._last_isp: Optional[str] = None
         self._last_source: Optional[str] = None
 
@@ -1706,6 +1783,7 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
         self,
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
+        entry_id: str,
         network: Dict[str, Any],
     ) -> None:
         self._network = network
@@ -1717,9 +1795,7 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
             or network.get("cidr")
         )
         self._ip_network = _to_ip_network(self._subnet)
-        unique_id = (
-            f"unifigw_{client.instance_key()}_lan_{self._network_id}_clients"
-        )
+        unique_id = build_lan_unique_id(entry_id, network)
         super().__init__(
             coordinator,
             client,
@@ -1777,11 +1853,12 @@ class UniFiGatewayWlanClientsSensor(UniFiGatewaySensorBase):
         self,
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
+        entry_id: str,
         wlan: Dict[str, Any],
     ) -> None:
         self._wlan = wlan
         self._ssid = wlan.get("name") or wlan.get("ssid") or "WLAN"
-        unique_id = f"unifigw_{client.instance_key()}_wlan_{self._ssid}_clients"
+        unique_id = build_wlan_unique_id(entry_id, wlan)
         super().__init__(coordinator, client, unique_id, f"WLAN {self._ssid}")
 
     def _clients(self) -> Iterable[Dict[str, Any]]:
