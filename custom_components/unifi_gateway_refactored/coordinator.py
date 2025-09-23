@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
-from .unifi_client import APIError, ConnectivityError, UniFiOSClient, VpnConfigList
+from .unifi_client import APIError, ConnectivityError, UniFiOSClient, VpnState
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,8 +32,7 @@ class UniFiGatewayData:
     wlans: list[dict[str, Any]] = field(default_factory=list)
     clients: list[dict[str, Any]] = field(default_factory=list)
     speedtest: Optional[dict[str, Any]] = None
-    vpn_diagnostics: dict[str, Any] = field(default_factory=dict)
-    vpn_config_list: VpnConfigList | None = None
+    vpn_state: VpnState | None = None
 
 
 class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData]):
@@ -52,79 +51,50 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         client = self._client
         site = client.get_site()
 
-        diagnostics_error: str | None = None
         try:
-            vpn_config = await self.hass.async_add_executor_job(
-                client.get_vpn_config_list,
+            vpn_state = await self.hass.async_add_executor_job(
+                client.get_vpn_summary,
                 site,
             )
         except Exception as err:  # pragma: no cover - defensive guard
-            diagnostics_error = str(err)
+            message = str(err)
             _LOGGER.debug(
-                "Fetching VPN configuration failed: %s",
+                "Fetching VPN summary failed: %s",
                 err,
                 exc_info=_LOGGER.isEnabledFor(logging.DEBUG),
             )
-            vpn_config = VpnConfigList(
-                remote_users=[],
-                s2s_peers=[],
-                teleport_servers=[],
-                teleport_clients=[],
-                attempts=[],
-                winner_paths={},
-            )
+            vpn_state = VpnState(errors={"summary": message[:200]})
 
         counts = {
-            "remote_users": len(vpn_config.remote_users),
-            "s2s_peers": len(vpn_config.s2s_peers),
-            "teleport_servers": len(vpn_config.teleport_servers),
-            "teleport_clients": len(vpn_config.teleport_clients),
+            "remote_users": len(vpn_state.remote_users),
+            "s2s_peers": len(vpn_state.site_to_site_peers),
+            "teleport_servers": len(vpn_state.teleport_servers),
+            "teleport_clients": len(vpn_state.teleport_clients),
         }
 
         peers_total = sum(counts.values())
         if peers_total:
             _LOGGER.info(
-                "VPN configuration discovered: remote_users=%d site_to_site=%d teleport_clients=%d teleport_servers=%d",
+                "VPN overview discovered: remote_users=%d site_to_site=%d teleport_clients=%d teleport_servers=%d",
                 counts["remote_users"],
                 counts["s2s_peers"],
                 counts["teleport_clients"],
                 counts["teleport_servers"],
             )
         else:
-            _LOGGER.info(
-                "VPN configuration contains no entries for site %s",
-                site,
-            )
-
-        diagnostics: Dict[str, Any] = {
-            "counts": counts,
-            "attempts": [
-                {
-                    "path": attempt.path,
-                    "status": attempt.status,
-                    "ok": attempt.ok,
-                    "snippet": attempt.snippet,
-                }
-                for attempt in vpn_config.attempts
-            ],
-            "winner_paths": dict(vpn_config.winner_paths),
-            "site": site,
-        }
-        if diagnostics_error:
-            diagnostics["errors"] = {"config_fetch": diagnostics_error}
+            _LOGGER.info("VPN overview contains no entries for site %s", site)
 
         try:
             return await self.hass.async_add_executor_job(
                 self._fetch_data,
-                vpn_config,
-                diagnostics,
+                vpn_state,
             )
         except (ConnectivityError, APIError) as err:
             raise UpdateFailed(str(err)) from err
+
     def _fetch_data(
         self,
-        vpn_config: VpnConfigList,
-        diagnostics: Dict[str, Any],
+        vpn_state: VpnState,
     ) -> UniFiGatewayData:
         _LOGGER.debug(
             "Starting UniFi Gateway data fetch for instance %s",
@@ -183,7 +153,12 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 }
             purpose = str(net.get("purpose") or net.get("role") or "").lower()
             name = net.get("name") or ""
-            if "vpn" in purpose or "wan" in purpose or net.get("is_vpn") or net.get("wan_network"):
+            if (
+                "vpn" in purpose
+                or "wan" in purpose
+                or net.get("is_vpn")
+                or net.get("wan_network")
+            ):
                 continue
             if "wan" in name.lower():
                 continue
@@ -230,8 +205,6 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         except APIError as err:
             _LOGGER.debug("Speedtest trigger failed: %s", err)
 
-        vpn_diagnostics = dict(diagnostics)
-
         data = UniFiGatewayData(
             controller=controller_info,
             health=health,
@@ -246,14 +219,14 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             wlans=wlans,
             clients=clients_all,
             speedtest=speedtest,
-            vpn_diagnostics=vpn_diagnostics,
-            vpn_config_list=vpn_config,
+            vpn_state=vpn_state,
         )
         _LOGGER.debug(
             "Completed UniFi Gateway data fetch for instance %s",
             self._client.instance_key(),
         )
         return data
+
     def _derive_wan_links_from_networks(
         self, networks: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:

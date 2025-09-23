@@ -10,6 +10,8 @@ from tests.helpers import load_stubs
 
 load_stubs()
 
+# ruff: noqa: E402
+
 from homeassistant.config_entries import ConfigEntry
 
 from custom_components.unifi_gateway_refactored import sensor
@@ -74,15 +76,18 @@ def test_build_health_entities_recreates_sensor_for_same_entry(
     monkeypatch.setattr(sensor.er, "async_get", lambda _hass: registry)
 
     health_entities: dict[str, sensor.HealthSensor] = {}
+    created_unique_ids: set[str] = set()
     created = sensor._build_health_entities(
         hass=object(),
         entry=config_entry,
         health=[{"subsystem": "www", "status": "ok"}],
         health_entities=health_entities,
         client=DummyClient(),
+        site_key="site",
+        created_unique_ids=created_unique_ids,
     )
 
-    uid = f"{config_entry.entry_id}-health-www"
+    uid = f"{config_entry.entry_id}|site|health::{sensor._sanitize_stable_key('www')}"
     assert registry.requested_unique_ids == [uid]
     assert len(created) == 1
     assert uid in health_entities
@@ -101,15 +106,18 @@ def test_build_health_entities_restores_sensor_after_restart(
 
     # First run populates the registry and active health entity mapping.
     initial_entities: dict[str, sensor.HealthSensor] = {}
+    created_unique_ids: set[str] = set()
     first_created = sensor._build_health_entities(
         hass=object(),
         entry=config_entry,
         health=payload,
         health_entities=initial_entities,
         client=DummyClient(),
+        site_key="site",
+        created_unique_ids=created_unique_ids,
     )
 
-    uid = f"{config_entry.entry_id}-health-www"
+    uid = f"{config_entry.entry_id}|site|health::{sensor._sanitize_stable_key('www')}"
     assert len(first_created) == 1
     assert uid in initial_entities
 
@@ -121,9 +129,10 @@ def test_build_health_entities_restores_sensor_after_restart(
         health=payload,
         health_entities=restarted_entities,
         client=DummyClient(),
+        site_key="site",
+        created_unique_ids=created_unique_ids,
     )
 
-    uid = f"{config_entry.entry_id}-health-www"
     assert registry.requested_unique_ids == [uid, uid]
     assert len(restarted_created) == 1
     assert restarted_entities[uid] is restarted_created[0]
@@ -138,12 +147,15 @@ def test_build_health_entities_skips_foreign_registry_owner(
     monkeypatch.setattr(sensor.er, "async_get", lambda _hass: registry)
 
     health_entities: dict[str, sensor.HealthSensor] = {}
+    created_unique_ids: set[str] = set()
     created = sensor._build_health_entities(
         hass=object(),
         entry=config_entry,
         health=[{"subsystem": "www", "status": "ok"}],
         health_entities=health_entities,
         client=DummyClient(),
+        site_key="site",
+        created_unique_ids=created_unique_ids,
     )
 
     assert created == []

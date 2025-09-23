@@ -14,7 +14,7 @@ from homeassistant.helpers import entity_registry as er
 
 from .const import DEFAULT_SITE, DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
-from .unifi_client import UniFiOSClient, VpnConfigList
+from .unifi_client import UniFiOSClient, VpnState
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -34,6 +34,8 @@ def _build_health_entities(
     health: Optional[List[Dict[str, Any]]],
     health_entities: Dict[str, HealthSensor],
     client: UniFiOSClient,
+    site_key: str,
+    created_unique_ids: Set[str],
 ) -> List[HealthSensor]:
     ent_reg = er.async_get(hass)
     created: List[HealthSensor] = []
@@ -52,7 +54,7 @@ def _build_health_entities(
             continue
         if subsystem in SUBSYSTEM_SENSORS:
             continue
-        uid = f"{entry.entry_id}-health-{subsystem}"
+        uid = f"{entry.entry_id}|{site_key}|health::{_sanitize_stable_key(subsystem)}"
         seen.add(uid)
         entity = health_entities.get(uid)
         if entity is None:
@@ -72,6 +74,7 @@ def _build_health_entities(
                 controller_context=controller_context,
             )
             health_entities[uid] = entity
+            created_unique_ids.add(uid)
             created.append(entity)
         else:
             entity.set_payload(item, controller_context=controller_context)
@@ -93,23 +96,53 @@ async def async_setup_entry(
     client: UniFiOSClient = data["client"]
     coordinator: UniFiGatewayDataUpdateCoordinator = data["coordinator"]
 
+    await coordinator.async_config_entry_first_refresh()
+    site_key = resolve_site_key(client, coordinator.data)
+    created_unique_ids: Set[str] = set()
+
     static_entities: List[SensorEntity] = []
     for subsystem, (label, icon) in SUBSYSTEM_SENSORS.items():
-        static_entities.append(
-            UniFiGatewaySubsystemSensor(coordinator, client, subsystem, label, icon)
+        entity = UniFiGatewaySubsystemSensor(
+            coordinator, client, entry.entry_id, site_key, subsystem, label, icon
         )
-    static_entities.append(UniFiGatewayAlertsSensor(coordinator, client))
-    static_entities.append(UniFiGatewayFirmwareSensor(coordinator, client))
-    static_entities.append(UniFiGatewaySpeedtestDownloadSensor(coordinator, client))
-    static_entities.append(UniFiGatewaySpeedtestUploadSensor(coordinator, client))
-    static_entities.append(UniFiGatewaySpeedtestPingSensor(coordinator, client))
+        static_entities.append(entity)
+        if entity.unique_id:
+            created_unique_ids.add(entity.unique_id)
+
+    alerts_sensor = UniFiGatewayAlertsSensor(
+        coordinator, client, entry.entry_id, site_key
+    )
+    static_entities.append(alerts_sensor)
+    if alerts_sensor.unique_id:
+        created_unique_ids.add(alerts_sensor.unique_id)
+
+    firmware_sensor = UniFiGatewayFirmwareSensor(
+        coordinator, client, entry.entry_id, site_key
+    )
+    static_entities.append(firmware_sensor)
+    if firmware_sensor.unique_id:
+        created_unique_ids.add(firmware_sensor.unique_id)
+
+    speedtest_download = UniFiGatewaySpeedtestDownloadSensor(
+        coordinator, client, entry.entry_id, site_key
+    )
+    speedtest_upload = UniFiGatewaySpeedtestUploadSensor(
+        coordinator, client, entry.entry_id, site_key
+    )
+    speedtest_ping = UniFiGatewaySpeedtestPingSensor(
+        coordinator, client, entry.entry_id, site_key
+    )
+    for sensor in (speedtest_download, speedtest_upload, speedtest_ping):
+        static_entities.append(sensor)
+        if sensor.unique_id:
+            created_unique_ids.add(sensor.unique_id)
 
     _LOGGER.debug(
         "Adding %s static sensors for entry %s",
         len(static_entities),
         entry.entry_id,
     )
-    async_add_entities(static_entities)
+    async_add_entities(static_entities, update_before_add=True)
 
     health_entities: Dict[str, HealthSensor] = {}
     vpn_diag_entity: Optional[VpnDiagSensor] = None
@@ -126,8 +159,7 @@ async def async_setup_entry(
             "controller_ui": client.get_controller_url(),
             "controller_site": controller_site,
         }
-        vpn_config: VpnConfigList | None = None
-        diagnostics_payload: Dict[str, Any] = {}
+        vpn_state: VpnState = VpnState()
 
         if isinstance(data, UniFiGatewayData):
             controller_info = getattr(data, "controller", {}) or {}
@@ -142,18 +174,17 @@ async def async_setup_entry(
                 ui_candidate = controller_info.get("url")
                 if isinstance(ui_candidate, str) and ui_candidate:
                     controller_context["controller_ui"] = ui_candidate
-            vpn_config = data.vpn_config_list
-            diagnostics_payload = dict(data.vpn_diagnostics or {})
+            if isinstance(data.vpn_state, VpnState):
+                vpn_state = data.vpn_state
         elif isinstance(data, dict):
-            potential = data.get("vpn_config_list")
-            if isinstance(potential, VpnConfigList):
-                vpn_config = potential
-            diagnostics_payload = dict(data.get("vpn_diagnostics") or {})
+            potential = data.get("vpn_state")
+            if isinstance(potential, VpnState):
+                vpn_state = potential
 
-        remote_users = list(vpn_config.remote_users if vpn_config else [])
-        s2s_peers = list(vpn_config.s2s_peers if vpn_config else [])
-        teleport_servers = list(vpn_config.teleport_servers if vpn_config else [])
-        teleport_clients = list(vpn_config.teleport_clients if vpn_config else [])
+        remote_users = list(vpn_state.remote_users)
+        s2s_peers = list(vpn_state.site_to_site_peers)
+        teleport_servers = list(vpn_state.teleport_servers)
+        teleport_clients = list(vpn_state.teleport_clients)
 
         counts = {
             "remote_users": len(remote_users),
@@ -163,7 +194,7 @@ async def async_setup_entry(
         }
         total_connections = sum(counts.values())
 
-        diag_errors = diagnostics_payload.get("errors")
+        diag_errors = vpn_state.errors
         if isinstance(diag_errors, dict) and diag_errors:
             state_token = "error"
         elif total_connections > 0:
@@ -171,38 +202,22 @@ async def async_setup_entry(
         else:
             state_token = "unknown"
 
-        summary_payload = {
-            "state": state_token,
-            "counts": counts,
-        }
-        winner_paths = diagnostics_payload.get("winner_paths")
-        if isinstance(winner_paths, dict):
-            summary_payload["winner_paths"] = dict(winner_paths)
-
-        configured_vpn = {
-            "remote_users": remote_users,
-            "s2s_peers": s2s_peers,
-            "teleport_servers": teleport_servers,
-            "teleport_clients": teleport_clients,
-        }
-
-        diag_uid = f"{entry.entry_id}-vpn-summary"
+        diag_uid = f"{entry.entry_id}|{site_key}|vpn::diagnostics"
         if vpn_diag_entity is None:
             vpn_diag_entity = VpnDiagSensor(
                 unique_id=diag_uid,
                 name="VPN diagnostics",
                 site=controller_site,
-                payload=summary_payload,
-                diagnostics=diagnostics_payload,
-                configured_vpn=configured_vpn,
+                state=state_token,
+                vpn_state=vpn_state,
                 controller_context=controller_context,
             )
             ents.append(vpn_diag_entity)
+            created_unique_ids.add(diag_uid)
         else:
-            vpn_diag_entity.set_payload(
-                summary_payload,
-                diagnostics=diagnostics_payload,
-                configured_vpn=configured_vpn,
+            vpn_diag_entity.set_state(
+                state_token,
+                vpn_state=vpn_state,
                 site=controller_site,
                 controller_context=controller_context,
             )
@@ -226,24 +241,24 @@ async def async_setup_entry(
 
         new_entities: List[SensorEntity] = []
 
-        controller_site: Optional[str] = None
-        controller_info = getattr(coordinator_data, "controller", None)
-        if isinstance(controller_info, dict):
-            site_candidate = controller_info.get("site")
-            if isinstance(site_candidate, str) and site_candidate:
-                controller_site = site_candidate
-
         new_entities.extend(
             _build_health_entities(
-                hass, entry, coordinator_data.health, health_entities, client
+                hass,
+                entry,
+                coordinator_data.health,
+                health_entities,
+                client,
+                site_key,
+                created_unique_ids,
             )
         )
         new_entities.extend(_build_vpn_entities(entry, coordinator_data))
 
         entity_registry = er.async_get(hass)
-        pending_unique_ids: set[str] = set()
 
         def _should_skip(unique_id: str) -> bool:
+            if unique_id in created_unique_ids:
+                return True
             entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
             if not entity_id:
                 return False
@@ -268,39 +283,43 @@ async def async_setup_entry(
                 (UniFiGatewayWanIpSensor, "ip"),
                 (UniFiGatewayWanIspSensor, "isp"),
             ):
-                unique_id = build_wan_unique_id(entry.entry_id, link, suffix)
-                if unique_id in pending_unique_ids or _should_skip(unique_id):
+                unique_id = build_wan_unique_id(entry.entry_id, site_key, link, suffix)
+                if _should_skip(unique_id):
                     continue
                 new_entities.append(
-                    cls(coordinator, client, entry.entry_id, link)
+                    cls(coordinator, client, entry.entry_id, site_key, link)
                 )
-                pending_unique_ids.add(unique_id)
+                created_unique_ids.add(unique_id)
 
         for network in coordinator_data.lan_networks:
             key = lan_interface_key(network)
             if key in known_lan:
                 continue
             known_lan.add(key)
-            unique_id = build_lan_unique_id(entry.entry_id, network)
-            if unique_id in pending_unique_ids or _should_skip(unique_id):
+            unique_id = build_lan_unique_id(entry.entry_id, site_key, network)
+            if _should_skip(unique_id):
                 continue
             new_entities.append(
-                UniFiGatewayLanClientsSensor(coordinator, client, entry.entry_id, network)
+                UniFiGatewayLanClientsSensor(
+                    coordinator, client, entry.entry_id, site_key, network
+                )
             )
-            pending_unique_ids.add(unique_id)
+            created_unique_ids.add(unique_id)
 
         for wlan in coordinator_data.wlans:
             ssid_key = wlan_interface_key(wlan)
             if ssid_key in known_wlan:
                 continue
             known_wlan.add(ssid_key)
-            unique_id = build_wlan_unique_id(entry.entry_id, wlan)
-            if unique_id in pending_unique_ids or _should_skip(unique_id):
+            unique_id = build_wlan_unique_id(entry.entry_id, site_key, wlan)
+            if _should_skip(unique_id):
                 continue
             new_entities.append(
-                UniFiGatewayWlanClientsSensor(coordinator, client, entry.entry_id, wlan)
+                UniFiGatewayWlanClientsSensor(
+                    coordinator, client, entry.entry_id, site_key, wlan
+                )
             )
-            pending_unique_ids.add(unique_id)
+            created_unique_ids.add(unique_id)
 
         if new_entities:
             names = [
@@ -321,13 +340,13 @@ async def async_setup_entry(
 
     _sync_dynamic()
     entry.async_on_unload(coordinator.async_add_listener(_sync_dynamic))
-    # Ensure first refresh happens immediately; dynamic VPN entities will be created.
-    await coordinator.async_request_refresh()
 
 
 def _sanitize_stable_key(value: str) -> str:
     cleaned = value.strip().lower()
-    sanitized = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in cleaned)
+    sanitized = "".join(
+        ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in cleaned
+    )
     while "__" in sanitized:
         sanitized = sanitized.replace("__", "_")
     digest = hashlib.sha256(cleaned.encode()).hexdigest()
@@ -355,20 +374,50 @@ def lan_interface_key(network: Dict[str, Any]) -> str:
 
 
 def wlan_interface_key(wlan: Dict[str, Any]) -> str:
-    ssid = wlan.get("name") or wlan.get("ssid") or wlan.get("_id") or wlan.get("id") or "wlan"
+    ssid = (
+        wlan.get("name")
+        or wlan.get("ssid")
+        or wlan.get("_id")
+        or wlan.get("id")
+        or "wlan"
+    )
     return _sanitize_stable_key(str(ssid))
 
 
-def build_wan_unique_id(entry_id: str, link: Dict[str, Any], suffix: str) -> str:
-    return f"{entry_id}::wan::{wan_interface_key(link)}::{suffix}"
+def resolve_site_key(client: UniFiOSClient, data: UniFiGatewayData | None) -> str:
+    """Return a normalized site identifier for unique_id construction."""
+
+    site_identifier: Optional[str] = None
+    try:
+        site_identifier = client.site_id()
+    except Exception:  # pragma: no cover - defensive
+        site_identifier = None
+    if (
+        not site_identifier
+        and data
+        and isinstance(getattr(data, "controller", None), dict)
+    ):
+        controller_info = data.controller
+        candidate = controller_info.get("site_id") or controller_info.get("site")
+        if isinstance(candidate, str) and candidate:
+            site_identifier = candidate
+    if not site_identifier:
+        site_identifier = client.get_site() or DEFAULT_SITE
+    return _sanitize_stable_key(str(site_identifier))
 
 
-def build_lan_unique_id(entry_id: str, network: Dict[str, Any]) -> str:
-    return f"{entry_id}::lan::{lan_interface_key(network)}::clients"
+def build_wan_unique_id(
+    entry_id: str, site_key: str, link: Dict[str, Any], suffix: str
+) -> str:
+    return f"{entry_id}|{site_key}|wan::{wan_interface_key(link)}::{suffix}"
 
 
-def build_wlan_unique_id(entry_id: str, wlan: Dict[str, Any]) -> str:
-    return f"{entry_id}::wlan::{wlan_interface_key(wlan)}::clients"
+def build_lan_unique_id(entry_id: str, site_key: str, network: Dict[str, Any]) -> str:
+    return f"{entry_id}|{site_key}|lan::{lan_interface_key(network)}::clients"
+
+
+def build_wlan_unique_id(entry_id: str, site_key: str, wlan: Dict[str, Any]) -> str:
+    return f"{entry_id}|{site_key}|wlan::{wlan_interface_key(wlan)}::clients"
 
 
 def _first_non_empty(record: Dict[str, Any], keys: Iterable[str]) -> Optional[str]:
@@ -383,9 +432,7 @@ def _first_non_empty(record: Dict[str, Any], keys: Iterable[str]) -> Optional[st
             continue
         if isinstance(value, list):
             flattened = [
-                str(item).strip()
-                for item in value
-                if item not in (None, "", [], {})
+                str(item).strip() for item in value if item not in (None, "", [], {})
             ]
             if flattened:
                 return ", ".join(flattened)
@@ -452,7 +499,10 @@ def _find_wan_health_record(
             value = record.get(key)
             if isinstance(value, str):
                 normalized = value.strip().lower()
-                if normalized in identifiers or normalized.replace(" ", "") in identifiers:
+                if (
+                    normalized in identifiers
+                    or normalized.replace(" ", "") in identifiers
+                ):
                     return record
             elif value is not None:
                 normalized = str(value).strip().lower()
@@ -461,7 +511,9 @@ def _find_wan_health_record(
     return fallback
 
 
-def _value_from_record(record: Optional[Dict[str, Any]], keys: Iterable[str]) -> Optional[Any]:
+def _value_from_record(
+    record: Optional[Dict[str, Any]], keys: Iterable[str]
+) -> Optional[Any]:
     if not record:
         return None
     for key in keys:
@@ -760,27 +812,24 @@ class VpnDiagSensor(_GatewayDynamicSensor):
         unique_id: str,
         name: str,
         site: str,
-        payload: Dict[str, Any],
-        diagnostics: Optional[Dict[str, Any]] = None,
-        configured_vpn: Optional[Dict[str, Any]] = None,
+        state: str,
+        vpn_state: VpnState,
         controller_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__(unique_id, name, controller_context)
         self._site = site
-        self.set_payload(
-            payload,
-            diagnostics=diagnostics,
-            configured_vpn=configured_vpn,
-            site=site,
-            controller_context=controller_context,
+        self._vpn_state = VpnState()
+        self._counts: Dict[str, int] = {}
+        self._attrs = {}
+        self.set_state(
+            state, vpn_state=vpn_state, site=site, controller_context=controller_context
         )
 
-    def set_payload(
+    def set_state(
         self,
-        summary: Optional[Dict[str, Any]],
+        state: str,
         *,
-        diagnostics: Optional[Dict[str, Any]] = None,
-        configured_vpn: Optional[Dict[str, Any]] = None,
+        vpn_state: VpnState,
         site: Optional[str] = None,
         controller_context: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -788,91 +837,58 @@ class VpnDiagSensor(_GatewayDynamicSensor):
             self._site = site
         if controller_context:
             self.update_context(controller_context)
-        summary_payload = dict(summary or {})
-        self._payload = summary_payload
-        diagnostics_payload = dict(diagnostics or {})
-
-        cfg = {
-            "remote_users": list((configured_vpn or {}).get("remote_users") or []),
-            "s2s_peers": list((configured_vpn or {}).get("s2s_peers") or []),
-            "teleport_servers": list((configured_vpn or {}).get("teleport_servers") or []),
-            "teleport_clients": list((configured_vpn or {}).get("teleport_clients") or []),
+        self._vpn_state = vpn_state
+        counts = {
+            "remote_users": len(vpn_state.remote_users),
+            "s2s_peers": len(vpn_state.site_to_site_peers),
+            "teleport_servers": len(vpn_state.teleport_servers),
+            "teleport_clients": len(vpn_state.teleport_clients),
         }
+        self._counts = counts
 
-        counts = diagnostics_payload.get("counts")
-        if not isinstance(counts, dict):
-            counts = {}
-        derived_counts = {
-            "remote_users": len(cfg["remote_users"]),
-            "s2s_peers": len(cfg["s2s_peers"]),
-            "teleport_servers": len(cfg["teleport_servers"]),
-            "teleport_clients": len(cfg["teleport_clients"]),
-        }
-        for key, value in derived_counts.items():
-            counts.setdefault(key, value)
-        diagnostics_payload["counts"] = counts
-
-        status = summary_payload.get("state")
-        if isinstance(status, str) and status.strip():
-            normalized = status.strip().lower()
-        else:
-            normalized = None
+        normalized = str(state or "").strip().lower()
         if not normalized:
-            for source in (summary_payload, diagnostics_payload):
-                if not isinstance(source, dict):
-                    continue
-                for key in ("status", "state", "result", "outcome", "health"):
-                    value = source.get(key)
-                    if isinstance(value, str) and value.strip():
-                        normalized = value.strip().lower()
-                        break
-                if normalized:
-                    break
-        if not normalized:
-            healthy = summary_payload.get("healthy")
-            if isinstance(healthy, bool):
-                normalized = "ok" if healthy else "error"
-        self._state = normalized or "unknown"
-        self._attr_available = bool(summary_payload or diagnostics_payload or cfg)
+            normalized = "error" if vpn_state.errors else "unknown"
+        self._state = normalized
+        self._attr_available = True
 
         attrs: Dict[str, Any] = {
             "site": self._site,
-            "summary": summary_payload,
-            "diagnostics": diagnostics_payload,
             "counts": counts,
-            "configured_vpn": cfg,
+            "remote_users": list(vpn_state.remote_users),
+            "site_to_site_peers": list(vpn_state.site_to_site_peers),
+            "teleport_servers": list(vpn_state.teleport_servers),
+            "teleport_clients": list(vpn_state.teleport_clients),
         }
-        family = diagnostics_payload.get("family") or summary_payload.get("family")
-        if family is not None:
-            attrs["family"] = family
-        fallback = diagnostics_payload.get("fallback_used")
-        if fallback is None:
-            fallback = summary_payload.get("fallback_used")
-        if fallback is not None:
-            attrs["fallback_used"] = fallback
-        attempts = diagnostics_payload.get("attempts")
-        if attempts is not None:
-            attrs["attempts"] = attempts
-        winner_paths = diagnostics_payload.get("winner_paths")
-        if isinstance(winner_paths, dict) and winner_paths:
-            attrs["winner_paths"] = winner_paths
-        fetch_errors = diagnostics_payload.get("fetch_errors")
-        if fetch_errors not in (None, "", [], {}):
-            attrs["fetch_errors"] = fetch_errors
-        errors_payload = diagnostics_payload.get("errors")
-        if errors_payload not in (None, "", [], {}):
-            attrs["errors"] = errors_payload
-        errors_text = summary_payload.get("errors_text")
-        if errors_text not in (None, "", [], {}):
-            attrs.setdefault("errors_text", errors_text)
+        attempts_attr = [
+            {
+                "path": attempt.path,
+                "status": attempt.status,
+                "ok": attempt.ok,
+                "snippet": attempt.snippet,
+            }
+            for attempt in vpn_state.attempts
+        ]
+        if attempts_attr:
+            attrs["attempts"] = attempts_attr
+        if vpn_state.errors:
+            attrs["errors"] = vpn_state.errors
         self._attrs = attrs
         self._async_write_state()
 
     def mark_stale(self) -> None:  # type: ignore[override]
-        self._payload = {}
         self._state = None
         self._attr_available = False
-        self._attrs = {"site": self._site, "configured_vpn": {}}
+        self._counts = {}
+        self._attrs = {
+            "site": self._site,
+            "counts": {},
+            "remote_users": [],
+            "site_to_site_peers": [],
+            "teleport_servers": [],
+            "teleport_clients": [],
+            "attempts": [],
+        }
         self._async_write_state()
 
     @property
@@ -926,19 +942,22 @@ class UniFiGatewayWanSensorBase(UniFiGatewaySensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
+        site_key: str,
         link: Dict[str, Any],
         suffix: str,
         name_suffix: str = "",
     ) -> None:
         self._entry_id = entry_id
-        self._link_id = str(link.get("id") or link.get("_id") or link.get("ifname") or "wan")
+        self._link_id = str(
+            link.get("id") or link.get("_id") or link.get("ifname") or "wan"
+        )
         self._link_name = link.get("name") or self._link_id
         self._identifiers = _wan_identifier_candidates(
             self._link_id, self._link_name, link
         )
         canonical = (sorted(self._identifiers) or [self._link_id])[0]
         self._uid_source = canonical
-        unique_id = build_wan_unique_id(entry_id, link, suffix)
+        unique_id = build_wan_unique_id(entry_id, site_key, link, suffix)
         super().__init__(
             coordinator, client, unique_id, f"WAN {self._link_name}{name_suffix}"
         )
@@ -958,11 +977,15 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
         self,
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
+        entry_id: str,
+        site_key: str,
         subsystem: str,
         label: str,
         icon: str,
     ) -> None:
-        unique_id = f"unifigw_{client.instance_key()}_{subsystem}"
+        unique_id = (
+            f"{entry_id}|{site_key}|subsystem::{_sanitize_stable_key(subsystem)}"
+        )
         super().__init__(coordinator, client, unique_id, label)
         self._subsystem = subsystem
         self._attr_icon = icon
@@ -1016,29 +1039,30 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
             if total_found:
                 attrs["num_user_total"] = total
         if self._subsystem == "vpn" and data:
-            diag_payload = dict(getattr(data, "vpn_diagnostics", {}) or {})
-            if diag_payload:
-                attrs["vpn_diagnostics"] = diag_payload
-            config = getattr(data, "vpn_config_list", None)
-            configured_vpn = {
-                "remote_users": list(config.remote_users) if config else [],
-                "s2s_peers": list(config.s2s_peers) if config else [],
-                "teleport_servers": list(config.teleport_servers) if config else [],
-                "teleport_clients": list(config.teleport_clients) if config else [],
+            vpn_state = data.vpn_state or VpnState()
+            counts = {
+                "remote_users": len(vpn_state.remote_users),
+                "site_to_site_peers": len(vpn_state.site_to_site_peers),
+                "teleport_servers": len(vpn_state.teleport_servers),
+                "teleport_clients": len(vpn_state.teleport_clients),
             }
-            attrs["configured_vpn"] = configured_vpn
-            attempts = diag_payload.get("attempts") if diag_payload else None
-            if attempts is not None:
-                attrs["attempts"] = attempts
-            winner_paths = diag_payload.get("winner_paths") if diag_payload else None
-            if isinstance(winner_paths, dict):
-                attrs["winner_paths"] = winner_paths
+            attrs["vpn_counts"] = counts
+            if vpn_state.attempts:
+                attrs["vpn_attempts"] = [
+                    {
+                        "path": attempt.path,
+                        "status": attempt.status,
+                        "ok": attempt.ok,
+                        "snippet": attempt.snippet,
+                    }
+                    for attempt in vpn_state.attempts
+                ]
+            if vpn_state.errors:
+                attrs["vpn_errors"] = vpn_state.errors
         attrs.update(self._controller_attrs())
         return attrs
 
-    def _vpn_disabled(
-        self, record: Dict[str, Any], data: UniFiGatewayData
-    ) -> bool:
+    def _vpn_disabled(self, record: Dict[str, Any], data: UniFiGatewayData) -> bool:
         """Determine if VPN subsystem is simply disabled/unconfigured."""
 
         details: list[str] = []
@@ -1071,31 +1095,17 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
         if record.get("vpn_status") in {"disabled", "off"}:
             return True
 
-        config = getattr(data, "vpn_config_list", None)
-        if config:
-            if not (
-                config.remote_users
-                or config.s2s_peers
-                or config.teleport_servers
-                or config.teleport_clients
+        vpn_state = getattr(data, "vpn_state", None)
+        if isinstance(vpn_state, VpnState):
+            if (
+                not (
+                    vpn_state.remote_users
+                    or vpn_state.site_to_site_peers
+                    or vpn_state.teleport_servers
+                    or vpn_state.teleport_clients
+                )
+                and not vpn_state.errors
             ):
-                return True
-        else:
-            diag_payload = getattr(data, "vpn_diagnostics", {})
-            counts: Dict[str, Any] = {}
-            if isinstance(diag_payload, dict):
-                raw_counts = diag_payload.get("counts")
-                if isinstance(raw_counts, dict):
-                    counts = raw_counts
-            if counts:
-                total = 0
-                for value in counts.values():
-                    coerced = _coerce_int(value)
-                    if coerced:
-                        total += coerced
-                if total == 0:
-                    return True
-            else:
                 return True
 
         return False
@@ -1105,9 +1115,13 @@ class UniFiGatewayAlertsSensor(UniFiGatewaySensorBase):
     _attr_icon = "mdi:information-outline"
 
     def __init__(
-        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        entry_id: str,
+        site_key: str,
     ) -> None:
-        unique_id = f"unifigw_{client.instance_key()}_alerts"
+        unique_id = f"{entry_id}|{site_key}|alerts"
         super().__init__(coordinator, client, unique_id, "Alerts")
 
     @property
@@ -1129,9 +1143,13 @@ class UniFiGatewayFirmwareSensor(UniFiGatewaySensorBase):
     _attr_icon = "mdi:database-plus"
 
     def __init__(
-        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        entry_id: str,
+        site_key: str,
     ) -> None:
-        unique_id = f"unifigw_{client.instance_key()}_firmware"
+        unique_id = f"{entry_id}|{site_key}|firmware_upgradable"
         super().__init__(coordinator, client, unique_id, "Firmware Upgradable")
 
     @property
@@ -1166,9 +1184,10 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
+        site_key: str,
         link: Dict[str, Any],
     ) -> None:
-        super().__init__(coordinator, client, entry_id, link, "status")
+        super().__init__(coordinator, client, entry_id, site_key, link, "status")
         self._default_icon = getattr(self, "_attr_icon", None)
 
     def _wan_health_record(self) -> Optional[Dict[str, Any]]:
@@ -1249,9 +1268,10 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
+        site_key: str,
         link: Dict[str, Any],
     ) -> None:
-        super().__init__(coordinator, client, entry_id, link, "ip", " IP")
+        super().__init__(coordinator, client, entry_id, site_key, link, "ip", " IP")
         self._last_ip: Optional[str] = None
         self._last_source: Optional[str] = None
 
@@ -1320,9 +1340,10 @@ class UniFiGatewayWanIspSensor(UniFiGatewayWanSensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
+        site_key: str,
         link: Dict[str, Any],
     ) -> None:
-        super().__init__(coordinator, client, entry_id, link, "isp", " ISP")
+        super().__init__(coordinator, client, entry_id, site_key, link, "isp", " ISP")
         self._last_isp: Optional[str] = None
         self._last_source: Optional[str] = None
 
@@ -1407,18 +1428,19 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
+        site_key: str,
         network: Dict[str, Any],
     ) -> None:
         self._network = network
-        self._network_id = str(network.get("_id") or network.get("id") or network.get("name"))
+        self._network_id = str(
+            network.get("_id") or network.get("id") or network.get("name")
+        )
         self._network_name = network.get("name") or f"VLAN {network.get('vlan')}"
         self._subnet = (
-            network.get("subnet")
-            or network.get("ip_subnet")
-            or network.get("cidr")
+            network.get("subnet") or network.get("ip_subnet") or network.get("cidr")
         )
         self._ip_network = _to_ip_network(self._subnet)
-        unique_id = build_lan_unique_id(entry_id, network)
+        unique_id = build_lan_unique_id(entry_id, site_key, network)
         super().__init__(
             coordinator,
             client,
@@ -1429,9 +1451,10 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
     def _matches_client(self, client: Dict[str, Any]) -> bool:
         if str(client.get("network_id")) == self._network_id:
             return True
+        network_name = client.get("network")
         if (
-            client.get("network")
-            and client.get("network").lower() == self._network_name.lower()
+            isinstance(network_name, str)
+            and network_name.lower() == self._network_name.lower()
         ):
             return True
         if self._ip_network and client.get("ip"):
@@ -1477,11 +1500,12 @@ class UniFiGatewayWlanClientsSensor(UniFiGatewaySensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
+        site_key: str,
         wlan: Dict[str, Any],
     ) -> None:
         self._wlan = wlan
         self._ssid = wlan.get("name") or wlan.get("ssid") or "WLAN"
-        unique_id = build_wlan_unique_id(entry_id, wlan)
+        unique_id = build_wlan_unique_id(entry_id, site_key, wlan)
         super().__init__(coordinator, client, unique_id, f"WLAN {self._ssid}")
 
     def _clients(self) -> Iterable[Dict[str, Any]]:
@@ -1526,10 +1550,12 @@ class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
         self,
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
+        entry_id: str,
+        site_key: str,
         kind: str,
         label: str,
     ) -> None:
-        unique_id = f"unifigw_{client.instance_key()}_speedtest_{kind}"
+        unique_id = f"{entry_id}|{site_key}|speedtest::{kind}"
         super().__init__(coordinator, client, unique_id, label)
         self._kind = kind
 
@@ -1563,9 +1589,15 @@ class UniFiGatewaySpeedtestDownloadSensor(UniFiGatewaySpeedtestSensor):
     _attr_native_unit_of_measurement = "Mbps"
 
     def __init__(
-        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        entry_id: str,
+        site_key: str,
     ) -> None:
-        super().__init__(coordinator, client, "down", "Speedtest Download")
+        super().__init__(
+            coordinator, client, entry_id, site_key, "down", "Speedtest Download"
+        )
 
     @property
     def native_value(self) -> Optional[float]:
@@ -1581,9 +1613,15 @@ class UniFiGatewaySpeedtestUploadSensor(UniFiGatewaySpeedtestSensor):
     _attr_native_unit_of_measurement = "Mbps"
 
     def __init__(
-        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        entry_id: str,
+        site_key: str,
     ) -> None:
-        super().__init__(coordinator, client, "up", "Speedtest Upload")
+        super().__init__(
+            coordinator, client, entry_id, site_key, "up", "Speedtest Upload"
+        )
 
     @property
     def native_value(self) -> Optional[float]:
@@ -1599,9 +1637,15 @@ class UniFiGatewaySpeedtestPingSensor(UniFiGatewaySpeedtestSensor):
     _attr_native_unit_of_measurement = "ms"
 
     def __init__(
-        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        entry_id: str,
+        site_key: str,
     ) -> None:
-        super().__init__(coordinator, client, "ping", "Speedtest Ping")
+        super().__init__(
+            coordinator, client, entry_id, site_key, "ping", "Speedtest Ping"
+        )
 
     @property
     def native_value(self) -> Optional[float]:
