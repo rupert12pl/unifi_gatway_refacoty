@@ -28,61 +28,6 @@ SUBSYSTEM_SENSORS: Dict[str, tuple[str, str]] = {
 }
 
 
-def _build_health_entities(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    health: Optional[List[Dict[str, Any]]],
-    health_entities: Dict[str, HealthSensor],
-    client: UniFiOSClient,
-) -> List[HealthSensor]:
-    ent_reg = er.async_get(hass)
-    created: List[HealthSensor] = []
-    seen: Set[str] = set()
-    controller_context = {
-        "controller_api": client.get_controller_api_url(),
-        "controller_ui": client.get_controller_url(),
-        "controller_site": client.get_site(),
-    }
-
-    for item in health or []:
-        if not isinstance(item, dict):
-            continue
-        subsystem = str(item.get("subsystem") or "").lower()
-        if subsystem not in {"lan", "wan", "wlan", "www"}:
-            continue
-        if subsystem in SUBSYSTEM_SENSORS:
-            continue
-        uid = f"{entry.entry_id}-health-{subsystem}"
-        seen.add(uid)
-        entity = health_entities.get(uid)
-        if entity is None:
-            entity_id = ent_reg.async_get_entity_id("sensor", DOMAIN, uid)
-            if entity_id:
-                entry_record = ent_reg.async_get(entity_id)
-                if (
-                    entry_record
-                    and getattr(entry_record, "config_entry_id", None)
-                    != entry.entry_id
-                ):
-                    continue
-            entity = HealthSensor(
-                unique_id=uid,
-                name=subsystem.upper(),
-                payload=item,
-                controller_context=controller_context,
-            )
-            health_entities[uid] = entity
-            created.append(entity)
-        else:
-            entity.set_payload(item, controller_context=controller_context)
-
-    for uid, entity in list(health_entities.items()):
-        if uid not in seen:
-            entity.mark_stale()
-
-    return created
-
-
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -113,6 +58,49 @@ async def async_setup_entry(
 
     health_entities: Dict[str, HealthSensor] = {}
     vpn_diag_entity: Optional[VpnDiagSensor] = None
+
+    def _build_health_entities(
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        health: Optional[List[Dict[str, Any]]],
+    ) -> List[SensorEntity]:
+        ent_reg = er.async_get(hass)
+        created: List[SensorEntity] = []
+        seen: Set[str] = set()
+        controller_context = {
+            "controller_api": client.get_controller_api_url(),
+            "controller_ui": client.get_controller_url(),
+            "controller_site": client.get_site(),
+        }
+
+        for item in health or []:
+            if not isinstance(item, dict):
+                continue
+            subsystem = str(item.get("subsystem") or "").lower()
+            if subsystem not in {"lan", "wan", "wlan", "www"}:
+                continue
+            uid = f"{entry.entry_id}-health-{subsystem}"
+            seen.add(uid)
+            entity = health_entities.get(uid)
+            if entity is None:
+                if ent_reg.async_get_entity_id("sensor", DOMAIN, uid):
+                    continue
+                entity = HealthSensor(
+                    unique_id=uid,
+                    name=subsystem.upper(),
+                    payload=item,
+                    controller_context=controller_context,
+                )
+                health_entities[uid] = entity
+                created.append(entity)
+            else:
+                entity.set_payload(item, controller_context=controller_context)
+
+        for uid, entity in list(health_entities.items()):
+            if uid not in seen:
+                entity.mark_stale()
+
+        return created
 
     def _build_vpn_entities(
         entry: ConfigEntry, data: Dict[str, Any] | UniFiGatewayData | None
@@ -234,9 +222,7 @@ async def async_setup_entry(
                 controller_site = site_candidate
 
         new_entities.extend(
-            _build_health_entities(
-                hass, entry, coordinator_data.health, health_entities, client
-            )
+            _build_health_entities(hass, entry, coordinator_data.health)
         )
         new_entities.extend(_build_vpn_entities(entry, coordinator_data))
 
