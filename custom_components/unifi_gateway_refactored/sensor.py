@@ -802,7 +802,6 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
         network: Dict[str, Any],
     ) -> None:
         self._network = network
-        self._lan_key = lan_interface_key(network)
         self._network_id = str(network.get("_id") or network.get("id") or network.get("name"))
         self._network_name = network.get("name") or f"VLAN {network.get('vlan')}"
         self._subnet = (
@@ -811,8 +810,6 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
             or network.get("cidr")
         )
         self._ip_network = _to_ip_network(self._subnet)
-        self._last_client_count: Optional[int] = None
-        self._last_ip_leases: Optional[int] = None
         unique_id = build_lan_unique_id(entry_id, network)
         super().__init__(
             coordinator,
@@ -820,15 +817,6 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
             unique_id,
             f"LAN {self._network_name}",
         )
-
-    def _current_network(self) -> Dict[str, Any]:
-        data = self.coordinator.data
-        if data:
-            for candidate in data.lan_networks:
-                if lan_interface_key(candidate) == self._lan_key:
-                    self._network = candidate
-                    break
-        return self._network
 
     def _matches_client(self, client: Dict[str, Any]) -> bool:
         if str(client.get("network_id")) == self._network_id:
@@ -850,49 +838,21 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
         data = self.coordinator.data
         return data.clients if data else []
 
-    def _refresh_client_stats(self) -> tuple[int, int]:
-        total = 0
-        leases = 0
-        for client in self._clients():
-            if not self._matches_client(client):
-                continue
-            total += 1
-            if client.get("ip"):
-                leases += 1
-        self._last_client_count = total
-        self._last_ip_leases = leases
-        return total, leases
-
     @property
     def native_value(self) -> Optional[int]:
-        total, _ = self._refresh_client_stats()
-        return total
+        return sum(1 for client in self._clients() if self._matches_client(client))
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        if self._last_client_count is None or self._last_ip_leases is None:
-            self._refresh_client_stats()
-
-        leases = self._last_ip_leases or 0
-        network = self._current_network() or {}
-        subnet = (
-            network.get("subnet")
-            or network.get("ip_subnet")
-            or network.get("cidr")
-            or self._subnet
+        leases = sum(
+            1
+            for client in self._clients()
+            if self._matches_client(client) and client.get("ip")
         )
-        vlan_id = network.get("vlan") if network else None
-        ip_address = _extract_network_ip_address(network)
-        if not ip_address:
-            ip_address = _extract_ip_from_value(subnet)
-        if vlan_id is None:
-            vlan_id = self._network.get("vlan")
         attrs = {
             "network_id": self._network_id,
-            "subnet": subnet,
-            "vlan_id": vlan_id,
-            "ip_address": ip_address,
-            "client_count": self._last_client_count,
+            "subnet": self._subnet,
+            "vlan_id": self._network.get("vlan"),
             "ip_leases": leases,
         }
         attrs.update(self._controller_attrs())
@@ -1052,63 +1012,3 @@ def _to_ip_network(value: Optional[str]):
         return ipaddress.ip_network(value, strict=False)
     except ValueError:
         return None
-
-
-def _extract_ip_from_value(value: Any) -> Optional[str]:
-    if value in (None, ""):
-        return None
-    if isinstance(value, str):
-        candidate = value.strip()
-        if not candidate:
-            return None
-        if "/" in candidate:
-            try:
-                interface = ipaddress.ip_interface(candidate)
-                return str(interface.ip)
-            except ValueError:
-                pass
-            prefix, _, _ = candidate.partition("/")
-            try:
-                return str(ipaddress.ip_address(prefix.strip()))
-            except ValueError:
-                return None
-        try:
-            return str(ipaddress.ip_address(candidate))
-        except ValueError:
-            return None
-    if isinstance(value, (list, tuple)):
-        for item in value:
-            result = _extract_ip_from_value(item)
-            if result:
-                return result
-        return None
-    if isinstance(value, dict):
-        for key in ("ip", "address", "gateway", "value"):
-            result = _extract_ip_from_value(value.get(key))
-            if result:
-                return result
-        return None
-    return None
-
-
-def _extract_network_ip_address(network: Dict[str, Any]) -> Optional[str]:
-    if not isinstance(network, dict):
-        return None
-    for key in (
-        "gateway",
-        "gateway_ip",
-        "router_ip",
-        "dhcpd_gateway",
-        "ip",
-        "ip_address",
-        "wan_ip",
-        "wan_gateway",
-    ):
-        result = _extract_ip_from_value(network.get(key))
-        if result:
-            return result
-    for key in ("subnet", "ip_subnet", "cidr"):
-        result = _extract_ip_from_value(network.get(key))
-        if result:
-            return result
-    return None
