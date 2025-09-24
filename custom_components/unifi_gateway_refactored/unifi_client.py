@@ -144,6 +144,14 @@ class UniFiOSClient:
             return f"{base}/{path.lstrip('/')}"
         return base
 
+    def _site_v2_path(self, path: str = "") -> str:
+        """Return the UniFi Network v2 API path for the configured site."""
+
+        base = f"v2/api/site/{self._site_name}".rstrip("/")
+        if path:
+            return f"{base}/{path.lstrip('/')}"
+        return base
+
     def site_name(self) -> str:
         """Return the textual site name used for API requests."""
 
@@ -646,17 +654,30 @@ class UniFiOSClient:
 
     def get_vpn_remote_users(self) -> List[Dict[str, Any]]:
         contexts = (
-            ("list/remoteuser", ("remote_users", "users", "remoteUser")),
-            ("list/vpn", ("remote_users", "remoteUsers", "users", "remote_user")),
+            (
+                self._site_v2_path("vpn/remote-access/users"),
+                ("users", "remote_users", "remoteUsers", "records"),
+            ),
+            (
+                self._site_v2_path("vpn/remote-access/active-users"),
+                ("users", "remote_users", "remoteUsers", "records"),
+            ),
+            (
+                self._site_path("list/remoteuser"),
+                ("remote_users", "users", "remoteUser", "list"),
+            ),
+            (
+                self._site_path("list/vpn"),
+                ("remote_users", "remoteUsers", "users", "remote_user"),
+            ),
         )
-        for path, nested_keys in contexts:
-            api_path = self._site_path(path)
+        for api_path, nested_keys in contexts:
             try:
                 payload = self._get(api_path)
             except APIError as err:
-                self._log_api_error(path, err, context="VPN remote-user")
+                self._log_api_error(api_path, err, context="VPN remote-user")
                 continue
-            self._mark_api_success(path, context="VPN remote-user")
+            self._mark_api_success(api_path, context="VPN remote-user")
             if not payload:
                 continue
             users = self._extract_list(payload)
@@ -668,17 +689,30 @@ class UniFiOSClient:
 
     def get_vpn_peers_status(self) -> List[Dict[str, Any]]:
         contexts = (
-            ("stat/vpn", ("peers", "tunnels", "site_to_site", "vpn_peers")),
-            ("list/vpn", ("peers", "site_to_site", "vpn_peers", "s2s", "s2s_peers")),
+            (
+                self._site_v2_path("vpn/site-to-site/peers"),
+                ("peers", "vpn_peers", "site_to_site", "s2s", "items"),
+            ),
+            (
+                self._site_v2_path("vpn/site-to-site/peer-status"),
+                ("peers", "vpn_peers", "site_to_site", "s2s", "items"),
+            ),
+            (
+                self._site_path("stat/vpn"),
+                ("peers", "tunnels", "site_to_site", "vpn_peers"),
+            ),
+            (
+                self._site_path("list/vpn"),
+                ("peers", "site_to_site", "vpn_peers", "s2s", "s2s_peers"),
+            ),
         )
-        for path, nested_keys in contexts:
-            api_path = self._site_path(path)
+        for api_path, nested_keys in contexts:
             try:
                 payload = self._get(api_path)
             except APIError as err:
-                self._log_api_error(path, err, context="VPN peer")
+                self._log_api_error(api_path, err, context="VPN peer")
                 continue
-            self._mark_api_success(path, context="VPN peer")
+            self._mark_api_success(api_path, context="VPN peer")
             if not payload:
                 continue
             peers = self._extract_list(payload)
@@ -689,18 +723,20 @@ class UniFiOSClient:
         return []
 
     def get_wan_links(self) -> List[Dict[str, Any]]:
-        for path in (
-            "internet/wan",
-            "stat/waninfo",
-            "stat/wan",
-            "rest/internet",
-        ):
+        paths = (
+            self._site_v2_path("internet/wan/links"),
+            self._site_path("internet/wan"),
+            self._site_path("stat/waninfo"),
+            self._site_path("stat/wan"),
+            self._site_path("rest/internet"),
+        )
+        for api_path in paths:
             try:
-                links = self._get_list(self._site_path(path))
+                links = self._get_list(api_path)
             except APIError as err:
                 if err.status_code == 400:
                     LOGGER.debug(
-                        "UniFi endpoint %s unavailable (HTTP 400): %s", path, err
+                        "UniFi endpoint %s unavailable (HTTP 400): %s", api_path, err
                     )
                     continue
                 raise
