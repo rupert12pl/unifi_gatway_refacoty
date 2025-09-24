@@ -18,7 +18,8 @@
           "port": "Port",
           "site_id": "Site ID",
           "use_proxy_prefix": "Use /proxy/network prefix",
-          "timeout": "HTTP timeout (seconds)"
+          "timeout": "HTTP timeout (seconds)",
+          "speedtest_interval": "Speedtest interval (minutes)"
         }
       }
     },
@@ -42,7 +43,8 @@
           "site_id": "Site ID",
           "verify_ssl": "Verify SSL (bool or CA path)",
           "use_proxy_prefix": "Use /proxy/network prefix",
-          "timeout": "HTTP timeout (seconds)"
+          "timeout": "HTTP timeout (seconds)",
+          "speedtest_interval": "Speedtest interval (minutes)"
         }
       }
     },
