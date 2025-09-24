@@ -7,7 +7,8 @@ import logging
 import socket
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+import ipaddress
+from typing import Any, Dict, Iterable, List, Optional
 
 import requests
 from urllib.parse import urlsplit
@@ -374,6 +375,29 @@ class UniFiOSClient:
                 return [dict(v) for v in payload.values()]  # type: ignore[arg-type]
         return []
 
+    @staticmethod
+    def _safe_list(obj: Any) -> List[Any]:
+        if obj is None:
+            return []
+        if isinstance(obj, list):
+            return [item for item in obj if item is not None]
+        if isinstance(obj, dict):
+            for value in obj.values():
+                nested = UniFiOSClient._safe_list(value)
+                if nested:
+                    return nested
+            return []
+        return [obj]
+
+    @staticmethod
+    def _ip_in_cidr(ip: Optional[str], cidr: Optional[str]) -> bool:
+        if not ip or not cidr:
+            return False
+        try:
+            return ipaddress.ip_address(ip) in ipaddress.ip_network(cidr, strict=False)
+        except ValueError:
+            return False
+
     def _get_list(self, path: str, *, timeout: Optional[int] = None) -> List[Dict[str, Any]]:
         try:
             payload = self._request_json("GET", path, timeout=timeout)
@@ -557,11 +581,79 @@ class UniFiOSClient:
         return []
 
     def get_clients(self) -> List[Dict[str, Any]]:
-        for path in ("stat/sta", "stat/associated", "stat/user"):
+        for path in ("stat/sta", "stat/alluser", "stat/associated", "stat/user"):
             clients = self._get_list(self._site_path(path))
             if clients:
                 return clients
         return self._get_list(self._site_path("stat/alluser"))
+
+    def _log_api_error(self, path: str, err: APIError, *, context: str) -> None:
+        if err.expected or err.status_code in (400, 401, 403, 404):
+            _LOGGER.debug("UniFi %s endpoint %s unavailable: %s", context, path, err)
+        else:
+            _LOGGER.error("Error calling UniFi %s endpoint %s: %s", context, path, err)
+
+    def _extract_from_nested_lists(
+        self, payload: Any, keys: Iterable[str]
+    ) -> List[Dict[str, Any]]:
+        if isinstance(payload, dict):
+            for key in keys:
+                value = payload.get(key)
+                if value is None:
+                    continue
+                extracted = [
+                    item for item in self._safe_list(value) if isinstance(item, dict)
+                ]
+                if extracted:
+                    return extracted
+            for value in payload.values():
+                if isinstance(value, dict):
+                    nested = self._extract_from_nested_lists(value, keys)
+                    if nested:
+                        return nested
+        return []
+
+    def get_vpn_remote_users(self) -> List[Dict[str, Any]]:
+        contexts = (
+            ("list/remoteuser", ("remote_users", "users", "remoteUser")),
+            ("list/vpn", ("remote_users", "remoteUsers", "users", "remote_user")),
+        )
+        for path, nested_keys in contexts:
+            api_path = self._site_path(path)
+            try:
+                payload = self._get(api_path)
+            except APIError as err:
+                self._log_api_error(path, err, context="VPN remote-user")
+                continue
+            if not payload:
+                continue
+            users = self._extract_list(payload)
+            if not users:
+                users = self._extract_from_nested_lists(payload, nested_keys)
+            if users:
+                return users
+        return []
+
+    def get_vpn_peers_status(self) -> List[Dict[str, Any]]:
+        contexts = (
+            ("stat/vpn", ("peers", "tunnels", "site_to_site", "vpn_peers")),
+            ("list/vpn", ("peers", "site_to_site", "vpn_peers", "s2s", "s2s_peers")),
+        )
+        for path, nested_keys in contexts:
+            api_path = self._site_path(path)
+            try:
+                payload = self._get(api_path)
+            except APIError as err:
+                self._log_api_error(path, err, context="VPN peer")
+                continue
+            if not payload:
+                continue
+            peers = self._extract_list(payload)
+            if not peers:
+                peers = self._extract_from_nested_lists(payload, nested_keys)
+            if peers:
+                return peers
+        return []
 
     def get_wan_links(self) -> List[Dict[str, Any]]:
         for path in (

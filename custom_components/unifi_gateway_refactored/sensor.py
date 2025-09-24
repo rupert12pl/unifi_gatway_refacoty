@@ -4,7 +4,8 @@ from datetime import timedelta
 import hashlib
 import logging
 import ipaddress
-from typing import Any, Dict, Iterable, List, Optional
+import time
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
@@ -12,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import Throttle
 from .const import CONF_HOST, DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, UniFiOSClient
@@ -21,6 +23,104 @@ _LOGGER = logging.getLogger(__name__)
 
 
 MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=30)
+
+
+class UniFiGatewayVpnDataCache:
+    """Cache for VPN-related API responses shared across sensors."""
+
+    def __init__(self, client: UniFiOSClient) -> None:
+        self._client = client
+        self._remote_users: List[Dict[str, Any]] = []
+        self._peers: List[Dict[str, Any]] = []
+        self._clients: List[Dict[str, Any]] = []
+        self._network_map: Dict[str, Dict[str, Any]] = {}
+        self._interval = max(1.0, MIN_TIME_BETWEEN_UPDATES.total_seconds())
+        self._last_remote_users = 0.0
+        self._last_peers = 0.0
+        self._last_clients = 0.0
+        self._last_network_map = 0.0
+
+    def seed(
+        self,
+        *,
+        remote_users: Optional[List[Dict[str, Any]]] = None,
+        peers: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        now = time.monotonic()
+        if remote_users is not None:
+            self._remote_users = [
+                rec for rec in remote_users if isinstance(rec, dict)
+            ]
+            self._last_remote_users = now
+        if peers is not None:
+            self._peers = [rec for rec in peers if isinstance(rec, dict)]
+            self._last_peers = now
+
+    def _should_refresh(self, last: float) -> bool:
+        if last <= 0:
+            return True
+        return (time.monotonic() - last) >= self._interval
+
+    def _safe_fetch(self, func, label: str) -> Optional[Any]:
+        try:
+            return func()
+        except APIError as err:
+            _LOGGER.error("Failed to fetch %s: %s", label, err)
+        except Exception:  # pragma: no cover - defensive
+            _LOGGER.exception("Unexpected error while fetching %s", label)
+        return None
+
+    def ensure_remote_users(self) -> None:
+        if not self._should_refresh(self._last_remote_users):
+            return
+        result = self._safe_fetch(self._client.get_vpn_remote_users, "VPN remote users")
+        if result is not None:
+            self._remote_users = [rec for rec in result if isinstance(rec, dict)]
+        self._last_remote_users = time.monotonic()
+
+    def ensure_peers(self) -> None:
+        if not self._should_refresh(self._last_peers):
+            return
+        result = self._safe_fetch(self._client.get_vpn_peers_status, "VPN peers")
+        if result is not None:
+            self._peers = [rec for rec in result if isinstance(rec, dict)]
+        self._last_peers = time.monotonic()
+
+    def ensure_clients(self) -> None:
+        if not self._should_refresh(self._last_clients):
+            return
+        result = self._safe_fetch(self._client.get_clients, "UniFi clients")
+        if result is not None:
+            self._clients = [rec for rec in result if isinstance(rec, dict)]
+        self._last_clients = time.monotonic()
+
+    def ensure_network_map(self) -> None:
+        if not self._should_refresh(self._last_network_map):
+            return
+        result = self._safe_fetch(self._client.get_network_map, "UniFi networks")
+        if isinstance(result, dict):
+            sanitized: Dict[str, Dict[str, Any]] = {}
+            for key, value in result.items():
+                if isinstance(value, dict):
+                    sanitized[str(key)] = value
+            self._network_map = sanitized
+        self._last_network_map = time.monotonic()
+
+    @property
+    def remote_users(self) -> List[Dict[str, Any]]:
+        return self._remote_users
+
+    @property
+    def peers(self) -> List[Dict[str, Any]]:
+        return self._peers
+
+    @property
+    def clients(self) -> List[Dict[str, Any]]:
+        return self._clients
+
+    @property
+    def network_map(self) -> Dict[str, Dict[str, Any]]:
+        return self._network_map
 
 
 SUBSYSTEM_SENSORS: Dict[str, tuple[str, str]] = {
@@ -60,6 +160,55 @@ async def async_setup_entry(
         entry.entry_id,
     )
     async_add_entities(static_entities)
+
+    vpn_cache = UniFiGatewayVpnDataCache(client)
+    vpn_entities: List[SensorEntity] = []
+
+    try:
+        remote_users_raw = client.get_vpn_remote_users()
+    except Exception:  # pragma: no cover - defensive
+        _LOGGER.exception("Failed to fetch UniFi VPN remote users during setup")
+        remote_users_raw = []
+    else:
+        vpn_cache.seed(remote_users=remote_users_raw)
+
+    try:
+        peers_raw = client.get_vpn_peers_status()
+    except Exception:  # pragma: no cover - defensive
+        _LOGGER.exception("Failed to fetch UniFi VPN peers during setup")
+        peers_raw = []
+    else:
+        vpn_cache.seed(peers=peers_raw)
+
+    seen_user_ids: set[str] = set()
+    for user in remote_users_raw:
+        if not isinstance(user, dict):
+            continue
+        sensor = UnifiGatewayVpnRemoteUserSensor(client, vpn_cache, base_name, user)
+        unique_id = sensor.unique_id
+        if unique_id in seen_user_ids:
+            continue
+        seen_user_ids.add(unique_id)
+        vpn_entities.append(sensor)
+
+    seen_peer_ids: set[str] = set()
+    for peer in peers_raw:
+        if not isinstance(peer, dict):
+            continue
+        sensor = UnifiGatewayVpnPeerSensor(client, vpn_cache, base_name, peer)
+        unique_id = sensor.unique_id
+        if unique_id in seen_peer_ids:
+            continue
+        seen_peer_ids.add(unique_id)
+        vpn_entities.append(sensor)
+
+    if vpn_entities:
+        _LOGGER.debug(
+            "Adding %s UniFi Gateway VPN sensors for entry %s",
+            len(vpn_entities),
+            entry.entry_id,
+        )
+        async_add_entities(vpn_entities, update_before_add=True)
 
     known_wan: set[str] = set()
     known_lan: set[str] = set()
@@ -1112,3 +1261,575 @@ def _extract_network_ip_address(network: Dict[str, Any]) -> Optional[str]:
         if result:
             return result
     return None
+
+
+class UniFiGatewayVpnEntityBase(SensorEntity):
+    """Base class for VPN-related sensors that poll the UniFi API directly."""
+
+    _attr_icon = "mdi:folder-key-network"
+    _attr_should_poll = True
+
+    def __init__(
+        self,
+        client: UniFiOSClient,
+        cache: UniFiGatewayVpnDataCache,
+        base_name: str,
+    ) -> None:
+        self._client = client
+        self._cache = cache
+        self._base_name = base_name
+        self._native_value: Optional[int] = None
+        self._attrs: Dict[str, Any] = {}
+        self._available = True
+        self._controller_ui = client.get_controller_url()
+        self._controller_api = client.get_controller_api_url()
+        self._site = client.get_site()
+        self._instance = client.instance_key()
+
+    @property
+    def native_value(self) -> Optional[int]:
+        return self._native_value
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        return self._attrs
+
+    @property
+    def device_info(self) -> Dict[str, Any]:
+        return {
+            "identifiers": {(DOMAIN, self._instance)},
+            "name": self._base_name,
+            "manufacturer": "Ubiquiti",
+            "model": "UniFi Gateway",
+            "configuration_url": self._controller_ui,
+        }
+
+    def _common_attrs(self) -> Dict[str, Any]:
+        return {
+            "controller_ui": self._controller_ui,
+            "controller_api": self._controller_api,
+            "controller_site": self._site,
+            "instance": self._instance,
+        }
+
+    @staticmethod
+    def _normalize_vlan(value: Any) -> Optional[int]:
+        if value in (None, "", False):
+            return None
+        if isinstance(value, bool):
+            return 1 if value else 0
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+
+
+class UnifiGatewayVpnRemoteUserSensor(UniFiGatewayVpnEntityBase):
+    """Sensor representing a UniFi remote-user VPN account."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        client: UniFiOSClient,
+        cache: UniFiGatewayVpnDataCache,
+        base_name: str,
+        record: Dict[str, Any],
+    ) -> None:
+        super().__init__(client, cache, base_name)
+        self._username = self._extract_username(record)
+        self._user_id = self._extract_identifier(record)
+        basis_value = self._username or self._user_id or "remote_user"
+        basis = f"{self._instance}|{self._site}|vpn|user|{basis_value}".encode()
+        self._attr_unique_id = hashlib.sha1(basis).hexdigest()[:12]
+        display = self._username or basis_value
+        self._attr_name = f"{base_name} VPN User {display}"
+        self._network_ids = self._extract_network_ids(record)
+        self._last_ip: Optional[str] = self._extract_user_ip(record, [])
+
+    async def async_update(self) -> None:
+        await self.hass.async_add_executor_job(self._refresh_state)
+
+    def _refresh_state(self) -> None:
+        self._throttled_fetch()
+        self._assign_state_from_cache()
+
+    @Throttle(MIN_TIME_BETWEEN_UPDATES)
+    def _throttled_fetch(self) -> None:
+        self._cache.ensure_remote_users()
+        self._cache.ensure_clients()
+        self._cache.ensure_network_map()
+
+    def _assign_state_from_cache(self) -> None:
+        record = self._find_remote_user()
+        networks = self._cache.network_map
+        if record is None:
+            self._available = False
+            attrs = {
+                "ip": self._last_ip,
+                "clients_count": 0,
+                "vlan_id": None,
+            }
+            attrs.update(self._common_attrs())
+            self._attrs = attrs
+            self._native_value = None
+            return
+
+        self._available = True
+        self._network_ids = self._extract_network_ids(record) or self._network_ids
+        vlan_id = self._resolve_vlan(record, networks)
+        clients = self._cache.clients
+        matched_clients = self._match_clients(clients, vlan_id, record, networks)
+        clients_count = len(matched_clients)
+        if clients_count == 0:
+            fallback = self._fallback_clients_count(record)
+            if fallback is not None:
+                clients_count = fallback
+
+        ip_address = self._extract_user_ip(record, matched_clients) or self._last_ip
+        if ip_address:
+            self._last_ip = ip_address
+
+        attrs = {
+            "ip": ip_address,
+            "clients_count": clients_count,
+            "vlan_id": vlan_id,
+            "username": self._username,
+            "last_seen": self._extract_last_seen(record),
+        }
+        attrs.update(self._common_attrs())
+        self._attrs = attrs
+        self._native_value = clients_count
+
+    def _find_remote_user(self) -> Optional[Dict[str, Any]]:
+        for candidate in self._cache.remote_users:
+            if not isinstance(candidate, dict):
+                continue
+            if self._username and self._extract_username(candidate) == self._username:
+                return candidate
+            if self._user_id and self._extract_identifier(candidate) == self._user_id:
+                return candidate
+        return None
+
+    def _resolve_vlan(
+        self, record: Dict[str, Any], networks: Dict[str, Dict[str, Any]]
+    ) -> Optional[int]:
+        direct = self._normalize_vlan(record.get("vlan"))
+        if direct is not None:
+            return direct
+        for network_id in self._extract_network_ids(record):
+            info = networks.get(str(network_id))
+            if not info:
+                continue
+            vlan = self._normalize_vlan(info.get("vlan"))
+            if vlan is not None:
+                return vlan
+        return None
+
+    def _collect_network_subnets(
+        self, record: Dict[str, Any], networks: Dict[str, Dict[str, Any]]
+    ) -> List[str]:
+        subnets: List[str] = []
+        for network_id in self._extract_network_ids(record):
+            info = networks.get(str(network_id))
+            if not info:
+                continue
+            subnet = (
+                info.get("subnet")
+                or info.get("ip_subnet")
+                or info.get("cidr")
+            )
+            if isinstance(subnet, str) and subnet and subnet not in subnets:
+                subnets.append(subnet)
+        for key in ("subnet", "ip_subnet", "cidr", "network", "network_subnet"):
+            value = record.get(key)
+            if isinstance(value, str) and "/" in value and value not in subnets:
+                subnets.append(value)
+        return subnets
+
+    def _match_clients(
+        self,
+        clients: List[Dict[str, Any]],
+        vlan_id: Optional[int],
+        record: Dict[str, Any],
+        networks: Dict[str, Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        matches: List[Dict[str, Any]] = []
+        fallback: List[Dict[str, Any]] = []
+        subnets = self._collect_network_subnets(record, networks)
+        for client in clients:
+            if not isinstance(client, dict):
+                continue
+            client_vlan = self._normalize_vlan(
+                client.get("vlan") or client.get("vlan_id")
+            )
+            if (
+                vlan_id is not None
+                and client_vlan is not None
+                and client_vlan == vlan_id
+            ):
+                matches.append(client)
+                continue
+            if matches:
+                continue
+            if not subnets:
+                continue
+            client_ip = self._client_ip_from_client(client)
+            if client_ip and any(
+                self._client._ip_in_cidr(client_ip, subnet) for subnet in subnets
+            ):
+                fallback.append(client)
+        return matches or fallback
+
+    def _fallback_clients_count(self, record: Dict[str, Any]) -> Optional[int]:
+        for key in (
+            "clients",
+            "sessions",
+            "connections",
+            "active_sessions",
+            "connected_clients",
+        ):
+            count = _extract_client_count(record.get(key))
+            if count is not None:
+                return count
+        connected = record.get("connected") or record.get("active")
+        if isinstance(connected, bool):
+            return 1 if connected else 0
+        return None
+
+    @staticmethod
+    def _extract_username(record: Dict[str, Any]) -> Optional[str]:
+        for key in ("username", "user", "name", "account"):
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _extract_identifier(record: Dict[str, Any]) -> Optional[str]:
+        for key in ("_id", "id", "uuid", "guid", "user_id"):
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        fallback = record.get("name")
+        if isinstance(fallback, str) and fallback.strip():
+            return fallback.strip()
+        return None
+
+    @staticmethod
+    def _extract_network_ids(record: Dict[str, Any]) -> List[str]:
+        ids: List[str] = []
+        for key in (
+            "networkconf_id",
+            "network_id",
+            "network",
+            "networkconfid",
+        ):
+            value = record.get(key)
+            if value is None:
+                continue
+            if isinstance(value, (list, tuple)):
+                ids.extend([str(item) for item in value if item not in (None, "")])
+            else:
+                ids.append(str(value))
+        return ids
+
+    def _extract_user_ip(
+        self, record: Optional[Dict[str, Any]], clients: List[Dict[str, Any]]
+    ) -> Optional[str]:
+        if record:
+            for key in (
+                "ip",
+                "ip_address",
+                "remote_ip",
+                "assigned_ip",
+                "vpn_ip",
+                "client_ip",
+            ):
+                value = record.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        for client in clients:
+            ip_value = self._client_ip_from_client(client)
+            if ip_value:
+                return ip_value
+        return None
+
+    def _client_ip_from_client(self, client: Dict[str, Any]) -> Optional[str]:
+        for key in (
+            "ip",
+            "ip_address",
+            "last_ip",
+            "remote_ip",
+            "vpn_ip",
+            "addr",
+        ):
+            value = client.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _extract_last_seen(record: Dict[str, Any]) -> Optional[int]:
+        for key in (
+            "last_seen",
+            "last_connected",
+            "last_connected_at",
+            "last_connection",
+            "last_activity",
+            "updated_at",
+        ):
+            value = record.get(key)
+            if value in (None, ""):
+                continue
+            coerced = _coerce_int(value)
+            if coerced is not None:
+                return coerced
+        return None
+
+
+class UnifiGatewayVpnPeerSensor(UniFiGatewayVpnEntityBase):
+    """Sensor representing a UniFi VPN site-to-site peer."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        client: UniFiOSClient,
+        cache: UniFiGatewayVpnDataCache,
+        base_name: str,
+        record: Dict[str, Any],
+    ) -> None:
+        super().__init__(client, cache, base_name)
+        self._peer_id = self._extract_identifier(record)
+        self._peer_name = self._extract_name(record)
+        basis_value = self._peer_id or self._peer_name or "peer"
+        basis = f"{self._instance}|{self._site}|vpn|peer|{basis_value}".encode()
+        self._attr_unique_id = hashlib.sha1(basis).hexdigest()[:12]
+        display = self._peer_name or basis_value
+        self._attr_name = f"{base_name} VPN Peer {display}"
+        self._last_remote_ip: Optional[str] = self._extract_peer_ip(record)
+
+    async def async_update(self) -> None:
+        await self.hass.async_add_executor_job(self._refresh_state)
+
+    def _refresh_state(self) -> None:
+        self._throttled_fetch()
+        self._assign_state_from_cache()
+
+    @Throttle(MIN_TIME_BETWEEN_UPDATES)
+    def _throttled_fetch(self) -> None:
+        self._cache.ensure_peers()
+        self._cache.ensure_network_map()
+
+    def _assign_state_from_cache(self) -> None:
+        record = self._find_peer_record()
+        networks = self._cache.network_map
+        if record is None:
+            self._available = False
+            attrs = {
+                "ip": self._last_remote_ip,
+                "clients_count": 0,
+                "vlan_id": None,
+                "type": "unknown",
+                "state": "UNKNOWN",
+                "local_ip": None,
+                "remote_ip": self._last_remote_ip,
+                "local_subnets": None,
+                "remote_subnets": None,
+                "last_handshake": None,
+            }
+            attrs.update(self._common_attrs())
+            self._attrs = attrs
+            self._native_value = None
+            return
+
+        self._available = True
+        status_value, status_label = self._determine_status(record)
+        clients_count = self._determine_clients(record, status_value)
+        remote_ip = self._extract_peer_ip(record) or self._last_remote_ip
+        if remote_ip:
+            self._last_remote_ip = remote_ip
+        vlan_id = self._resolve_vlan(record, networks)
+
+        attrs = {
+            "ip": remote_ip,
+            "clients_count": clients_count,
+            "vlan_id": vlan_id,
+            "type": self._extract_type(record),
+            "state": status_label or "UNKNOWN",
+            "local_ip": _value_from_record(
+                record,
+                ("local_ip", "local_addr", "internal_ip", "gateway_ip"),
+            ),
+            "remote_ip": remote_ip,
+            "local_subnets": self._normalize_subnets(
+                record, ("local_subnets", "local_networks", "local_routes")
+            ),
+            "remote_subnets": self._normalize_subnets(
+                record, ("remote_subnets", "remote_networks", "remote_routes")
+            ),
+            "last_handshake": self._extract_last_handshake(record),
+        }
+        attrs.update(self._common_attrs())
+        self._attrs = attrs
+        self._native_value = status_value
+
+    def _find_peer_record(self) -> Optional[Dict[str, Any]]:
+        for candidate in self._cache.peers:
+            if not isinstance(candidate, dict):
+                continue
+            if self._peer_id and self._extract_identifier(candidate) == self._peer_id:
+                return candidate
+            if self._peer_name and self._extract_name(candidate) == self._peer_name:
+                return candidate
+        return None
+
+    def _resolve_vlan(
+        self, record: Dict[str, Any], networks: Dict[str, Dict[str, Any]]
+    ) -> Optional[int]:
+        for key in (
+            "local_network_id",
+            "networkconf_id",
+            "network_id",
+            "lan_network_id",
+        ):
+            value = record.get(key)
+            if value is None:
+                continue
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    info = networks.get(str(item))
+                    if info and self._normalize_vlan(info.get("vlan")) is not None:
+                        return self._normalize_vlan(info.get("vlan"))
+            else:
+                info = networks.get(str(value))
+                if info and self._normalize_vlan(info.get("vlan")) is not None:
+                    return self._normalize_vlan(info.get("vlan"))
+        return None
+
+    @staticmethod
+    def _extract_identifier(record: Dict[str, Any]) -> Optional[str]:
+        for key in ("id", "_id", "peer_id", "uuid", "guid"):
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _extract_name(record: Dict[str, Any]) -> Optional[str]:
+        for key in ("name", "peer_name", "display_name"):
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        identifier = UnifiGatewayVpnPeerSensor._extract_identifier(record)
+        return identifier
+
+    def _extract_peer_ip(self, record: Dict[str, Any]) -> Optional[str]:
+        return _value_from_record(
+            record,
+            (
+                "peer_addr",
+                "remote_ip",
+                "public_ip",
+                "peer_ip",
+                "remote_addr",
+            ),
+        )
+
+    def _determine_status(self, record: Dict[str, Any]) -> tuple[Optional[int], Optional[str]]:
+        status_label: Optional[str] = None
+        for key in ("status", "state", "connection_state", "health", "up"):
+            if key not in record:
+                continue
+            value = record.get(key)
+            if isinstance(value, bool):
+                return (1 if value else 0, "UP" if value else "DOWN")
+            if isinstance(value, (int, float)):
+                if value > 0:
+                    return (1, "UP")
+                if value == 0:
+                    return (0, "DOWN")
+            if isinstance(value, str):
+                cleaned = value.strip().upper()
+                if not cleaned:
+                    continue
+                if cleaned in {"UP", "CONNECTED", "ONLINE", "ACTIVE", "OK"}:
+                    return (1, cleaned)
+                if cleaned in {"DOWN", "DISCONNECTED", "OFFLINE", "INACTIVE", "ERROR", "FAILED"}:
+                    return (0, cleaned)
+                if cleaned in {"DEGRADED", "WARNING"}:
+                    return (1, cleaned)
+                status_label = cleaned
+        return (None, status_label)
+
+    def _determine_clients(
+        self, record: Dict[str, Any], status_value: Optional[int]
+    ) -> int:
+        for key in (
+            "connected_tunnels",
+            "connected_peers",
+            "connection_count",
+            "clients",
+            "sessions",
+            "links",
+        ):
+            count = _extract_client_count(record.get(key))
+            if count is not None:
+                return count
+        for key in ("tunnels", "connections", "sa", "ike_sa"):
+            count = _extract_client_count(record.get(key))
+            if count is not None:
+                return count
+        if status_value is None:
+            return 0
+        return 1 if status_value == 1 else 0
+
+    @staticmethod
+    def _extract_type(record: Dict[str, Any]) -> str:
+        for key in ("type", "protocol", "mode", "vpn_type"):
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+        return "unknown"
+
+    @staticmethod
+    def _normalize_subnets(
+        record: Dict[str, Any], keys: Sequence[str]
+    ) -> Optional[List[str]]:
+        collected: List[str] = []
+        for key in keys:
+            value = record.get(key)
+            if value is None:
+                continue
+            if isinstance(value, str):
+                candidate = value.strip()
+                if candidate and candidate not in collected:
+                    collected.append(candidate)
+            elif isinstance(value, (list, tuple, set)):
+                for item in value:
+                    if isinstance(item, str):
+                        candidate = item.strip()
+                        if candidate and candidate not in collected:
+                            collected.append(candidate)
+        return collected or None
+
+    @staticmethod
+    def _extract_last_handshake(record: Dict[str, Any]) -> Optional[int]:
+        for key in (
+            "last_handshake",
+            "last_handshake_time",
+            "last_contact",
+            "last_seen",
+        ):
+            value = record.get(key)
+            if value in (None, ""):
+                continue
+            coerced = _coerce_int(value)
+            if coerced is not None:
+                return coerced
+        return None
