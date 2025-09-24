@@ -884,13 +884,18 @@ class UniFiOSClient:
                         out[detail_key] = value
                     return
 
-            _assign("server_cc", ["cc"])
-            _assign("server_city", ["city", "name"])
+            _assign("server_id", ["id", "serverid", "server_id"])
+            _assign("server_name", ["name", "server", "label"])
+            _assign("server_city", ["city", "location"])
+            if "server_city" not in out and "server_name" in out:
+                out["server_city"] = out["server_name"]
+            _assign("server_cc", ["cc", "country_code"])
             _assign("server_country", ["country"])
             _assign("server_lat", ["lat", "latitude"], converter=self._coerce_float)
             _assign("server_long", ["long", "lon", "lng"], converter=self._coerce_float)
             _assign("server_provider", ["provider", "sponsor"])
             _assign("server_provider_url", ["provider_url", "url"])
+            _assign("server_host", ["host", "hostname", "fqdn"])
         if "status" in rec:
             status_value = rec["status"]
             if isinstance(status_value, dict):
