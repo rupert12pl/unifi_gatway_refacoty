@@ -147,6 +147,57 @@ class UniFiOSClient:
 
         return self._site_id
 
+    def _ensure_site_id_sync(self) -> Optional[str]:
+        """Fetch and cache the GUID-style site identifier (synchronous path)."""
+
+        if self._site_id:
+            return self._site_id
+
+        candidates = [
+            "/v1/sites",
+            f"/v2/api/site/{self._site_name}/info",
+        ]
+
+        for path in candidates:
+            try:
+                resp, text = self._request("GET", path, timeout=6)
+            except Exception as err:  # pragma: no cover - defensive network guard
+                LOGGER.debug("Site-id probe %s failed: %s", path, err)
+                continue
+
+            if resp.status_code >= 400:
+                continue
+
+            try:
+                payload = json.loads(text) if text else {}
+            except json.JSONDecodeError:  # pragma: no cover - defensive
+                LOGGER.debug("Invalid JSON while probing site id from %s", path)
+                continue
+
+            records: List[dict[str, Any]] = []
+            if isinstance(payload, list):
+                records = [item for item in payload if isinstance(item, dict)]
+            elif isinstance(payload, dict):
+                data = payload.get("data") or payload.get("sites") or payload.get("items")
+                if isinstance(data, list):
+                    records = [item for item in data if isinstance(item, dict)]
+                elif isinstance(payload.get("site"), dict):
+                    records = [payload["site"]]
+
+            for record in records:
+                name = record.get("name") or record.get("shortname")
+                if isinstance(name, str) and name == self._site_name:
+                    site_id = record.get("id") or record.get("_id") or record.get("uuid")
+                    if isinstance(site_id, str) and site_id:
+                        self._site_id = site_id
+                        LOGGER.debug(
+                            "Resolved site id %s for site %s", site_id, self._site_name
+                        )
+                        return self._site_id
+
+        LOGGER.debug("Falling back to site name for site-id lookups: %s", self._site_name)
+        return None
+
     async def _async_ensure_site_id(self) -> Optional[str]:
         """Fetch and cache the GUID-style site identifier."""
 
@@ -631,7 +682,7 @@ class UniFiOSClient:
         for d in devs or []:
             t = (d.get("type") or "").lower()
             m = (d.get("model") or "").lower()
-            if t in ("ugw","udm") or m.startswith("udm") or "gateway" in (d.get("name") or "").lower():
+            if t in ("ugw", "udm") or m.startswith("udm") or "gateway" in (d.get("name") or "").lower():
                 mac = d.get("mac") or d.get("device_mac")
                 if mac:
                     return mac
@@ -646,6 +697,130 @@ class UniFiOSClient:
             pass
         return None
 
+    def _iter_speedtest_paths(self, endpoint: str) -> List[str]:
+        """Return candidate API paths for a speedtest endpoint."""
+
+        cleaned = str(endpoint or "").lstrip("/")
+        site_id = self._ensure_site_id_sync()
+        site_name = self._site_name
+
+        candidates = [cleaned]
+        candidates.append(self._site_path(cleaned))
+        if site_id:
+            candidates.append(self._site_path_for(site_id, cleaned))
+            candidates.append(f"v2/api/site/{site_id}/{cleaned}")
+        if site_name:
+            candidates.append(f"v2/api/site/{site_name}/{cleaned}")
+
+        paths: List[str] = []
+        seen: set[str] = set()
+        for path in candidates:
+            normalized = str(path or "").lstrip("/")
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            paths.append(normalized)
+        return paths
+
+    def _call_speedtest_endpoint(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        payload: Any = None,
+        timeout: Optional[int] = None,
+    ) -> Tuple[Any, str]:
+        """Invoke a speedtest endpoint trying multiple path variations."""
+
+        last_error: Optional[Exception] = None
+        for path in self._iter_speedtest_paths(endpoint):
+            try:
+                if method.upper() == "GET":
+                    response = self._request_json("GET", path, timeout=timeout)
+                else:
+                    response = self._request_json(
+                        method.upper(),
+                        path,
+                        json_payload=payload,
+                        timeout=timeout,
+                    )
+                return response, path
+            except APIError as err:
+                last_error = err
+                if err.status_code in (404, 405) or err.expected:
+                    continue
+                if err.status_code == 400 and method.upper() == "GET":
+                    continue
+                raise
+            except ConnectivityError as err:
+                last_error = err
+                continue
+
+        if last_error:
+            raise last_error
+        raise APIError(
+            f"UniFi speedtest endpoint {endpoint} unavailable",
+            expected=True,
+        )
+
+    def _enable_speedtest_flags(self, payload: Any) -> bool:
+        """Ensure logging/monitoring flags are enabled within the payload."""
+
+        changed = False
+        if isinstance(payload, dict):
+            for key, value in list(payload.items()):
+                lower_key = key.lower()
+                if any(term in lower_key for term in ("logging", "monitor")) and (
+                    "enable" in lower_key or lower_key.endswith("enabled")
+                ):
+                    if isinstance(value, bool):
+                        if not value:
+                            payload[key] = True
+                            changed = True
+                    elif isinstance(value, (int, float)):
+                        if not value:
+                            payload[key] = 1
+                            changed = True
+                    elif isinstance(value, str):
+                        if value.strip().lower() in {"0", "false", "disabled", "off"}:
+                            payload[key] = True
+                            changed = True
+                if isinstance(value, (dict, list)):
+                    if self._enable_speedtest_flags(value):
+                        changed = True
+        elif isinstance(payload, list):
+            for item in payload:
+                if self._enable_speedtest_flags(item):
+                    changed = True
+        return changed
+
+    def ensure_speedtest_monitoring_enabled(self, cache_sec: int = 3600) -> None:
+        """Make sure controller-side logging/monitoring toggles required for speedtest are on."""
+
+        now = time.time()
+        last_check = getattr(self, "_st_settings_check", 0.0)
+        if now - last_check < cache_sec:
+            return
+
+        setattr(self, "_st_settings_check", now)
+
+        try:
+            settings_payload, path = self._call_speedtest_endpoint(
+                "GET", "internet/speedtest/settings"
+            )
+        except Exception as err:
+            LOGGER.debug("Unable to fetch speedtest settings: %s", err)
+            return
+
+        if not self._enable_speedtest_flags(settings_payload):
+            return
+
+        try:
+            self._request_json("POST", path, json_payload=settings_payload)
+            LOGGER.debug("Enabled UniFi speedtest logging/monitoring via %s", path)
+        except Exception as err:
+            LOGGER.debug("Failed to persist speedtest settings via %s: %s", path, err)
+
     def start_speedtest(self, mac: Optional[str] = None):
         if mac is None:
             mac = self.get_gateway_mac()
@@ -653,9 +828,13 @@ class UniFiOSClient:
         if mac:
             payload["mac"] = mac
         try:
-            return self._post("cmd/devmgr", payload)
+            result, _ = self._call_speedtest_endpoint("POST", "cmd/devmgr", payload=payload)
+            return result
         except Exception:
-            return self._post("internet/speedtest/run", {})
+            result, _ = self._call_speedtest_endpoint(
+                "POST", "internet/speedtest/run", payload={}
+            )
+            return result
 
     def get_speedtest_status(self, mac: Optional[str] = None):
         if mac is None:
@@ -664,36 +843,50 @@ class UniFiOSClient:
         if mac:
             payload["mac"] = mac
         try:
-            return self._post("cmd/devmgr", payload)
+            result, _ = self._call_speedtest_endpoint("POST", "cmd/devmgr", payload=payload)
+            return result
         except Exception:
+            pass
+
+        for method in ("GET", "POST"):
             try:
-                return self._get("internet/speedtest/status")
+                payload_arg = {} if method == "POST" else None
+                result, _ = self._call_speedtest_endpoint(
+                    method, "internet/speedtest/status", payload=payload_arg
+                )
+                return result
             except Exception:
-                return self._post("internet/speedtest/status", {})
+                continue
+        raise APIError("Unable to retrieve UniFi speedtest status", expected=True)
 
     def get_speedtest_history(self, start_ms: Optional[int] = None, end_ms: Optional[int] = None):
         if end_ms is None:
             end_ms = int(time.time() * 1000)
         if start_ms is None:
             start_ms = end_ms - 7 * 24 * 60 * 60 * 1000
+        payload = {
+            "attrs": [
+                "xput_download",
+                "xput_upload",
+                "latency",
+                "rundate",
+                "server",
+            ],
+            "start": start_ms,
+            "end": end_ms,
+        }
         try:
-            return self._post(
-                "stat/report/archive.speedtest",
-                {
-                    "attrs": [
-                        "xput_download",
-                        "xput_upload",
-                        "latency",
-                        "rundate",
-                        "server",
-                    ],
-                    "start": start_ms,
-                    "end": end_ms,
-                },
+            result, _ = self._call_speedtest_endpoint(
+                "POST", "stat/report/archive.speedtest", payload=payload
             )
+            if isinstance(result, list):
+                return result
+            return self._extract_list(result)
         except Exception:
-            data = self._get("internet/speedtest/results")
-            return data if isinstance(data, list) else []
+            result, _ = self._call_speedtest_endpoint("GET", "internet/speedtest/results")
+            if isinstance(result, list):
+                return result
+            return self._extract_list(result)
 
     @staticmethod
     def _coerce_float(value: Any) -> Optional[float]:
@@ -945,6 +1138,10 @@ class UniFiOSClient:
         last = getattr(self, "_st_last_trigger", 0.0)
         if now - last < cooldown_sec:
             return
+        try:
+            self.ensure_speedtest_monitoring_enabled(cache_sec=cooldown_sec)
+        except Exception as err:
+            LOGGER.debug("Unable to ensure speedtest settings prior to run: %s", err)
         try:
             self.start_speedtest(self.get_gateway_mac())
             self._st_last_trigger = now
