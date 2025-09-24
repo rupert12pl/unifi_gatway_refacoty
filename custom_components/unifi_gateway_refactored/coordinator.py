@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
@@ -37,14 +39,69 @@ class UniFiGatewayData:
 class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData]):
     """Coordinate UniFi Gateway data retrieval for Home Assistant entities."""
 
-    def __init__(self, hass: HomeAssistant, client: UniFiOSClient) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: UniFiOSClient,
+        *,
+        speedtest_interval: int | None = None,
+    ) -> None:
         self._client = client
+        self._speedtest_interval = self._sanitize_speedtest_interval(speedtest_interval)
         super().__init__(
             hass,
             logger=_LOGGER,
             name=f"{DOMAIN} data",
             update_interval=timedelta(seconds=15),
         )
+
+    @staticmethod
+    def _sanitize_speedtest_interval(value: int | None) -> int:
+        try:
+            interval = int(value) if value is not None else 0
+        except (TypeError, ValueError):
+            return 0
+        return max(0, interval)
+
+    @staticmethod
+    def _speedtest_last_timestamp(record: Optional[Dict[str, Any]]) -> Optional[float]:
+        if not isinstance(record, dict):
+            return None
+        for key in ("rundate", "timestamp", "time", "date", "start_time"):
+            if key not in record:
+                continue
+            value = record.get(key)
+            if value in (None, ""):
+                continue
+            if isinstance(value, (int, float)):
+                number = float(value)
+                if number > 1e11:
+                    number /= 1000.0
+                if number > 0:
+                    return number
+                continue
+            dt_value: Optional[datetime] = None
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    continue
+                try:
+                    number = float(text)
+                except (TypeError, ValueError):
+                    dt_value = dt_util.parse_datetime(text)
+                else:
+                    if number > 1e11:
+                        number /= 1000.0
+                    if number > 0:
+                        return number
+                    continue
+            elif isinstance(value, datetime):
+                dt_value = value
+            if dt_value is None:
+                continue
+            dt_utc = dt_util.as_utc(dt_value)
+            return dt_utc.timestamp()
+        return None
 
     async def _async_update_data(self) -> UniFiGatewayData:
         try:
@@ -153,11 +210,39 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             _LOGGER.warning("Fetching last speedtest failed: %s", err)
             speedtest = None
 
-        try:
-            self._client.maybe_start_speedtest(cooldown_sec=3600)
-            _LOGGER.debug("Speedtest trigger evaluated")
-        except APIError as err:
-            _LOGGER.debug("Speedtest trigger failed: %s", err)
+        interval = self._speedtest_interval
+        has_values = bool(
+            speedtest
+            and any(
+                speedtest.get(key) not in (None, "")
+                for key in ("download_mbps", "upload_mbps", "latency_ms")
+            )
+        )
+        speedtest_missing = not has_values
+        trigger_reason: Optional[str] = None
+        should_trigger = False
+        now_ts = time.time()
+        if speedtest_missing:
+            should_trigger = True
+            trigger_reason = "missing"
+        elif interval > 0:
+            last_ts = self._speedtest_last_timestamp(speedtest)
+            if last_ts is None or now_ts - last_ts >= interval:
+                should_trigger = True
+                trigger_reason = "stale"
+
+        cooldown = max(interval, 60) if interval > 0 else 3600
+        if should_trigger:
+            try:
+                self._client.maybe_start_speedtest(cooldown_sec=cooldown)
+                _LOGGER.debug(
+                    "Speedtest trigger evaluated (reason=%s, interval=%s, cooldown=%s)",
+                    trigger_reason,
+                    interval,
+                    cooldown,
+                )
+            except APIError as err:
+                _LOGGER.debug("Speedtest trigger failed: %s", err)
 
         data = UniFiGatewayData(
             controller=controller_info,
