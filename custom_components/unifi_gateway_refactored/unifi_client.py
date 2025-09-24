@@ -105,6 +105,12 @@ class UniFiOSClient:
         if not self._username or not self._password:
             raise AuthError("Provide username and password for UniFi controller")
 
+        # Track API endpoints that recently failed so we can avoid log spam while
+        # still surfacing warnings for the operator and reporting when the
+        # controller recovers. ``True`` means we emitted a warning for the
+        # endpoint, ``False`` indicates the last failure was logged as an error.
+        self._api_error_log_state: dict[tuple[str, str], bool] = {}
+
         self._login(host, port, ssl_verify, timeout)
         self._ensure_connected()
     def _net_base(self) -> str:
@@ -588,10 +594,35 @@ class UniFiOSClient:
         return self._get_list(self._site_path("stat/alluser"))
 
     def _log_api_error(self, path: str, err: APIError, *, context: str) -> None:
-        if err.expected or err.status_code in (400, 401, 403, 404):
-            _LOGGER.debug("UniFi %s endpoint %s unavailable: %s", context, path, err)
-        else:
-            _LOGGER.error("Error calling UniFi %s endpoint %s: %s", context, path, err)
+        key = (context, path)
+        expected = err.expected or err.status_code in (400, 401, 403, 404)
+        if expected:
+            if not self._api_error_log_state.get(key):
+                _LOGGER.warning(
+                    "UniFi %s endpoint %s unavailable: %s (further occurrences will be "
+                    "suppressed until recovery)",
+                    context,
+                    path,
+                    err,
+                )
+                self._api_error_log_state[key] = True
+            else:
+                _LOGGER.debug(
+                    "UniFi %s endpoint %s still unavailable: %s", context, path, err
+                )
+            return
+
+        _LOGGER.error("Error calling UniFi %s endpoint %s: %s", context, path, err)
+        self._api_error_log_state[key] = False
+
+    def _mark_api_success(self, path: str, *, context: str) -> None:
+        key = (context, path)
+        if key not in self._api_error_log_state:
+            return
+
+        warned = self._api_error_log_state.pop(key)
+        if warned:
+            _LOGGER.info("UniFi %s endpoint %s is available again", context, path)
 
     def _extract_from_nested_lists(
         self, payload: Any, keys: Iterable[str]
@@ -625,6 +656,7 @@ class UniFiOSClient:
             except APIError as err:
                 self._log_api_error(path, err, context="VPN remote-user")
                 continue
+            self._mark_api_success(path, context="VPN remote-user")
             if not payload:
                 continue
             users = self._extract_list(payload)
@@ -646,6 +678,7 @@ class UniFiOSClient:
             except APIError as err:
                 self._log_api_error(path, err, context="VPN peer")
                 continue
+            self._mark_api_success(path, context="VPN peer")
             if not payload:
                 continue
             peers = self._extract_list(payload)
