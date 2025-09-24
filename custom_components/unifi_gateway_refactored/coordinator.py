@@ -122,7 +122,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         wan_links_raw = self._client.get_wan_links() or []
         if not wan_links_raw:
             wan_links_raw = self._derive_wan_links_from_networks(networks)
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "WAN link discovery required fallback derivation; derived=%s",
                 len(wan_links_raw),
             )

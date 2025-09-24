@@ -7,7 +7,7 @@ import logging
 import socket
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import requests
 from urllib.parse import urlsplit
@@ -703,6 +703,48 @@ class UniFiOSClient:
             return None
 
     @staticmethod
+    def _coerce_nested_float(value: Any) -> Optional[float]:
+        result = UniFiOSClient._coerce_float(value)
+        if result is not None:
+            return result
+        if isinstance(value, dict):
+            for key in (
+                "value",
+                "avg",
+                "average",
+                "mean",
+                "median",
+                "current",
+                "last",
+            ):
+                if key in value:
+                    nested = UniFiOSClient._coerce_nested_float(value.get(key))
+                    if nested is not None:
+                        return nested
+            if len(value) == 1:
+                nested_value = next(iter(value.values()))
+                return UniFiOSClient._coerce_nested_float(nested_value)
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                nested = UniFiOSClient._coerce_nested_float(item)
+                if nested is not None:
+                    return nested
+        return None
+
+    @staticmethod
+    def _extract_speedtest_metric(
+        rec: Dict[str, Any], candidates: Sequence[Tuple[str, float]]
+    ) -> Optional[float]:
+        for key, multiplier in candidates:
+            if key not in rec:
+                continue
+            value = UniFiOSClient._coerce_nested_float(rec.get(key))
+            if value is None:
+                continue
+            return value * multiplier
+        return None
+
+    @staticmethod
     def _format_speedtest_rundate(value: Any) -> Optional[str]:
         if value is None or value == "":
             return None
@@ -747,9 +789,57 @@ class UniFiOSClient:
 
     def _normalize_speedtest_record(self, rec: Dict[str, Any]) -> Dict[str, Any]:
         out = {}
-        dl = rec.get("xput_download", rec.get("download", rec.get("xput_down")))
-        ul = rec.get("xput_upload", rec.get("upload", rec.get("xput_up")))
-        ping = rec.get("latency", rec.get("ping", rec.get("speedtest_ping")))
+        download_candidates: Tuple[Tuple[str, float], ...] = (
+            ("download_mbps", 1.0),
+            ("download_Mbps", 1.0),
+            ("download", 1.0),
+            ("speedtest_download", 1.0),
+            ("xput_download", 1.0),
+            ("xput_download_mbps", 1.0),
+            ("xput_down", 1.0),
+            ("xput_down_mbps", 1.0),
+            ("download_kbps", 1e-3),
+            ("xput_download_kbps", 1e-3),
+            ("xput_down_kbps", 1e-3),
+            ("download_bps", 1e-6),
+            ("xput_download_bps", 1e-6),
+            ("xput_down_bps", 1e-6),
+            ("download_bytes_per_second", 8e-6),
+        )
+        upload_candidates: Tuple[Tuple[str, float], ...] = (
+            ("upload_mbps", 1.0),
+            ("upload_Mbps", 1.0),
+            ("upload", 1.0),
+            ("speedtest_upload", 1.0),
+            ("xput_upload", 1.0),
+            ("xput_upload_mbps", 1.0),
+            ("xput_up", 1.0),
+            ("xput_up_mbps", 1.0),
+            ("upload_kbps", 1e-3),
+            ("xput_upload_kbps", 1e-3),
+            ("xput_up_kbps", 1e-3),
+            ("upload_bps", 1e-6),
+            ("xput_upload_bps", 1e-6),
+            ("xput_up_bps", 1e-6),
+            ("upload_bytes_per_second", 8e-6),
+        )
+        latency_candidates: Tuple[Tuple[str, float], ...] = (
+            ("latency_ms", 1.0),
+            ("latency", 1.0),
+            ("latency_avg", 1.0),
+            ("latency_average", 1.0),
+            ("latency_mean", 1.0),
+            ("ping_ms", 1.0),
+            ("ping", 1.0),
+            ("speedtest_ping", 1.0),
+            ("latency_us", 1e-3),
+            ("ping_us", 1e-3),
+            ("latency_ns", 1e-6),
+        )
+
+        dl = self._extract_speedtest_metric(rec, download_candidates)
+        ul = self._extract_speedtest_metric(rec, upload_candidates)
+        ping = self._extract_speedtest_metric(rec, latency_candidates)
         if dl is not None:
             out["download_mbps"] = float(dl)
         if ul is not None:
@@ -761,6 +851,15 @@ class UniFiOSClient:
             out["rundate"] = (
                 formatted_rundate if formatted_rundate is not None else rec["rundate"]
             )
+        else:
+            for alt_key in ("timestamp", "time", "date", "start_time"):
+                if alt_key not in rec:
+                    continue
+                formatted_rundate = self._format_speedtest_rundate(rec[alt_key])
+                out["rundate"] = (
+                    formatted_rundate if formatted_rundate is not None else rec[alt_key]
+                )
+                break
         if "server" in rec:
             server_raw = rec["server"]
             out["server"] = server_raw
@@ -793,7 +892,14 @@ class UniFiOSClient:
             _assign("server_provider", ["provider", "sponsor"])
             _assign("server_provider_url", ["provider_url", "url"])
         if "status" in rec:
-            out["status"] = rec["status"]
+            status_value = rec["status"]
+            if isinstance(status_value, dict):
+                status_value = (
+                    status_value.get("status")
+                    or status_value.get("state")
+                    or status_value.get("value")
+                )
+            out["status"] = status_value
         return out
 
     def get_last_speedtest(self, cache_sec: int = 20) -> Optional[Dict[str, Any]]:
