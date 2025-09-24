@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
 import ipaddress
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
@@ -30,6 +37,14 @@ SUBSYSTEM_SENSORS: Dict[str, tuple[str, str]] = {
     "wlan": ("WLAN", "mdi:wifi"),
     "www": ("WWW", "mdi:web"),
 }
+
+
+@dataclass
+class RunnerState:
+    last_ok: bool | None = None
+    last_error: str | None = None
+    last_duration_ms: int | None = None
+    last_run: datetime | None = None
 
 
 async def async_setup_entry(
@@ -55,12 +70,40 @@ async def async_setup_entry(
     static_entities.append(UniFiGatewaySpeedtestUploadSensor(coordinator, client))
     static_entities.append(UniFiGatewaySpeedtestPingSensor(coordinator, client))
 
+    runner_state = RunnerState()
+    monitor_entities = [
+        SpeedtestStatusSensor(entry.entry_id, runner_state),
+        SpeedtestLastErrorSensor(entry.entry_id, runner_state),
+        SpeedtestDurationSensor(entry.entry_id, runner_state),
+        SpeedtestLastRunSensor(entry.entry_id, runner_state),
+    ]
+    static_entities.extend(monitor_entities)
+
     _LOGGER.debug(
         "Adding %s static sensors for entry %s",
         len(static_entities),
         entry.entry_id,
     )
     async_add_entities(static_entities)
+
+    async def _on_result(
+        *, success: bool, duration_ms: int, error: str | None, trace_id: str
+    ) -> None:
+        runner_state.last_ok = success
+        runner_state.last_error = error
+        runner_state.last_duration_ms = duration_ms
+        runner_state.last_run = datetime.now(timezone.utc)
+        for entity in monitor_entities:
+            entity.async_write_ha_state()
+
+    entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if entry_store is not None:
+        entry_store["on_result_cb"] = _on_result
+    else:
+        _LOGGER.debug(
+            "Speedtest monitor callback setup skipped; entry store missing for %s",
+            entry.entry_id,
+        )
 
     known_wan: set[str] = set()
     known_lan: set[str] = set()
@@ -169,6 +212,69 @@ async def async_setup_entry(
     _sync_dynamic()
     entry.async_on_unload(coordinator.async_add_listener(_sync_dynamic))
     await coordinator.async_request_refresh()
+
+
+class SpeedtestLastRunSensor(SensorEntity):
+    _attr_name = "Speedtest Last Run"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry_id: str, state: RunnerState) -> None:
+        self._state = state
+        self._attr_unique_id = f"{entry_id}_speedtest_last_run"
+
+    @property
+    def native_value(self):
+        return self._state.last_run
+
+
+class SpeedtestDurationSensor(SensorEntity):
+    _attr_name = "Speedtest Last Duration"
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.MILLISECONDS
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry_id: str, state: RunnerState) -> None:
+        self._state = state
+        self._attr_unique_id = f"{entry_id}_speedtest_last_duration"
+
+    @property
+    def native_value(self):
+        return self._state.last_duration_ms
+
+
+class SpeedtestLastErrorSensor(SensorEntity):
+    _attr_name = "Speedtest Last Error"
+    _attr_icon = "mdi:alert-circle-outline"
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry_id: str, state: RunnerState) -> None:
+        self._state = state
+        self._attr_unique_id = f"{entry_id}_speedtest_last_error"
+
+    @property
+    def native_value(self):
+        return self._state.last_error or ""
+
+
+class SpeedtestStatusSensor(SensorEntity):
+    _attr_name = "Speedtest Last Run OK"
+    _attr_icon = "mdi:check-network"
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry_id: str, state: RunnerState) -> None:
+        self._state = state
+        self._attr_unique_id = f"{entry_id}_speedtest_last_run_ok"
+
+    @property
+    def native_value(self):
+        if self._state.last_ok is None:
+            return "unknown"
+        return "ok" if self._state.last_ok else "error"
 
 
 def _sanitize_stable_key(value: str) -> str:

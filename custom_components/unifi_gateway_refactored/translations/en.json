@@ -19,7 +19,9 @@
           "site_id": "Site ID",
           "use_proxy_prefix": "Use /proxy/network prefix",
           "timeout": "HTTP timeout (seconds)",
-          "speedtest_interval": "Speedtest interval (minutes)"
+          "speedtest_interval": "Speedtest interval (minutes)",
+          "speedtest_interval_minutes": "Speedtest runner interval (minutes)",
+          "speedtest_entities": "Speedtest entity IDs (comma separated)"
         }
       }
     },
@@ -44,7 +46,9 @@
           "verify_ssl": "Verify SSL (bool or CA path)",
           "use_proxy_prefix": "Use /proxy/network prefix",
           "timeout": "HTTP timeout (seconds)",
-          "speedtest_interval": "Speedtest interval (minutes)"
+          "speedtest_interval": "Speedtest interval (minutes)",
+          "speedtest_interval_minutes": "Speedtest runner interval (minutes)",
+          "speedtest_entities": "Speedtest entity IDs (comma separated)"
         }
       }
     },

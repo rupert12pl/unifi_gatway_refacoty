@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from datetime import timedelta
 from functools import partial
 from typing import Any
 
@@ -10,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -17,17 +19,23 @@ from .const import (
     CONF_PASSWORD,
     CONF_PORT,
     CONF_SITE_ID,
+    CONF_SPEEDTEST_ENTITIES,
+    CONF_SPEEDTEST_INTERVAL,
+    CONF_SPEEDTEST_INTERVAL_MIN,
     CONF_TIMEOUT,
     CONF_USE_PROXY_PREFIX,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
-    CONF_SPEEDTEST_INTERVAL,
+    DATA_RUNNER,
+    DATA_UNDO_TIMER,
     DEFAULT_PORT,
     DEFAULT_SITE,
+    DEFAULT_SPEEDTEST_ENTITIES,
+    DEFAULT_SPEEDTEST_INTERVAL,
+    DEFAULT_SPEEDTEST_INTERVAL_MIN,
     DEFAULT_TIMEOUT,
     DEFAULT_USE_PROXY_PREFIX,
     DEFAULT_VERIFY_SSL,
-    DEFAULT_SPEEDTEST_INTERVAL,
     DOMAIN,
     PLATFORMS,
 )
@@ -40,6 +48,7 @@ from .sensor import (
     build_wlan_unique_id,
 )
 from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
+from .monitor import SpeedtestRunner
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -88,21 +97,74 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.error("Controller error while setting up entry %s: %s", entry.entry_id, err)
         raise ConfigEntryNotReady(f"UniFi controller error: {err}") from err
 
-    speedtest_interval = entry.options.get(CONF_SPEEDTEST_INTERVAL)
-    if speedtest_interval is None:
-        speedtest_interval = entry.data.get(
-            CONF_SPEEDTEST_INTERVAL, DEFAULT_SPEEDTEST_INTERVAL
-        )
-
     coordinator = UniFiGatewayDataUpdateCoordinator(
-        hass, client, speedtest_interval=speedtest_interval
+        hass,
+        client,
+        speedtest_interval=0,
     )
     await coordinator.async_config_entry_first_refresh()
 
-    hass.data[DOMAIN][entry.entry_id] = {
+    options = entry.options or {}
+    interval_candidate = options.get(
+        CONF_SPEEDTEST_INTERVAL_MIN, DEFAULT_SPEEDTEST_INTERVAL_MIN
+    )
+    try:
+        interval_minutes = int(interval_candidate)
+    except (TypeError, ValueError):
+        interval_minutes = DEFAULT_SPEEDTEST_INTERVAL_MIN
+    interval_minutes = max(5, interval_minutes)
+
+    raw_entities = options.get(CONF_SPEEDTEST_ENTITIES, DEFAULT_SPEEDTEST_ENTITIES)
+    entity_ids: list[str] = []
+    if isinstance(raw_entities, str):
+        candidates = raw_entities.replace("\n", ",").split(",")
+        entity_ids = [candidate.strip() for candidate in candidates if candidate.strip()]
+    elif isinstance(raw_entities, (list, tuple, set)):
+        for candidate in raw_entities:
+            text = str(candidate).strip()
+            if text:
+                entity_ids.append(text)
+    if not entity_ids:
+        entity_ids = [
+            candidate.strip()
+            for candidate in DEFAULT_SPEEDTEST_ENTITIES.split(",")
+            if candidate.strip()
+        ]
+
+    async def _noop_result_callback(
+        *, success: bool, duration_ms: int, error: str | None, trace_id: str
+    ) -> None:
+        return None
+
+    entry_data = hass.data[DOMAIN][entry.entry_id] = {
         "client": client,
         "coordinator": coordinator,
+        "on_result_cb": _noop_result_callback,
+        DATA_RUNNER: None,
+        DATA_UNDO_TIMER: None,
+        "speedtest_entities": list(entity_ids),
+        "speedtest_interval_minutes": interval_minutes,
     }
+
+    async def _dispatch_result(
+        success: bool, duration_ms: int, error: str | None, trace_id: str
+    ) -> None:
+        store = hass.data.get(DOMAIN, {})
+        data = store.get(entry.entry_id)
+        if not data:
+            return
+        callback = data.get("on_result_cb")
+        if callback is None:
+            return
+        await callback(
+            success=success,
+            duration_ms=duration_ms,
+            error=error,
+            trace_id=trace_id,
+        )
+
+    runner = SpeedtestRunner(hass, entity_ids, _dispatch_result)
+    entry_data[DATA_RUNNER] = runner
 
     _LOGGER.debug(
         "UniFi Gateway entry %s setup complete; scheduling platform forwards",
@@ -112,12 +174,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _async_migrate_interface_unique_ids(hass, entry, client, coordinator.data)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    _LOGGER.info("UniFi Gateway entry %s fully initialized", entry.entry_id)
+
+    hass.async_create_task(runner.async_trigger(reason="init"))
+
+    async def _periodic(_now) -> None:
+        await runner.async_trigger(reason="schedule")
+
+    undo = async_track_time_interval(
+        hass,
+        _periodic,
+        timedelta(minutes=interval_minutes),
+    )
+    entry_data[DATA_UNDO_TIMER] = undo
+
+    _LOGGER.info(
+        "UniFi Gateway entry %s fully initialized; Speedtest every %s minutes (entities=%s)",
+        entry.entry_id,
+        interval_minutes,
+        entity_ids,
+    )
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug("Unloading UniFi Gateway entry %s", entry.entry_id)
+    stored = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if stored and (undo := stored.get(DATA_UNDO_TIMER)):
+        undo()
+        stored[DATA_UNDO_TIMER] = None
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         stored = hass.data.get(DOMAIN)
