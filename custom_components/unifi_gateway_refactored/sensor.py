@@ -209,12 +209,6 @@ async def async_setup_entry(
             entry.entry_id,
         )
         async_add_entities(vpn_entities, update_before_add=True)
-    else:
-        _LOGGER.warning(
-            "UniFi controller for entry %s did not expose any VPN users or peers; "
-            "check controller permissions or VPN configuration",
-            entry.entry_id,
-        )
 
     known_wan: set[str] = set()
     known_lan: set[str] = set()
