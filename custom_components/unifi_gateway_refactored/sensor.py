@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
 import ipaddress
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 from .const import CONF_HOST, DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, UniFiOSClient
@@ -363,6 +364,53 @@ def _extract_client_count(value: Any) -> Optional[int]:
     return _coerce_int(value)
 
 
+def _parse_datetime_24h(value: Any) -> Optional[str]:
+    """Return a datetime string formatted as YYYY-MM-DD HH:MM:SS in local time."""
+
+    if value in (None, ""):
+        return None
+
+    dt_value: Optional[datetime] = None
+
+    if isinstance(value, datetime):
+        dt_value = value
+    elif isinstance(value, (int, float)):
+        number = float(value)
+        if number > 1e11:
+            number /= 1000.0
+        try:
+            dt_value = datetime.fromtimestamp(number, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        parsed = dt_util.parse_datetime(text)
+        if parsed is not None:
+            dt_value = parsed
+        else:
+            try:
+                number = float(text)
+            except (TypeError, ValueError):
+                return None
+            if number > 1e11:
+                number /= 1000.0
+            try:
+                dt_value = datetime.fromtimestamp(number, tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+    else:
+        return None
+
+    if dt_value is None:
+        return None
+
+    if dt_value.tzinfo is None:
+        dt_value = dt_value.replace(tzinfo=timezone.utc)
+    local_dt = dt_util.as_local(dt_value)
+    return local_dt.strftime("%Y-%m-%d %H:%M:%S")
+
 
 class UniFiGatewaySensorBase(
     CoordinatorEntity[UniFiGatewayDataUpdateCoordinator], SensorEntity
@@ -488,6 +536,7 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
                 total_found = True
             if total_found:
                 attrs["num_user_total"] = total
+                attrs["user_total"] = total
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -562,23 +611,95 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
     ) -> None:
         super().__init__(coordinator, client, entry_id, link, "status")
         self._default_icon = getattr(self, "_attr_icon", None)
+        self._last_status: Optional[str] = None
+        self._last_status_source: Optional[str] = None
 
     def _wan_health_record(self) -> Optional[Dict[str, Any]]:
         return _find_wan_health_record(self.coordinator.data, self._identifiers)
 
+    @staticmethod
+    def _normalize_status(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, (int, float)):
+            return "UP" if float(value) > 0 else "DOWN"
+        text = str(value).strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        mapping: Dict[str, str] = {
+            "ok": "OK",
+            "normal": "OK",
+            "good": "OK",
+            "up": "UP",
+            "online": "UP",
+            "connected": "UP",
+            "active": "UP",
+            "running": "UP",
+            "ready": "UP",
+            "primary": "UP",
+            "down": "DOWN",
+            "offline": "DOWN",
+            "disconnected": "DOWN",
+            "error": "DOWN",
+            "fail": "DOWN",
+            "failed": "DOWN",
+            "inactive": "DOWN",
+            "standby": "STANDBY",
+            "backup": "STANDBY",
+            "secondary": "STANDBY",
+        }
+        if lowered in mapping:
+            return mapping[lowered]
+        if lowered.startswith("wan_"):
+            return lowered.split("_", 1)[1].upper()
+        return text.upper()
+
+    def _determine_status(self) -> Tuple[Optional[str], Optional[str]]:
+        link = self._link()
+        status = _value_from_record(
+            link,
+            (
+                "status",
+                "state",
+                "link_state",
+                "value",
+                "status_text",
+                "wan_status",
+            ),
+        )
+        normalized = self._normalize_status(status)
+        if normalized:
+            return normalized, "wan_link"
+
+        health = self._wan_health_record()
+        status = _value_from_record(
+            health,
+            (
+                "status",
+                "state",
+                "status_text",
+                "wan_status",
+                "availability",
+            ),
+        )
+        normalized = self._normalize_status(status)
+        if normalized:
+            return normalized, "wan_health"
+        return None, None
+
     @property
     def native_value(self) -> Optional[Any]:
-        link = self._link()
-        if not link:
-            return None
-        status = link.get("status") or link.get("state")
-        if isinstance(status, str):
-            return status.upper()
-        return status
+        status, source = self._determine_status()
+        if status:
+            self._last_status = status
+            self._last_status_source = source
+            return status
+        return self._last_status
 
     @property
     def icon(self) -> Optional[str]:
-        status = str(self.native_value or "").lower()
+        status = str((self._last_status or self.native_value or "")).lower()
         if status in {"up", "ok", "connected", "online"}:
             return "mdi:check-circle"
         if status in {"down", "error", "fail", "disconnected", "offline"}:
@@ -621,14 +742,18 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
             health,
             ("gateway_ip", "wan_gateway", "gw_ip", "gateway"),
         )
-        attrs["last_update"] = _value_from_record(
+        last_update_raw = _value_from_record(
             health,
             ("datetime", "time", "last_seen", "last_update", "updated_at"),
         )
+        attrs["last_update"] = _parse_datetime_24h(last_update_raw)
+        attrs["last_update_raw"] = last_update_raw
         attrs["uptime"] = _value_from_record(
             health,
             ("uptime", "uptime_status", "wan_uptime", "uptime_seconds"),
         )
+        attrs["status_source"] = self._last_status_source
+        attrs["status_normalized"] = self._last_status
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -969,9 +1094,11 @@ class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
     def extra_state_attributes(self) -> Dict[str, Any]:
         data = self.coordinator.data
         record = data.speedtest if data else None
+        rundate_raw = record.get("rundate") if record else None
         attrs = {
             "source": record.get("source") if record else None,
-            "rundate": record.get("rundate") if record else None,
+            "rundate": _parse_datetime_24h(rundate_raw),
+            "rundate_raw": rundate_raw,
             "server": record.get("server") if record else None,
             "status": record.get("status") if record else None,
         }
@@ -984,6 +1111,9 @@ class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
                 "server_long",
                 "server_provider",
                 "server_provider_url",
+                "server_name",
+                "server_host",
+                "server_id",
             ):
                 attrs[key] = record.get(key)
         attrs.update(self._controller_attrs())
