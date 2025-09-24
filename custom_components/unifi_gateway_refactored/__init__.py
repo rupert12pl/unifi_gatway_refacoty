@@ -85,6 +85,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     client_factory = partial(UniFiOSClient, **client_kwargs)
 
+    options = entry.options or {}
+
+    speedtest_interval_candidate = options.get(CONF_SPEEDTEST_INTERVAL)
+    if speedtest_interval_candidate is None:
+        speedtest_interval_candidate = entry.data.get(
+            CONF_SPEEDTEST_INTERVAL, DEFAULT_SPEEDTEST_INTERVAL
+        )
+    try:
+        speedtest_interval_seconds = int(speedtest_interval_candidate)
+    except (TypeError, ValueError):
+        speedtest_interval_seconds = DEFAULT_SPEEDTEST_INTERVAL
+    speedtest_interval_seconds = max(0, speedtest_interval_seconds)
+
     try:
         client: UniFiOSClient = await hass.async_add_executor_job(client_factory)
     except AuthError as err:
@@ -100,14 +113,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = UniFiGatewayDataUpdateCoordinator(
         hass,
         client,
-        speedtest_interval=0,
+        speedtest_interval=speedtest_interval_seconds,
     )
     await coordinator.async_config_entry_first_refresh()
 
-    options = entry.options or {}
-    interval_candidate = options.get(
-        CONF_SPEEDTEST_INTERVAL_MIN, DEFAULT_SPEEDTEST_INTERVAL_MIN
-    )
+    interval_candidate = options.get(CONF_SPEEDTEST_INTERVAL_MIN)
+    if interval_candidate is None:
+        interval_candidate = entry.data.get(CONF_SPEEDTEST_INTERVAL_MIN)
+    if interval_candidate is None and speedtest_interval_seconds:
+        interval_candidate = round(speedtest_interval_seconds / 60)
+    if interval_candidate is None:
+        interval_candidate = DEFAULT_SPEEDTEST_INTERVAL_MIN
     try:
         interval_minutes = int(interval_candidate)
     except (TypeError, ValueError):
