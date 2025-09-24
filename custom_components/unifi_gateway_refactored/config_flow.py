@@ -23,12 +23,16 @@ from .const import (
     CONF_SITE_ID,
     CONF_TIMEOUT,
     CONF_SPEEDTEST_INTERVAL,
+    CONF_SPEEDTEST_INTERVAL_MIN,
+    CONF_SPEEDTEST_ENTITIES,
     DEFAULT_PORT,
     DEFAULT_SITE,
     DEFAULT_VERIFY_SSL,
     DEFAULT_USE_PROXY_PREFIX,
     DEFAULT_TIMEOUT,
     DEFAULT_SPEEDTEST_INTERVAL,
+    DEFAULT_SPEEDTEST_INTERVAL_MIN,
+    DEFAULT_SPEEDTEST_ENTITIES,
 )
 from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 
@@ -125,6 +129,31 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 sanitized[CONF_SPEEDTEST_INTERVAL] = self._minutes_to_seconds(
                     sanitized[CONF_SPEEDTEST_INTERVAL]
                 )
+            if CONF_SPEEDTEST_INTERVAL_MIN in sanitized:
+                try:
+                    sanitized[CONF_SPEEDTEST_INTERVAL_MIN] = max(
+                        5, int(sanitized[CONF_SPEEDTEST_INTERVAL_MIN])
+                    )
+                except (TypeError, ValueError):
+                    sanitized[CONF_SPEEDTEST_INTERVAL_MIN] = (
+                        DEFAULT_SPEEDTEST_INTERVAL_MIN
+                    )
+            if CONF_SPEEDTEST_ENTITIES in sanitized:
+                value = sanitized[CONF_SPEEDTEST_ENTITIES]
+                if isinstance(value, str):
+                    collapsed = ",".join(
+                        segment.strip()
+                        for segment in value.replace("\n", ",").split(",")
+                        if segment.strip()
+                    )
+                    sanitized[CONF_SPEEDTEST_ENTITIES] = (
+                        collapsed or DEFAULT_SPEEDTEST_ENTITIES
+                    )
+                elif isinstance(value, (list, tuple, set)):
+                    collapsed = ",".join(str(item).strip() for item in value if str(item).strip())
+                    sanitized[CONF_SPEEDTEST_ENTITIES] = (
+                        collapsed or DEFAULT_SPEEDTEST_ENTITIES
+                    )
             self._cached.update(sanitized)
             data = dict(self._cached)
             try:
@@ -140,6 +169,25 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
             except Exception:
                 errors["base"] = "unknown"
+
+        interval_default = self._cached.get(
+            CONF_SPEEDTEST_INTERVAL_MIN, DEFAULT_SPEEDTEST_INTERVAL_MIN
+        )
+        try:
+            interval_default = int(interval_default)
+        except (TypeError, ValueError):
+            interval_default = DEFAULT_SPEEDTEST_INTERVAL_MIN
+        interval_default = max(5, interval_default)
+
+        entities_default = self._cached.get(
+            CONF_SPEEDTEST_ENTITIES, DEFAULT_SPEEDTEST_ENTITIES
+        )
+        if isinstance(entities_default, (list, tuple, set)):
+            entities_default = ",".join(
+                str(item).strip() for item in entities_default if str(item).strip()
+            )
+        if not entities_default:
+            entities_default = DEFAULT_SPEEDTEST_ENTITIES
 
         adv_schema = vol.Schema(
             {
@@ -166,6 +214,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         )
                     ),
                 ): int,
+                vol.Optional(
+                    CONF_SPEEDTEST_INTERVAL_MIN,
+                    default=interval_default,
+                ): vol.All(vol.Coerce(int), vol.Clamp(min=5)),
+                vol.Optional(
+                    CONF_SPEEDTEST_ENTITIES,
+                    default=entities_default,
+                ): str,
             }
         )
         return self.async_show_form(step_id="advanced", data_schema=adv_schema, errors=errors)
@@ -191,6 +247,29 @@ class OptionsFlow(config_entries.OptionsFlow):
                 cleaned[CONF_SPEEDTEST_INTERVAL] = ConfigFlow._minutes_to_seconds(
                     cleaned[CONF_SPEEDTEST_INTERVAL]
                 )
+            if CONF_SPEEDTEST_INTERVAL_MIN in cleaned:
+                try:
+                    cleaned[CONF_SPEEDTEST_INTERVAL_MIN] = max(
+                        5, int(cleaned[CONF_SPEEDTEST_INTERVAL_MIN])
+                    )
+                except (TypeError, ValueError):
+                    cleaned[CONF_SPEEDTEST_INTERVAL_MIN] = DEFAULT_SPEEDTEST_INTERVAL_MIN
+            if CONF_SPEEDTEST_ENTITIES in cleaned:
+                value = cleaned[CONF_SPEEDTEST_ENTITIES]
+                if isinstance(value, str):
+                    collapsed = ",".join(
+                        segment.strip()
+                        for segment in value.replace("\n", ",").split(",")
+                        if segment.strip()
+                    )
+                    cleaned[CONF_SPEEDTEST_ENTITIES] = (
+                        collapsed or DEFAULT_SPEEDTEST_ENTITIES
+                    )
+                elif isinstance(value, (list, tuple, set)):
+                    collapsed = ",".join(str(item).strip() for item in value if str(item).strip())
+                    cleaned[CONF_SPEEDTEST_ENTITIES] = (
+                        collapsed or DEFAULT_SPEEDTEST_ENTITIES
+                    )
             merged = {**self._entry.data, **self._entry.options, **cleaned}
             if not ConfigFlow._has_auth(merged):
                 errors["base"] = "missing_auth"
@@ -208,6 +287,23 @@ class OptionsFlow(config_entries.OptionsFlow):
                     errors["base"] = "unknown"
 
         current = {**self._entry.data, **self._entry.options}
+        interval_default = current.get(
+            CONF_SPEEDTEST_INTERVAL_MIN, DEFAULT_SPEEDTEST_INTERVAL_MIN
+        )
+        try:
+            interval_default = int(interval_default)
+        except (TypeError, ValueError):
+            interval_default = DEFAULT_SPEEDTEST_INTERVAL_MIN
+        interval_default = max(5, interval_default)
+        entities_default = current.get(
+            CONF_SPEEDTEST_ENTITIES, DEFAULT_SPEEDTEST_ENTITIES
+        )
+        if isinstance(entities_default, (list, tuple, set)):
+            entities_default = ",".join(
+                str(item).strip() for item in entities_default if str(item).strip()
+            )
+        if not entities_default:
+            entities_default = DEFAULT_SPEEDTEST_ENTITIES
         schema = vol.Schema(
             {
                 vol.Optional(CONF_HOST, default=current.get(CONF_HOST)): str,
@@ -235,6 +331,14 @@ class OptionsFlow(config_entries.OptionsFlow):
                         current.get(CONF_SPEEDTEST_INTERVAL, DEFAULT_SPEEDTEST_INTERVAL)
                     ),
                 ): int,
+                vol.Optional(
+                    CONF_SPEEDTEST_INTERVAL_MIN,
+                    default=interval_default,
+                ): vol.All(vol.Coerce(int), vol.Clamp(min=5)),
+                vol.Optional(
+                    CONF_SPEEDTEST_ENTITIES,
+                    default=entities_default,
+                ): str,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
