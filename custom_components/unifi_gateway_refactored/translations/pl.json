@@ -18,7 +18,8 @@
           "port": "Port",
           "site_id": "Identyfikator witryny (site ID)",
           "use_proxy_prefix": "Użyj prefiksu /proxy/network",
-          "timeout": "Limit czasu żądania HTTP (sekundy)"
+          "timeout": "Limit czasu żądania HTTP (sekundy)",
+          "speedtest_interval": "Interwał speedtestu (sekundy)"
         }
       }
     },
@@ -41,7 +42,8 @@
           "site_id": "Identyfikator witryny (site ID)",
           "verify_ssl": "Weryfikuj SSL (wartość logiczna lub ścieżka do CA)",
           "use_proxy_prefix": "Użyj prefiksu /proxy/network",
-          "timeout": "Limit czasu żądania HTTP (sekundy)"
+          "timeout": "Limit czasu żądania HTTP (sekundy)",
+          "speedtest_interval": "Interwał speedtestu (sekundy)"
         }
       }
     },

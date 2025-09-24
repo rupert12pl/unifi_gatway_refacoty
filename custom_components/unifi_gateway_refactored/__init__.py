@@ -21,11 +21,13 @@ from .const import (
     CONF_USE_PROXY_PREFIX,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
+    CONF_SPEEDTEST_INTERVAL,
     DEFAULT_PORT,
     DEFAULT_SITE,
     DEFAULT_TIMEOUT,
     DEFAULT_USE_PROXY_PREFIX,
     DEFAULT_VERIFY_SSL,
+    DEFAULT_SPEEDTEST_INTERVAL,
     DOMAIN,
     PLATFORMS,
 )
@@ -86,7 +88,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.error("Controller error while setting up entry %s: %s", entry.entry_id, err)
         raise ConfigEntryNotReady(f"UniFi controller error: {err}") from err
 
-    coordinator = UniFiGatewayDataUpdateCoordinator(hass, client)
+    speedtest_interval = entry.options.get(CONF_SPEEDTEST_INTERVAL)
+    if speedtest_interval is None:
+        speedtest_interval = entry.data.get(
+            CONF_SPEEDTEST_INTERVAL, DEFAULT_SPEEDTEST_INTERVAL
+        )
+
+    coordinator = UniFiGatewayDataUpdateCoordinator(
+        hass, client, speedtest_interval=speedtest_interval
+    )
     await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id] = {
