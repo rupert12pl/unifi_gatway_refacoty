@@ -901,7 +901,13 @@ class UniFiOSClient:
         if result is not None:
             return result
         if isinstance(value, dict):
-            for key in (
+            preferred_keys = (
+                "bandwidth",
+                "throughput",
+                "speed",
+                "rate",
+                "latency",
+                "jitter",
                 "value",
                 "avg",
                 "average",
@@ -909,15 +915,17 @@ class UniFiOSClient:
                 "median",
                 "current",
                 "last",
-            ):
+            )
+            for key in preferred_keys:
                 if key in value:
                     nested = UniFiOSClient._coerce_nested_float(value.get(key))
                     if nested is not None:
                         return nested
-            if len(value) == 1:
-                nested_value = next(iter(value.values()))
-                return UniFiOSClient._coerce_nested_float(nested_value)
-        if isinstance(value, (list, tuple)):
+            for nested_value in value.values():
+                nested = UniFiOSClient._coerce_nested_float(nested_value)
+                if nested is not None:
+                    return nested
+        if isinstance(value, (list, tuple, set)):
             for item in value:
                 nested = UniFiOSClient._coerce_nested_float(item)
                 if nested is not None:
@@ -931,7 +939,19 @@ class UniFiOSClient:
         for key, multiplier in candidates:
             if key not in rec:
                 continue
-            value = UniFiOSClient._coerce_nested_float(rec.get(key))
+            raw_value = rec.get(key)
+            if isinstance(raw_value, dict):
+                if "bandwidth" in raw_value:
+                    bandwidth = UniFiOSClient._coerce_nested_float(
+                        raw_value.get("bandwidth")
+                    )
+                    if bandwidth is not None:
+                        return bandwidth * 8e-6
+                if "latency" in raw_value and key in {"ping", "latency", "latency_ms"}:
+                    latency = UniFiOSClient._coerce_nested_float(raw_value.get("latency"))
+                    if latency is not None:
+                        return latency
+            value = UniFiOSClient._coerce_nested_float(raw_value)
             if value is None:
                 continue
             return value * multiplier

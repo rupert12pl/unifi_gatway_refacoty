@@ -13,7 +13,12 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTime
+try:  # pragma: no cover - compatibility shim for older Home Assistant versions
+    from homeassistant.const import UnitOfTime
+except ImportError:  # pragma: no cover - Home Assistant <=2023.11
+    from homeassistant.const import TIME_MILLISECONDS as UNIT_MILLISECONDS
+else:  # pragma: no cover - modern Home Assistant releases
+    UNIT_MILLISECONDS = UnitOfTime.MILLISECONDS
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import EntityCategory
@@ -232,7 +237,7 @@ class SpeedtestLastRunSensor(SensorEntity):
 class SpeedtestDurationSensor(SensorEntity):
     _attr_name = "Speedtest Last Duration"
     _attr_device_class = SensorDeviceClass.DURATION
-    _attr_native_unit_of_measurement = UnitOfTime.MILLISECONDS
+    _attr_native_unit_of_measurement = UNIT_MILLISECONDS
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
