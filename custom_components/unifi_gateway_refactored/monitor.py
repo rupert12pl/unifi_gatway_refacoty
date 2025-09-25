@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
+from inspect import isawaitable
 from typing import Awaitable, Callable, Sequence
 
 import async_timeout
@@ -163,7 +164,7 @@ class SpeedtestRunner:
                     "trace_id": trace_id,
                 },
             )
-            await pn.async_create(
+            maybe_coro = pn.async_create(
                 self.hass,
                 (
                     f"Speedtest failed ({reason}). Error: **{error}**\n"
@@ -172,6 +173,8 @@ class SpeedtestRunner:
                 title="UniFi Gateway Refactored • Speedtest",
                 notification_id=f"{DOMAIN}_speedtest_error",
             )
+            if isawaitable(maybe_coro):
+                await maybe_coro
             _LOGGER.error(
                 "[%s] Speedtest run ERROR after %sms -> %s",
                 trace_id,
@@ -190,7 +193,9 @@ class SpeedtestRunner:
                 ATTR_DURATION_MS: duration_ms,
             },
         )
-        await pn.async_dismiss(self.hass, f"{DOMAIN}_speedtest_error")
+        maybe_coro = pn.async_dismiss(self.hass, f"{DOMAIN}_speedtest_error")
+        if isawaitable(maybe_coro):
+            await maybe_coro
         _LOGGER.info("[%s] Speedtest run END in %sms", trace_id, duration_ms)
         await self._dispatch_result(True, duration_ms, None, trace_id)
 
