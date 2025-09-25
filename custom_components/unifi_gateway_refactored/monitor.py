@@ -5,12 +5,11 @@ import logging
 import time
 import uuid
 from inspect import isawaitable
-from typing import Awaitable, Callable, Sequence
+from typing import Any, Awaitable, Callable, Sequence
 
-import async_timeout
-from homeassistant.core import HomeAssistant, State
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.core import HomeAssistant
 from homeassistant.components import persistent_notification as pn
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
 
 from .const import (
@@ -25,6 +24,8 @@ from .const import (
     EVT_RUN_ERROR,
     EVT_RUN_START,
 )
+from .coordinator import UniFiGatewayDataUpdateCoordinator
+from .unifi_client import APIError, UniFiOSClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,78 +33,151 @@ ResultCallback = Callable[[bool, int, str | None, str], Awaitable[None]]
 
 
 class SpeedtestRunner:
-    """Execute and observe Home Assistant speedtest updates."""
+    """Execute UniFi speedtests via the controller API and report results."""
 
     def __init__(
         self,
         hass: HomeAssistant,
         entity_ids: Sequence[str],
         on_result_cb: ResultCallback,
+        client: UniFiOSClient,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
     ) -> None:
         self.hass = hass
         self.entity_ids = [entity_id for entity_id in entity_ids if entity_id]
         self._on_result_cb = on_result_cb
+        self._client = client
+        self._coordinator = coordinator
 
-    async def _call_update_entity(self, trace_id: str, timeout_s: int = 120) -> None:
-        """Invoke the Home Assistant update_entity service with a timeout."""
+    @staticmethod
+    def _record_marker(record: dict[str, Any] | None) -> tuple[Any, ...] | None:
+        if not record:
+            return None
+        return (
+            record.get("rundate"),
+            record.get("download_mbps"),
+            record.get("upload_mbps"),
+            record.get("latency_ms"),
+        )
 
-        if not self.entity_ids:
-            _LOGGER.debug("[%s] No entity IDs configured for speedtest run", trace_id)
-            return
+    @staticmethod
+    def _status_text(payload: Any) -> str | None:
+        """Extract a textual status from a UniFi speedtest payload."""
 
-        # async_call no longer returns a boolean; enforce our own timeout.
-        async with async_timeout.timeout(timeout_s):
-            await self.hass.services.async_call(
-                "homeassistant",
-                "update_entity",
-                {"entity_id": self.entity_ids},
-                blocking=True,
-            )
-        _LOGGER.debug("[%s] update_entity called for %s", trace_id, self.entity_ids)
+        if payload is None:
+            return None
+        if isinstance(payload, list):
+            for item in payload:
+                text = SpeedtestRunner._status_text(item)
+                if text:
+                    return text
+            return None
+        if isinstance(payload, dict):
+            candidates = []
+            value = payload.get("status")
+            if isinstance(value, dict):
+                candidates.append(SpeedtestRunner._status_text(value))
+            elif isinstance(value, str):
+                candidates.append(value)
+            for key in ("state", "value"):
+                aux = payload.get(key)
+                if isinstance(aux, str):
+                    candidates.append(aux)
+            for candidate in candidates:
+                if candidate and candidate.strip():
+                    return candidate.strip()
+            return None
+        if isinstance(payload, str) and payload.strip():
+            return payload.strip()
+        return None
 
-    async def _postcondition_wait(
+    @staticmethod
+    def _status_indicates_failure(status: str | None) -> bool:
+        if not status:
+            return False
+        lowered = status.lower()
+        return any(term in lowered for term in ("fail", "error", "timeout", "abort"))
+
+    async def _async_get_last_speedtest(self, cache_sec: int = 0) -> dict[str, Any] | None:
+        def _call() -> dict[str, Any] | None:
+            try:
+                return self._client.get_last_speedtest(cache_sec=cache_sec)
+            except APIError as err:
+                _LOGGER.debug("Failed to fetch last speedtest: %s", err)
+                return None
+            except Exception:
+                _LOGGER.exception("Unexpected error while fetching last speedtest")
+                return None
+
+        return await self.hass.async_add_executor_job(_call)
+
+    async def _async_get_speedtest_status(self) -> Any:
+        def _call() -> Any:
+            try:
+                return self._client.get_speedtest_status()
+            except APIError as err:
+                _LOGGER.debug("Failed to fetch speedtest status: %s", err)
+                return None
+            except Exception:
+                _LOGGER.exception("Unexpected error while fetching speedtest status")
+                return None
+
+        return await self.hass.async_add_executor_job(_call)
+
+    async def _async_start_speedtest(self, trace_id: str) -> None:
+        def _call() -> None:
+            try:
+                self._client.ensure_speedtest_monitoring_enabled(cache_sec=60)
+            except Exception as err:  # pragma: no cover - defensive
+                _LOGGER.debug(
+                    "[%s] Unable to ensure speedtest monitoring flags: %s",
+                    trace_id,
+                    err,
+                )
+            self._client.start_speedtest()
+
+        await self.hass.async_add_executor_job(_call)
+
+    async def _async_wait_for_result(
         self,
         trace_id: str,
-        before_states: dict[str, State | None],
-        max_wait_s: int = 90,
-    ) -> None:
-        """Ensure that sensor states changed after the service call."""
-
+        previous_marker: tuple[Any, ...] | None,
+        max_wait_s: int = 240,
+        poll_interval: float = 5.0,
+    ) -> dict[str, Any]:
         end = time.monotonic() + max_wait_s
+        last_status: str | None = None
         while time.monotonic() < end:
-            updated = 0
-            for entity_id, before in before_states.items():
-                current = self.hass.states.get(entity_id)
-                if current is None:
-                    continue
+            record = await self._async_get_last_speedtest(cache_sec=0)
+            marker = self._record_marker(record)
+            if record and (previous_marker is None or marker != previous_marker):
+                status = record.get("status") if isinstance(record, dict) else None
+                status_text = status if isinstance(status, str) else self._status_text(status)
+                if self._status_indicates_failure(status_text):
+                    raise RuntimeError(f"Speedtest completed with failure status: {status_text}")
+                return record
 
-                # If we did not have a previous state we consider any state
-                # retrieval to be a successful update for that entity.
-                if before is None:
-                    updated += 1
-                    continue
-
-                before_changed = getattr(before, "last_changed", None)
-                before_updated = getattr(before, "last_updated", before_changed)
-                current_changed = getattr(current, "last_changed", None)
-                current_updated = getattr(current, "last_updated", current_changed)
-
-                # Some integrations keep the same value (and therefore the
-                # same ``last_changed`` timestamp) when an update occurs.
-                # ``last_updated`` is bumped in those cases, so we check both
-                # fields to determine whether the entity really refreshed.
-                if current_changed != before_changed:
-                    updated += 1
-                    continue
-                if current_updated and before_updated and current_updated > before_updated:
-                    updated += 1
-                    continue
-            if updated == len(before_states):
-                return
-            await asyncio.sleep(2)
+            status_payload = await self._async_get_speedtest_status()
+            status_text = self._status_text(status_payload)
+            if status_text and status_text != last_status:
+                _LOGGER.debug("[%s] Speedtest status -> %s", trace_id, status_text)
+                last_status = status_text
+            if self._status_indicates_failure(status_text):
+                raise RuntimeError(f"Speedtest reported failure status: {status_text}")
+            await asyncio.sleep(poll_interval)
         raise TimeoutError(
-            f"States did not change within {max_wait_s}s for {self.entity_ids}"
+            f"Speedtest result not available within {max_wait_s}s (trace={trace_id})"
         )
+
+    async def _async_refresh_entities(self, trace_id: str) -> None:
+        try:
+            await self._coordinator.async_request_refresh()
+        except Exception as err:  # pragma: no cover - defensive
+            _LOGGER.debug(
+                "[%s] Coordinator refresh failed after speedtest completion: %s",
+                trace_id,
+                err,
+            )
 
     async def _dispatch_result(
         self, success: bool, duration_ms: int, error: str | None, trace_id: str
@@ -134,12 +208,14 @@ class SpeedtestRunner:
             self.entity_ids,
         )
 
-        before = {entity_id: self.hass.states.get(entity_id) for entity_id in self.entity_ids}
+        previous_record = await self._async_get_last_speedtest(cache_sec=0)
+        previous_marker = self._record_marker(previous_record)
         error: str | None = None
 
         try:
-            await self._call_update_entity(trace_id)
-            await self._postcondition_wait(trace_id, before)
+            await self._async_start_speedtest(trace_id)
+            await self._async_wait_for_result(trace_id, previous_marker)
+            await self._async_refresh_entities(trace_id)
         except (asyncio.TimeoutError, TimeoutError, HomeAssistantError, Exception) as exc:
             _LOGGER.warning(
                 "[%s] First attempt failed: %s. Retrying once...",
@@ -149,8 +225,9 @@ class SpeedtestRunner:
             )
             await asyncio.sleep(5)
             try:
-                await self._call_update_entity(trace_id)
-                await self._postcondition_wait(trace_id, before)
+                await self._async_start_speedtest(trace_id)
+                await self._async_wait_for_result(trace_id, previous_marker)
+                await self._async_refresh_entities(trace_id)
             except Exception as retry_exc:  # pragma: no cover - error path
                 error = f"{type(retry_exc).__name__}: {retry_exc}"
 
