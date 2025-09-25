@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DOMAIN, normalize_vpn_type
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
 
@@ -214,15 +214,14 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                     continue
                     
                 # Normalize VPN data
-                tunnel_type = str(tunnel.get("type", "")).lower()
-                if "client" in tunnel_type or "remote_user" in tunnel_type:
-                    tunnel["type"] = "client"
-                elif "server" in tunnel_type:
-                    tunnel["type"] = "server"
-                elif "s2s" in tunnel_type or "site" in tunnel_type:
-                    tunnel["type"] = "s2s"
-                else:
-                    tunnel["type"] = "vpn"
+                raw_type = (
+                    tunnel.get("type")
+                    or tunnel.get("mode")
+                    or tunnel.get("role")
+                    or tunnel.get("category")
+                    or tunnel.get("kind")
+                )
+                tunnel["type"] = normalize_vpn_type(raw_type)
                 
                 # Add connection status
                 tunnel["established"] = any([

@@ -1,3 +1,5 @@
+from typing import Any
+
 from homeassistant.const import Platform
 
 DOMAIN = "unifi_gateway_refactored"
@@ -100,3 +102,35 @@ VPN_ATTR_ESTABLISHED = "established"
 VPN_ATTR_LAST_SEEN = "last_seen"
 
 # Existing code...
+
+
+def normalize_vpn_type(value: Any) -> str:
+    """Normalize various VPN type labels to canonical keys."""
+
+    text = str(value or "").strip().lower()
+    if not text:
+        return "vpn"
+
+    normalized = text.replace("-", "_")
+
+    for canonical, meta in VPN_TYPES_MAP.items():
+        if normalized == canonical:
+            return canonical
+
+        for alias in meta.get("aliases", []):
+            alias_normalized = str(alias).strip().lower().replace("-", "_")
+            if not alias_normalized:
+                continue
+            if normalized == alias_normalized or alias_normalized in normalized:
+                return canonical
+
+    if "site" in normalized and "teleport" not in normalized:
+        return "s2s"
+    if "client" in normalized:
+        return "client"
+    if "server" in normalized:
+        return "server"
+    if "teleport" in normalized:
+        return "teleport"
+
+    return "vpn"
