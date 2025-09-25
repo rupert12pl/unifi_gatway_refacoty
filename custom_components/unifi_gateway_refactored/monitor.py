@@ -372,4 +372,4 @@ class SpeedtestRunner:
             await self._dispatch_result(True, duration_ms, None, trace_id)
 
 
-__all__ = ["SpeedtestRunner", "ResultCallback", DATA_RUNNER]
+__all__ = ["SpeedtestRunner", "ResultCallback", DATA_RUNNER"]
