@@ -1,4 +1,4 @@
-
+"""The UniFi Gateway Refactored integration."""
 from __future__ import annotations
 
 import hashlib
@@ -54,14 +54,15 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Set up the UniFi Gateway Refactored component."""
+    _LOGGER.debug("Setting up UniFi Gateway Refactored integration")
     hass.data.setdefault(DOMAIN, {})
-    _LOGGER.debug("Initialized UniFi Gateway integration domain store")
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    hass.data.setdefault(DOMAIN, {})
-    _LOGGER.debug("Starting setup for UniFi Gateway entry %s", entry.entry_id)
+    """Set up UniFi Gateway Refactored from a config entry."""
+    _LOGGER.debug("Setting up config entry %s", entry.title)
 
     client_kwargs: dict[str, Any] = {
         "host": entry.data[CONF_HOST],
@@ -213,7 +214,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    _LOGGER.debug("Unloading UniFi Gateway entry %s", entry.entry_id)
+    """Unload a config entry."""
+    _LOGGER.debug("Unloading config entry %s", entry.title)
     stored = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     if stored and (undo := stored.get(DATA_UNDO_TIMER)):
         undo()
