@@ -48,6 +48,7 @@ class SpeedtestRunner:
         self._on_result_cb = on_result_cb
         self._client = client
         self._coordinator = coordinator
+        self._lock = asyncio.Lock()
 
     @staticmethod
     def _record_marker(record: dict[str, Any] | None) -> tuple[Any, ...] | None:
@@ -189,7 +190,11 @@ class SpeedtestRunner:
 
     async def async_trigger(self, reason: str) -> None:
         """Trigger a speedtest update with full observability."""
-
+        # Prevent overlapping runs that can confuse the controller and timeout
+        if self._lock.locked():
+            _LOGGER.debug("Speedtest trigger ignored because a run is already in progress (%s)", reason)
+            return
+        async with self._lock:
         trace_id = str(uuid.uuid4())
         start = time.monotonic()
 
@@ -292,6 +297,39 @@ class SpeedtestRunner:
             await maybe_coro
         _LOGGER.info("[%s] Speedtest run END in %sms", trace_id, duration_ms)
         await self._dispatch_result(True, duration_ms, None, trace_id)
+
+    async def _async_run_speed_test_and_get_results(self) -> dict:
+        """Run speed test and get results."""
+        trace = uuid.uuid4()
+        _LOGGER.debug(
+            "[%s] Speedtest run START",
+            trace,
+        )
+        start_time = time.monotonic()
+        await self._gateway.run_speed_test()
+        try:
+            await asyncio.wait_for(
+                self._gateway.wait_for_speed_test_result(), timeout=600
+            )
+        except TimeoutError as err:
+            end_time = time.monotonic()
+            _LOGGER.error(
+                "[%s] Speedtest run ERROR after %sms -> TimeoutError: Speedtest result not available within 240s (trace=%s)",
+                trace,
+                (end_time - start_time) * 1000,
+                trace,
+            )
+            raise TimeoutError(
+                "Speedtest result not available within 240s"
+            ) from err
+
+        end_time = time.monotonic()
+        _LOGGER.debug(
+            "[%s] Speedtest run END in %sms",
+            trace,
+            (end_time - start_time) * 1000,
+        )
+        return await self._gateway.get_speed_test_results()
 
 
 __all__ = ["SpeedtestRunner", "ResultCallback", DATA_RUNNER]

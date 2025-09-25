@@ -673,6 +673,222 @@ class UniFiOSClient:
     def now(self) -> float:
         return time.time()
 
+    # ---- VPN helpers (generic, multi-endpoint discovery) ----
+    def _iter_vpn_paths(self, endpoint: str) -> List[str]:
+        """Return candidate API paths for a VPN endpoint (mirrors site variants)."""
+
+        # Reuse the speedtest path normalizer for site-aware permutations
+        return self._iter_speedtest_paths(endpoint)
+
+    def _call_vpn_endpoint(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        payload: Any = None,
+        timeout: Optional[int] = None,
+    ) -> Tuple[Any, str]:
+        """Invoke a VPN endpoint trying multiple path variations."""
+
+        last_error: Optional[Exception] = None
+        for path in self._iter_vpn_paths(endpoint):
+            try:
+                if method.upper() == "GET":
+                    response = self._request_json("GET", path, timeout=timeout)
+                else:
+                    response = self._request_json(
+                        method.upper(), path, json_payload=payload, timeout=timeout
+                    )
+                return response, path
+            except APIError as err:
+                last_error = err
+                if err.status_code in (404, 405) or err.expected:
+                    continue
+                if err.status_code == 400 and method.upper() == "GET":
+                    continue
+                raise
+            except ConnectivityError as err:
+                last_error = err
+                continue
+
+        if last_error:
+            raise last_error
+        raise APIError(
+            f"UniFi VPN endpoint {endpoint} unavailable",
+            expected=True,
+        )
+
+    @staticmethod
+    def _normalize_status_text(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, (int, float)):
+            return "UP" if float(value) > 0 else "DOWN"
+        if isinstance(value, bool):
+            return "UP" if value else "DOWN"
+        text = str(value).strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        mapping = {
+            "ok": "UP",
+            "up": "UP",
+            "connected": "UP",
+            "established": "UP",
+            "active": "UP",
+            "running": "UP",
+            "down": "DOWN",
+            "disconnected": "DOWN",
+            "error": "DOWN",
+            "failed": "DOWN",
+            "inactive": "DOWN",
+        }
+        if lowered in mapping:
+            return mapping[lowered]
+        return text.upper()
+
+    @staticmethod
+    def _normalize_vpn_type(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return "vpn"
+        # heuristic mapping
+        if any(k in text for k in ("client", "roadwarrior", "remote_user", "rw")):
+            return "client"
+        if any(k in text for k in ("server",)):
+            return "server"
+        if any(k in text for k in ("s2s", "site-to-site", "site_to_site", "ipsec")):
+            return "s2s"
+        return text
+
+    def _normalize_vpn_tunnel(self, rec: Dict[str, Any]) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        # identifiers
+        tid = (
+            rec.get("id")
+            or rec.get("_id")
+            or rec.get("uuid")
+            or rec.get("tunnel_id")
+            or rec.get("peer_id")
+            or rec.get("name")
+            or rec.get("peer")
+        )
+        if isinstance(tid, (int, float)):
+            tid = str(tid)
+        out["id"] = str(tid) if tid else None
+
+        name = (
+            rec.get("name")
+            or rec.get("label")
+            or rec.get("peer")
+            or rec.get("remote")
+            or rec.get("endpoint")
+        )
+        if not isinstance(name, str) or not name.strip():
+            name = out["id"] or "VPN"
+        out["name"] = str(name)
+
+        vtype = (
+            rec.get("type")
+            or rec.get("mode")
+            or rec.get("role")
+            or rec.get("category")
+            or rec.get("kind")
+        )
+        out["type"] = self._normalize_vpn_type(vtype)
+
+        # status heuristics
+        status_candidates = [
+            rec.get("status"),
+            rec.get("state"),
+            rec.get("connected"),
+            rec.get("is_connected"),
+            rec.get("up"),
+            rec.get("established"),
+        ]
+        status: Optional[str] = None
+        for candidate in status_candidates:
+            status = self._normalize_status_text(candidate)
+            if status:
+                break
+        out["status"] = status
+
+        # addressing / peer
+        out["remote"] = (
+            rec.get("remote")
+            or rec.get("peer")
+            or rec.get("peer_addr")
+            or rec.get("peer_ip")
+            or rec.get("endpoint")
+            or rec.get("public_ip")
+        )
+        out["local"] = (
+            rec.get("local")
+            or rec.get("local_ip")
+            or rec.get("tunnel_ip")
+            or rec.get("interface_ip")
+        )
+
+        # stats
+        rx = rec.get("rx_bytes") or rec.get("rx") or rec.get("bytes_rx")
+        tx = rec.get("tx_bytes") or rec.get("tx") or rec.get("bytes_tx")
+        if isinstance(rec.get("stats"), dict):
+            rx = rx or rec["stats"].get("rx") or rec["stats"].get("rx_bytes")
+            tx = tx or rec["stats"].get("tx") or rec["stats"].get("tx_bytes")
+        out["rx_bytes"] = rx
+        out["tx_bytes"] = tx
+
+        since = rec.get("since") or rec.get("uptime") or rec.get("connected_since")
+        out["since"] = since
+
+        return out
+
+    def get_vpn_tunnels(self) -> List[Dict[str, Any]]:
+        """Retrieve VPN tunnel instances from the controller (best-effort)."""
+
+        endpoints = (
+            "internet/vpn/status",
+            "internet/vpn/tunnels",
+            "internet/vpn",
+            "stat/vpn",
+            "stat/s2s",
+            "rest/vpn",
+            "rest/vpnconf",
+            "list/vpn",
+            "stat/ipsec",
+        )
+
+        for endpoint in endpoints:
+            try:
+                payload, _ = self._call_vpn_endpoint("GET", endpoint)
+            except Exception:
+                continue
+
+            records: List[Dict[str, Any]] = []
+            if isinstance(payload, list):
+                records = [item for item in payload if isinstance(item, dict)]
+            elif isinstance(payload, dict):
+                for key in ("tunnels", "connections", "items", "data", "records"):
+                    value = payload.get(key)
+                    if isinstance(value, list):
+                        records = [item for item in value if isinstance(item, dict)]
+                        break
+                if not records:
+                    # dict-of-dicts fallback
+                    if all(isinstance(v, dict) for v in payload.values()):
+                        records = [dict(v) for v in payload.values()]  # type: ignore[arg-type]
+
+            if not records:
+                continue
+
+            normalized = [self._normalize_vpn_tunnel(rec) for rec in records]
+            # keep only entries with at least a name or id
+            normalized = [n for n in normalized if n.get("name") or n.get("id")]
+            if normalized:
+                return normalized
+
+        return []
+
     # ---- Speedtest helpers (base-relative) ----
     def get_gateway_mac(self) -> Optional[str]:
         try:
@@ -829,11 +1045,20 @@ class UniFiOSClient:
             payload["mac"] = mac
         try:
             result, _ = self._call_speedtest_endpoint("POST", "cmd/devmgr", payload=payload)
+            # Record the trigger time to avoid immediate duplicate runs from other paths
+            try:
+                self._st_last_trigger = time.time()
+            except Exception:
+                pass
             return result
         except Exception:
             result, _ = self._call_speedtest_endpoint(
                 "POST", "internet/speedtest/run", payload={}
             )
+            try:
+                self._st_last_trigger = time.time()
+            except Exception:
+                pass
             return result
 
     def get_speedtest_status(self, mac: Optional[str] = None):
@@ -1130,9 +1355,15 @@ class UniFiOSClient:
             rec = st[0] if isinstance(st, list) and st else (st if isinstance(st, dict) else None)
             if rec:
                 out = self._normalize_speedtest_record(rec)
-                out["source"] = "status"
-                self._st_cache = (now, out)
-                return out
+                # Only trust status payloads that carry actual values or timestamps.
+                has_values = any(
+                    out.get(key) not in (None, "") for key in ("download_mbps", "upload_mbps", "latency_ms")
+                )
+                has_timestamp = out.get("rundate") not in (None, "")
+                if has_values or has_timestamp:
+                    out["source"] = "status"
+                    self._st_cache = (now, out)
+                    return out
         except Exception:
             pass
         try:

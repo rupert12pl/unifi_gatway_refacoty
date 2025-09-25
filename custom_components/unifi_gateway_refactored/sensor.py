@@ -113,6 +113,7 @@ async def async_setup_entry(
     known_wan: set[str] = set()
     known_lan: set[str] = set()
     known_wlan: set[str] = set()
+    known_vpn: set[str] = set()
 
     def _sync_dynamic() -> None:
         _LOGGER.debug(
@@ -194,6 +195,20 @@ async def async_setup_entry(
                 continue
             new_entities.append(
                 UniFiGatewayWlanClientsSensor(coordinator, client, entry.entry_id, wlan)
+            )
+            pending_unique_ids.add(unique_id)
+
+        # VPN tunnels (dynamic, per-instance)
+        for tunnel in getattr(coordinator_data, "vpn_tunnels", []) or []:
+            key = vpn_instance_key(tunnel)
+            if key in known_vpn:
+                continue
+            known_vpn.add(key)
+            unique_id = build_vpn_unique_id(entry.entry_id, tunnel, "status")
+            if unique_id in pending_unique_ids or _should_skip(unique_id):
+                continue
+            new_entities.append(
+                UniFiGatewayVpnInstanceSensor(coordinator, client, entry.entry_id, tunnel)
             )
             pending_unique_ids.add(unique_id)
 
@@ -315,6 +330,18 @@ def wlan_interface_key(wlan: Dict[str, Any]) -> str:
     ssid = wlan.get("name") or wlan.get("ssid") or wlan.get("_id") or wlan.get("id") or "wlan"
     return _sanitize_stable_key(str(ssid))
 
+def vpn_instance_key(tunnel: Dict[str, Any]) -> str:
+    token = (
+        tunnel.get("id")
+        or tunnel.get("_id")
+        or tunnel.get("uuid")
+        or tunnel.get("name")
+        or tunnel.get("peer")
+        or tunnel.get("remote")
+        or "vpn"
+    )
+    return _sanitize_stable_key(str(token))
+
 
 def build_wan_unique_id(entry_id: str, link: Dict[str, Any], suffix: str) -> str:
     return f"{entry_id}::wan::{wan_interface_key(link)}::{suffix}"
@@ -326,6 +353,9 @@ def build_lan_unique_id(entry_id: str, network: Dict[str, Any]) -> str:
 
 def build_wlan_unique_id(entry_id: str, wlan: Dict[str, Any]) -> str:
     return f"{entry_id}::wlan::{wlan_interface_key(wlan)}::clients"
+
+def build_vpn_unique_id(entry_id: str, tunnel: Dict[str, Any], suffix: str) -> str:
+    return f"{entry_id}::vpn::{vpn_instance_key(tunnel)}::{suffix}"
 
 
 def _first_non_empty(record: Dict[str, Any], keys: Iterable[str]) -> Optional[str]:
@@ -673,6 +703,114 @@ class UniFiGatewayAlertsSensor(UniFiGatewaySensorBase):
     def extra_state_attributes(self) -> Dict[str, Any]:
         data = self.coordinator.data
         attrs = {"alerts": data.alerts if data else []}
+        attrs.update(self._controller_attrs())
+        return attrs
+
+
+class UniFiGatewayVpnInstanceSensor(UniFiGatewaySensorBase):
+    _attr_icon = "mdi:lock-network-outline"
+
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        entry_id: str,
+        tunnel: Dict[str, Any],
+    ) -> None:
+        self._entry_id = entry_id
+        self._tunnel_id = str(
+            tunnel.get("id")
+            or tunnel.get("_id")
+            or tunnel.get("uuid")
+            or tunnel.get("name")
+            or tunnel.get("peer")
+            or tunnel.get("remote")
+            or "vpn"
+        )
+        self._name = tunnel.get("name") or tunnel.get("peer") or tunnel.get("remote") or self._tunnel_id
+        self._type = str(tunnel.get("type") or "vpn").lower()
+        unique_id = build_vpn_unique_id(entry_id, tunnel, "status")
+        label_type = self._type.upper() if self._type else "VPN"
+        super().__init__(
+            coordinator,
+            client,
+            unique_id,
+            f"VPN {label_type} {self._name} Status",
+        )
+
+    def _current_tunnel(self) -> Optional[Dict[str, Any]]:
+        data = self.coordinator.data
+        if not data:
+            return None
+        for t in getattr(data, "vpn_tunnels", []) or []:
+            tid = (
+                t.get("id")
+                or t.get("_id")
+                or t.get("uuid")
+                or t.get("name")
+                or t.get("peer")
+                or t.get("remote")
+            )
+            if str(tid) == self._tunnel_id:
+                return t
+        return None
+
+    @staticmethod
+    def _normalize_status(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, (int, float)):
+            return "UP" if float(value) > 0 else "DOWN"
+        if isinstance(value, bool):
+            return "UP" if value else "DOWN"
+        text = str(value).strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        mapping: Dict[str, str] = {
+            "ok": "UP",
+            "up": "UP",
+            "connected": "UP",
+            "established": "UP",
+            "active": "UP",
+            "running": "UP",
+            "down": "DOWN",
+            "offline": "DOWN",
+            "disconnected": "DOWN",
+            "error": "DOWN",
+            "failed": "DOWN",
+            "inactive": "DOWN",
+        }
+        if lowered in mapping:
+            return mapping[lowered]
+        return text.upper()
+
+    @property
+    def native_value(self) -> Optional[str]:
+        t = self._current_tunnel() or {}
+        status = (
+            t.get("status")
+            or t.get("state")
+            or t.get("connected")
+            or t.get("is_connected")
+            or t.get("up")
+            or t.get("established")
+        )
+        return self._normalize_status(status)
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        t = self._current_tunnel() or {}
+        attrs = {
+            "tunnel_id": self._tunnel_id,
+            "type": t.get("type") or self._type,
+            "name": t.get("name") or self._name,
+            "remote": t.get("remote") or t.get("peer"),
+            "local": t.get("local") or t.get("tunnel_ip"),
+            "rx_bytes": t.get("rx_bytes") or t.get("rx") or t.get("bytes_rx"),
+            "tx_bytes": t.get("tx_bytes") or t.get("tx") or t.get("bytes_tx"),
+            "since": t.get("since") or t.get("uptime") or t.get("connected_since"),
+        }
         attrs.update(self._controller_attrs())
         return attrs
 

@@ -34,6 +34,7 @@ class UniFiGatewayData:
     wlans: list[dict[str, Any]] = field(default_factory=list)
     clients: list[dict[str, Any]] = field(default_factory=list)
     speedtest: Optional[dict[str, Any]] = None
+    vpn_tunnels: list[dict[str, Any]] = field(default_factory=list)
 
 
 class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData]):
@@ -202,6 +203,15 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         clients_all = self._client.get_clients() or []
         _LOGGER.debug("Retrieved %s clients", len(clients_all))
 
+        # VPN tunnels (best-effort; may be empty if unsupported)
+        try:
+            vpn_tunnels = self._client.get_vpn_tunnels() or []
+            if vpn_tunnels:
+                _LOGGER.debug("Retrieved %s VPN tunnel records", len(vpn_tunnels))
+        except APIError as err:
+            _LOGGER.debug("Fetching VPN tunnels failed: %s", err)
+            vpn_tunnels = []
+
         try:
             speedtest = self._client.get_last_speedtest(cache_sec=5)
             if speedtest:
@@ -258,6 +268,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             wlans=wlans,
             clients=clients_all,
             speedtest=speedtest,
+            vpn_tunnels=vpn_tunnels,
         )
         _LOGGER.debug(
             "Completed UniFi Gateway data fetch for instance %s",
