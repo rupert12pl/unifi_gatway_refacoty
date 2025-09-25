@@ -101,6 +101,44 @@ class SpeedtestRunner:
             if updated == len(before_states):
                 return
             await asyncio.sleep(2)
+        # If we previously had states for all monitored entities but none of
+        # them reported a change, it is likely that the integration suppressed
+        # the state write because the value did not actually change. In that
+        # case we still consider the speedtest run successful instead of
+        # raising a timeout.
+        had_previous_state = any(before_states.values())
+        if had_previous_state:
+            unchanged = True
+            for entity_id, before in before_states.items():
+                current = self.hass.states.get(entity_id)
+                if current is None:
+                    unchanged = False
+                    break
+                if before is None:
+                    unchanged = False
+                    break
+                if current.state != before.state:
+                    unchanged = False
+                    break
+                if current.attributes != before.attributes:
+                    unchanged = False
+                    break
+                before_changed = getattr(before, "last_changed", None)
+                current_changed = getattr(current, "last_changed", None)
+                if current_changed != before_changed:
+                    unchanged = False
+                    break
+                before_updated = getattr(before, "last_updated", before_changed)
+                current_updated = getattr(current, "last_updated", current_changed)
+                if current_updated != before_updated:
+                    unchanged = False
+                    break
+            if unchanged:
+                _LOGGER.debug(
+                    "[%s] Sensor states unchanged after speedtest run; treating as successful",
+                    trace_id,
+                )
+                return
         raise TimeoutError(
             f"States did not change within {max_wait_s}s for {self.entity_ids}"
         )
