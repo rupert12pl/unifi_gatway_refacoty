@@ -506,42 +506,31 @@ def _extract_client_count(value: Any) -> Optional[int]:
 
 
 def _parse_datetime_24h(value: Any) -> Optional[str]:
-    """Return a datetime string formatted as YYYY-MM-DD HH:MM:SS in local time."""
-
+    """Parse datetime and return in 24h format."""
     if value in (None, ""):
         return None
 
     dt_value: Optional[datetime] = None
-
-    if isinstance(value, datetime):
-        dt_value = value
-    elif isinstance(value, (int, float)):
-        number = float(value)
-        if number > 1e11:
-            number /= 1000.0
-        try:
+    try:
+        if isinstance(value, datetime):
+            dt_value = value
+        elif isinstance(value, (int, float)):
+            number = float(value)
+            if number > 1e11:  # Convert from milliseconds if needed
+                number /= 1000.0
             dt_value = datetime.fromtimestamp(number, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return None
-    elif isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        parsed = dt_util.parse_datetime(text)
-        if parsed is not None:
-            dt_value = parsed
-        else:
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
             try:
                 number = float(text)
-            except (TypeError, ValueError):
-                return None
-            if number > 1e11:
-                number /= 1000.0
-            try:
+                if number > 1e11:
+                    number /= 1000.0
                 dt_value = datetime.fromtimestamp(number, tz=timezone.utc)
-            except (OverflowError, OSError, ValueError):
-                return None
-    else:
+            except ValueError:
+                dt_value = dt_util.parse_datetime(text)
+    except (OverflowError, OSError, ValueError):
         return None
 
     if dt_value is None:
@@ -708,7 +697,10 @@ class UniFiGatewayAlertsSensor(UniFiGatewaySensorBase):
 
 
 class UniFiGatewayVpnInstanceSensor(UniFiGatewaySensorBase):
-    _attr_icon = "mdi:lock-network-outline"
+    """VPN tunnel instance sensor with improved status handling."""
+    
+    _attr_native_unit_of_measurement = "clients"
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(
         self,
@@ -717,7 +709,9 @@ class UniFiGatewayVpnInstanceSensor(UniFiGatewaySensorBase):
         entry_id: str,
         tunnel: Dict[str, Any],
     ) -> None:
+        """Initialize VPN sensor with better type detection."""
         self._entry_id = entry_id
+        self._tunnel = tunnel
         self._tunnel_id = str(
             tunnel.get("id")
             or tunnel.get("_id")
@@ -727,92 +721,114 @@ class UniFiGatewayVpnInstanceSensor(UniFiGatewaySensorBase):
             or tunnel.get("remote")
             or "vpn"
         )
-        self._name = tunnel.get("name") or tunnel.get("peer") or tunnel.get("remote") or self._tunnel_id
-        self._type = str(tunnel.get("type") or "vpn").lower()
+        
+        # Improved VPN type detection
+        vpn_type = str(tunnel.get("type") or "").lower()
+        if "client" in vpn_type or "remote_user" in vpn_type:
+            self._type = "client"
+        elif "server" in vpn_type:
+            self._type = "server"
+        elif "s2s" in vpn_type or "site" in vpn_type:
+            self._type = "s2s"
+        else:
+            self._type = "vpn"
+
+        # Better naming and icon selection
+        vpn_types = {
+            "client": ("Client", "mdi:account-network"),
+            "server": ("Server", "mdi:server-network"),
+            "s2s": ("Site-to-Site", "mdi:wan"),
+            "vpn": ("VPN", "mdi:vpn"),
+        }
+        label_type, icon = vpn_types.get(self._type, vpn_types["vpn"])
+        self._attr_icon = icon
+        
+        name = (
+            tunnel.get("name")
+            or tunnel.get("peer")
+            or tunnel.get("remote")
+            or self._tunnel_id
+        )
         unique_id = build_vpn_unique_id(entry_id, tunnel, "status")
-        label_type = self._type.upper() if self._type else "VPN"
+        
         super().__init__(
             coordinator,
             client,
             unique_id,
-            f"VPN {label_type} {self._name} Status",
+            f"VPN {label_type} {name}",
         )
-
-    def _current_tunnel(self) -> Optional[Dict[str, Any]]:
-        data = self.coordinator.data
-        if not data:
-            return None
-        for t in getattr(data, "vpn_tunnels", []) or []:
-            tid = (
-                t.get("id")
-                or t.get("_id")
-                or t.get("uuid")
-                or t.get("name")
-                or t.get("peer")
-                or t.get("remote")
-            )
-            if str(tid) == self._tunnel_id:
-                return t
-        return None
-
-    @staticmethod
-    def _normalize_status(value: Any) -> Optional[str]:
-        if value in (None, ""):
-            return None
-        if isinstance(value, (int, float)):
-            return "UP" if float(value) > 0 else "DOWN"
-        if isinstance(value, bool):
-            return "UP" if value else "DOWN"
-        text = str(value).strip()
-        if not text:
-            return None
-        lowered = text.lower()
-        mapping: Dict[str, str] = {
-            "ok": "UP",
-            "up": "UP",
-            "connected": "UP",
-            "established": "UP",
-            "active": "UP",
-            "running": "UP",
-            "down": "DOWN",
-            "offline": "DOWN",
-            "disconnected": "DOWN",
-            "error": "DOWN",
-            "failed": "DOWN",
-            "inactive": "DOWN",
-        }
-        if lowered in mapping:
-            return mapping[lowered]
-        return text.upper()
 
     @property
-    def native_value(self) -> Optional[str]:
-        t = self._current_tunnel() or {}
-        status = (
-            t.get("status")
-            or t.get("state")
-            or t.get("connected")
-            or t.get("is_connected")
-            or t.get("up")
-            or t.get("established")
-        )
-        return self._normalize_status(status)
+    def native_value(self) -> Optional[int]:
+        """Return number of connected clients/peers with better counting."""
+        tunnel = self._current_tunnel()
+        if not tunnel:
+            return 0
+            
+        if self._type == "s2s":
+            peers = tunnel.get("peers", [])
+            return len([p for p in peers if p.get("status") == "connected"])
+            
+        clients = tunnel.get("clients", [])
+        return len([c for c in clients if c.get("connected", True)])
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        t = self._current_tunnel() or {}
+        """Return enhanced VPN attributes."""
+        tunnel = self._current_tunnel() or {}
+        
+        # Base attributes
         attrs = {
             "tunnel_id": self._tunnel_id,
-            "type": t.get("type") or self._type,
-            "name": t.get("name") or self._name,
-            "remote": t.get("remote") or t.get("peer"),
-            "local": t.get("local") or t.get("tunnel_ip"),
-            "rx_bytes": t.get("rx_bytes") or t.get("rx") or t.get("bytes_rx"),
-            "tx_bytes": t.get("tx_bytes") or t.get("tx") or t.get("bytes_tx"),
-            "since": t.get("since") or t.get("uptime") or t.get("connected_since"),
+            "type": self._type,
+            "name": tunnel.get("name") or tunnel.get("description"),
+            "remote": tunnel.get("remote") or tunnel.get("peer"),
+            "local": tunnel.get("local") or tunnel.get("tunnel_ip"),
+            "interface": tunnel.get("interface") or tunnel.get("wan_interface"),
+            "established": tunnel.get("established", False),
+            "status": self._get_tunnel_status(tunnel),
+            "last_seen": _parse_datetime_24h(
+                tunnel.get("last_seen") or tunnel.get("last_contact")
+            ),
         }
+
+        # Add type-specific attributes
+        if self._type == "s2s":
+            attrs.update(self._get_s2s_attributes(tunnel))
+        else:
+            attrs.update(self._get_client_server_attributes(tunnel))
+
         attrs.update(self._controller_attrs())
         return attrs
+
+    def _get_tunnel_status(self, tunnel: Dict[str, Any]) -> str:
+        """Get normalized tunnel status."""
+        status = tunnel.get("status", "")
+        if isinstance(status, bool):
+            return "up" if status else "down"
+        if not status:
+            return "unknown"
+        return str(status).lower()
+
+    def _get_s2s_attributes(self, tunnel: Dict[str, Any]) -> Dict[str, Any]:
+        """Get Site-to-Site specific attributes."""
+        return {
+            "peers": len(tunnel.get("peers", [])),
+            "active_peers": len([p for p in tunnel.get("peers", []) if p.get("status") == "connected"]),
+            "networks": tunnel.get("networks", []),
+            "local_networks": tunnel.get("local_networks", []),
+            "remote_networks": tunnel.get("remote_networks", []),
+        }
+
+    def _get_client_server_attributes(self, tunnel: Dict[str, Any]) -> Dict[str, Any]:
+        """Get Client/Server specific attributes."""
+        return {
+            "clients": len(tunnel.get("clients", [])),
+            "active_clients": len([c for c in tunnel.get("clients", []) if c.get("connected", True)]),
+            "protocol": tunnel.get("protocol"),
+            "port": tunnel.get("port"),
+            "encryption": tunnel.get("encryption") or tunnel.get("cipher"),
+        }
 
 
 class UniFiGatewayFirmwareSensor(UniFiGatewaySensorBase):
@@ -886,7 +902,6 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
             "active": "UP",
             "running": "UP",
             "ready": "UP",
-            "primary": "UP",
             "down": "DOWN",
             "offline": "DOWN",
             "disconnected": "DOWN",
@@ -1326,47 +1341,57 @@ class UniFiGatewayWlanClientsSensor(UniFiGatewaySensorBase):
 
 
 class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
+    """Base speedtest sensor with improved status handling."""
+    
     _attr_state_class = SensorStateClass.MEASUREMENT
-
-    def __init__(
-        self,
-        coordinator: UniFiGatewayDataUpdateCoordinator,
-        client: UniFiOSClient,
-        kind: str,
-        label: str,
-    ) -> None:
-        unique_id = f"unifigw_{client.instance_key()}_speedtest_{kind}"
-        super().__init__(coordinator, client, unique_id, label)
-        self._kind = kind
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return enhanced speedtest attributes."""
         data = self.coordinator.data
         record = data.speedtest if data else None
-        rundate_raw = record.get("rundate") if record else None
+        
         attrs = {
             "source": record.get("source") if record else None,
-            "rundate": _parse_datetime_24h(rundate_raw),
-            "rundate_raw": rundate_raw,
-            "server": record.get("server") if record else None,
-            "status": record.get("status") if record else None,
+            "last_run": _parse_datetime_24h(record.get("rundate") if record else None),
+            "server": record.get("server_name") if record else None,
+            "status": self._get_speedtest_status(record),
         }
+
         if record:
-            for key in (
-                "server_cc",
-                "server_city",
-                "server_country",
-                "server_lat",
-                "server_long",
-                "server_provider",
-                "server_provider_url",
-                "server_name",
-                "server_host",
-                "server_id",
-            ):
-                attrs[key] = record.get(key)
+            # Add detailed server information
+            server_attrs = {
+                key: record.get(key)
+                for key in (
+                    "server_id", "server_name", "server_host",
+                    "server_location", "server_country", "server_cc",
+                    "server_sponsor", "server_latency"
+                )
+                if record.get(key) is not None
+            }
+            attrs.update(server_attrs)
+
         attrs.update(self._controller_attrs())
         return attrs
+
+    def _get_speedtest_status(self, record: Optional[Dict[str, Any]]) -> str:
+        """Get normalized speedtest status."""
+        if not record:
+            return "unknown"
+        
+        status = record.get("status", "")
+        if not status:
+            return "unknown"
+            
+        status = str(status).lower()
+        if "error" in status or "fail" in status:
+            return "error"
+        if "progress" in status or "running" in status:
+            return "running"
+        if "success" in status or "complete" in status:
+            return "success"
+            
+        return status
 
 
 class UniFiGatewaySpeedtestDownloadSensor(UniFiGatewaySpeedtestSensor):
@@ -1485,6 +1510,12 @@ def _extract_network_ip_address(network: Dict[str, Any]) -> Optional[str]:
     ):
         result = _extract_ip_from_value(network.get(key))
         if result:
+            return result
+    for key in ("subnet", "ip_subnet", "cidr"):
+        result = _extract_ip_from_value(network.get(key))
+        if result:
+            return result
+    return None
             return result
     for key in ("subnet", "ip_subnet", "cidr"):
         result = _extract_ip_from_value(network.get(key))

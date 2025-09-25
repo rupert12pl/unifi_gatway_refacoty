@@ -1,4 +1,3 @@
-
 from homeassistant.const import Platform
 
 DOMAIN = "unifi_gateway_refactored"
@@ -40,3 +39,64 @@ ATTR_REASON = "reason"
 ATTR_ENTITY_IDS = "entity_ids"
 ATTR_DURATION_MS = "duration_ms"
 ATTR_ERROR = "error"
+
+# Speedtest configuration
+SPEEDTEST_DEFAULT_TIMEOUT = 600  # 10 minutes
+SPEEDTEST_RETRY_DELAY = 5  # seconds
+SPEEDTEST_POLL_INTERVAL = 5.0  # seconds
+
+# Speedtest status
+SPEEDTEST_STATUS_PENDING = "pending"
+SPEEDTEST_STATUS_RUNNING = "running"
+SPEEDTEST_STATUS_SUCCESS = "success"
+SPEEDTEST_STATUS_ERROR = "error"
+SPEEDTEST_STATUS_UNKNOWN = "unknown"
+
+# VPN configuration
+VPN_REFRESH_INTERVAL = 30  # seconds
+VPN_CONNECTION_TIMEOUT = 60  # seconds
+
+# VPN types (enhanced)
+VPN_TYPES_MAP = {
+    "client": {
+        "name": "Client",
+        "icon": "mdi:account-network",
+        "aliases": ["client", "remote_user", "roadwarrior"],
+    },
+    "server": {
+        "name": "Server",
+        "icon": "mdi:server-network",
+        "aliases": ["server"],
+    },
+    "s2s": {
+        "name": "Site-to-Site",
+        "icon": "mdi:wan",
+        "aliases": ["s2s", "site-to-site", "ipsec"],
+    },
+    "teleport": {
+        "name": "Teleport",
+        "icon": "mdi:transit-connection-variant",
+        "aliases": ["teleport"],
+    },
+}
+
+# VPN status
+VPN_STATUS_CONNECTED = "connected"
+VPN_STATUS_DISCONNECTED = "disconnected"
+VPN_STATUS_ERROR = "error"
+VPN_STATUS_UNKNOWN = "unknown"
+
+# VPN attributes
+VPN_ATTR_TYPE = "type"
+VPN_ATTR_NAME = "name"
+VPN_ATTR_STATUS = "status"
+VPN_ATTR_REMOTE = "remote"
+VPN_ATTR_LOCAL = "local"
+VPN_ATTR_INTERFACE = "interface"
+VPN_ATTR_CLIENTS = "clients"
+VPN_ATTR_PEERS = "peers"
+VPN_ATTR_NETWORKS = "networks"
+VPN_ATTR_ESTABLISHED = "established"
+VPN_ATTR_LAST_SEEN = "last_seen"
+
+# Existing code...
