@@ -4,6 +4,8 @@ import asyncio
 import logging
 import time
 import uuid
+from dataclasses import dataclass
+from datetime import datetime
 from inspect import isawaitable
 from typing import Awaitable, Callable, Sequence
 
@@ -29,6 +31,35 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 ResultCallback = Callable[[bool, int, str | None, str], Awaitable[None]]
+
+
+@dataclass(slots=True, frozen=True)
+class _StateFingerprint:
+    """Immutable snapshot of key state metadata for change detection."""
+
+    exists: bool
+    state: str | None = None
+    last_changed: datetime | None = None
+    last_updated: datetime | None = None
+    context_id: str | None = None
+
+    @classmethod
+    def capture(cls, state: State | None) -> "_StateFingerprint":
+        """Create a fingerprint from a Home Assistant state object."""
+
+        if state is None:
+            return cls(False)
+
+        context = getattr(state, "context", None)
+        context_id = getattr(context, "id", None)
+
+        return cls(
+            True,
+            getattr(state, "state", None),
+            getattr(state, "last_changed", None),
+            getattr(state, "last_updated", None),
+            context_id,
+        )
 
 
 class SpeedtestRunner:
@@ -64,7 +95,7 @@ class SpeedtestRunner:
     async def _postcondition_wait(
         self,
         trace_id: str,
-        before_states: dict[str, State | None],
+        before_states: dict[str, _StateFingerprint],
         max_wait_s: int = 90,
     ) -> None:
         """Ensure that sensor states changed after the service call."""
@@ -73,20 +104,23 @@ class SpeedtestRunner:
         while time.monotonic() < end:
             updated = 0
             for entity_id, before in before_states.items():
-                current = self.hass.states.get(entity_id)
-                if current is None:
+                current = _StateFingerprint.capture(
+                    self.hass.states.get(entity_id)
+                )
+
+                if not current.exists:
                     continue
 
                 # If we did not have a previous state we consider any state
                 # retrieval to be a successful update for that entity.
-                if before is None:
+                if not before.exists:
                     updated += 1
                     continue
 
-                before_changed = getattr(before, "last_changed", None)
-                before_updated = getattr(before, "last_updated", before_changed)
-                current_changed = getattr(current, "last_changed", None)
-                current_updated = getattr(current, "last_updated", current_changed)
+                before_changed = before.last_changed
+                before_updated = before.last_updated or before_changed
+                current_changed = current.last_changed
+                current_updated = current.last_updated or current_changed
 
                 # Some integrations keep the same value (and therefore the
                 # same ``last_changed`` timestamp) when an update occurs.
@@ -96,6 +130,14 @@ class SpeedtestRunner:
                     updated += 1
                     continue
                 if current_updated and before_updated and current_updated > before_updated:
+                    updated += 1
+                    continue
+
+                if current.context_id and before.context_id and current.context_id != before.context_id:
+                    updated += 1
+                    continue
+
+                if current.state != before.state:
                     updated += 1
                     continue
             if updated == len(before_states):
@@ -134,7 +176,10 @@ class SpeedtestRunner:
             self.entity_ids,
         )
 
-        before = {entity_id: self.hass.states.get(entity_id) for entity_id in self.entity_ids}
+        before = {
+            entity_id: _StateFingerprint.capture(self.hass.states.get(entity_id))
+            for entity_id in self.entity_ids
+        }
         error: str | None = None
 
         try:
