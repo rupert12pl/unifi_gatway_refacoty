@@ -7,9 +7,7 @@ import uuid
 from typing import Any, Awaitable, Callable, Sequence
 
 from homeassistant.core import HomeAssistant
-from homeassistant.components import persistent_notification as pn
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
 
 from .const import (
     ATTR_DURATION_MS,
@@ -17,7 +15,6 @@ from .const import (
     ATTR_ERROR,
     ATTR_REASON,
     ATTR_TRACE_ID,
-    DATA_RUNNER,
     DOMAIN,
     EVT_RUN_END,
     EVT_RUN_ERROR,
@@ -46,15 +43,12 @@ class SpeedtestRunner:
         client: UniFiOSClient,
         coordinator: UniFiGatewayDataUpdateCoordinator,
     ) -> None:
-        """Initialize the speedtest runner."""
-        _LOGGER.debug("Initializing SpeedtestRunner with entities: %s", entity_ids)
         self.hass = hass
         self.entity_ids = [entity_id for entity_id in entity_ids if entity_id]
         self._on_result_cb = on_result_cb
         self._client = client
         self._coordinator = coordinator
         self._lock = asyncio.Lock()
-        _LOGGER.debug("SpeedtestRunner initialized successfully")
 
     @staticmethod
     def _record_marker(record: dict[str, Any] | None) -> tuple[Any, ...] | None:
@@ -69,9 +63,25 @@ class SpeedtestRunner:
 
     @staticmethod
     def _status_text(payload: Any) -> str | None:
-        """Extract a textual status from a UniFi speedtest payload."""
-
         if payload is None:
+            return None
+        if isinstance(payload, str):
+            payload = payload.strip()
+            return payload or None
+        if isinstance(payload, dict):
+            candidates: list[str | None] = []
+            status = payload.get("status")
+            if isinstance(status, dict):
+                candidates.append(SpeedtestRunner._status_text(status))
+            elif isinstance(status, str):
+                candidates.append(status)
+            for key in ("state", "value", "error", "message"):
+                value = payload.get(key)
+                if isinstance(value, str):
+                    candidates.append(value)
+            for candidate in candidates:
+                if candidate and candidate.strip():
+                    return candidate.strip()
             return None
         if isinstance(payload, list):
             for item in payload:
@@ -79,23 +89,6 @@ class SpeedtestRunner:
                 if text:
                     return text
             return None
-        if isinstance(payload, dict):
-            candidates = []
-            value = payload.get("status")
-            if isinstance(value, dict):
-                candidates.append(SpeedtestRunner._status_text(value))
-            elif isinstance(value, str):
-                candidates.append(value)
-            for key in ("state", "value"):
-                aux = payload.get(key)
-                if isinstance(aux, str):
-                    candidates.append(aux)
-            for candidate in candidates:
-                if candidate and candidate.strip():
-                    return candidate.strip()
-            return None
-        if isinstance(payload, str) and payload.strip():
-            return payload.strip()
         return None
 
     @staticmethod
@@ -134,14 +127,14 @@ class SpeedtestRunner:
     async def _async_start_speedtest(self, trace_id: str) -> None:
         def _call() -> None:
             try:
-                self._client.ensure_speedtest_monitoring_enabled(cache_sec=60)
+                ensure = getattr(self._client, "ensure_speedtest_monitoring_enabled", None)
+                if callable(ensure):
+                    ensure(cache_sec=60)
+                self._client.start_speedtest()
+            except APIError as err:
+                raise HomeAssistantError(f"Failed to start UniFi speedtest: {err}") from err
             except Exception as err:  # pragma: no cover - defensive
-                _LOGGER.debug(
-                    "[%s] Unable to ensure speedtest monitoring flags: %s",
-                    trace_id,
-                    err,
-                )
-            self._client.start_speedtest()
+                raise HomeAssistantError("Unexpected error starting UniFi speedtest") from err
 
         await self.hass.async_add_executor_job(_call)
 
@@ -149,85 +142,63 @@ class SpeedtestRunner:
         self,
         trace_id: str,
         previous_marker: tuple[Any, ...] | None,
+        *,
         max_wait_s: int = DEFAULT_MAX_WAIT_S,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
     ) -> dict[str, Any]:
-        """Wait for speedtest results with improved error handling and logging."""
-        end = time.monotonic() + max_wait_s
+        deadline = time.monotonic() + max_wait_s
         last_status: str | None = None
-        attempt_count = 0
-        start_time = time.monotonic()
+        attempt = 0
 
-        while time.monotonic() < end:
-            attempt_count += 1
-            remaining_time = int(end - time.monotonic())
-            elapsed_time = int(time.monotonic() - start_time)
+        while time.monotonic() < deadline:
+            attempt += 1
 
-            _LOGGER.debug(
-                "[%s] Speedtest check attempt %d (elapsed: %ds, remaining: %ds)",
-                trace_id,
-                attempt_count,
-                elapsed_time,
-                remaining_time,
-            )
-
-            try:
-                record = await self._async_get_last_speedtest(cache_sec=0)
-                status_payload = await self._async_get_speedtest_status()
-            except Exception as err:
-                _LOGGER.warning(
-                    "[%s] Failed to fetch speedtest data: %s",
-                    trace_id,
-                    err,
-                )
-                await asyncio.sleep(poll_interval)
-                continue
+            record = await self._async_get_last_speedtest(cache_sec=0)
+            record_status = self._status_text(record)
+            if self._status_indicates_failure(record_status):
+                raise RuntimeError(f"Speedtest completed with failure status: {record_status}")
 
             marker = self._record_marker(record)
             if record and (previous_marker is None or marker != previous_marker):
-                status = record.get("status") if isinstance(record, dict) else None
-                status_text = status if isinstance(status, str) else self._status_text(status)
-                if self._status_indicates_failure(status_text):
-                    raise RuntimeError(f"Speedtest completed with failure status: {status_text}")
-                _LOGGER.debug("[%s] Speedtest completed successfully after %d attempts", trace_id, attempt_count)
                 return record
 
+            status_payload = await self._async_get_speedtest_status()
             status_text = self._status_text(status_payload)
             if status_text and status_text != last_status:
-                _LOGGER.debug("[%s] Speedtest status -> %s (attempt %d)", trace_id, status_text, attempt_count)
+                _LOGGER.debug(
+                    "[%s] Speedtest status update -> %s (attempt %d)",
+                    trace_id,
+                    status_text,
+                    attempt,
+                )
                 last_status = status_text
             if self._status_indicates_failure(status_text):
                 raise RuntimeError(f"Speedtest reported failure status: {status_text}")
+
             await asyncio.sleep(poll_interval)
 
-        _LOGGER.warning(
-            "[%s] Speedtest timed out after %d attempts (%ds elapsed)",
-            trace_id,
-            attempt_count,
-            int(time.monotonic() - start_time),
-        )
         raise TimeoutError(
-            f"Speedtest result not available within {max_wait_s}s "
-            f"(trace={trace_id}, attempts={attempt_count})"
+            f"Speedtest result not available within {max_wait_s}s (trace={trace_id})"
         )
 
-    async def _async_refresh_entities(self, trace_id: str) -> None:
+    async def _async_refresh_entities(self) -> None:
         try:
             await self._coordinator.async_request_refresh()
-        except Exception as err:  # pragma: no cover - defensive
-            _LOGGER.debug(
-                "[%s] Coordinator refresh failed after speedtest completion: %s",
-                trace_id,
-                err,
-            )
+        except Exception:  # pragma: no cover - defensive logging
+            _LOGGER.exception("Failed to refresh entities after speedtest")
 
     async def _dispatch_result(
-        self, success: bool, duration_ms: int, error: str | None, trace_id: str
+        self, *, success: bool, duration_ms: int, error: str | None, trace_id: str
     ) -> None:
         try:
-            await self._on_result_cb(success, duration_ms, error, trace_id)
+            await self._on_result_cb(
+                success=success,
+                duration_ms=duration_ms,
+                error=error,
+                trace_id=trace_id,
+            )
         except Exception:  # pragma: no cover - defensive logging
-            _LOGGER.exception("[%s] Result callback raised", trace_id)
+            _LOGGER.exception("Result callback raised for speedtest %s", trace_id)
 
     async def async_trigger(self, reason: str) -> None:
         """Trigger a speedtest update."""
@@ -238,7 +209,16 @@ class SpeedtestRunner:
         async with self._lock:
             trace_id = str(uuid.uuid4())
             start = time.monotonic()
-            _LOGGER.info("Starting speedtest (reason=%s, trace=%s)", reason, trace_id)
+            error: str | None = None
+
+            self.hass.bus.async_fire(
+                EVT_RUN_START,
+                {
+                    ATTR_TRACE_ID: trace_id,
+                    ATTR_REASON: reason,
+                    ATTR_ENTITY_IDS: self.entity_ids,
+                },
+            )
 
             try:
                 previous_record = await self._async_get_last_speedtest(cache_sec=0)
@@ -249,64 +229,43 @@ class SpeedtestRunner:
                     trace_id,
                     previous_marker,
                     max_wait_s=DEFAULT_MAX_WAIT_S,
+                    poll_interval=DEFAULT_POLL_INTERVAL,
                 )
 
                 if result:
                     _LOGGER.info(
-                        "Speedtest completed successfully: %s/%s Mbps, %s ms",
+                        "Speedtest completed: %s/%s Mbps, %s ms",
                         result.get("download_mbps"),
                         result.get("upload_mbps"),
                         result.get("latency_ms"),
                     )
-                    await self._async_refresh_entities(trace_id)
+                    await self._async_refresh_entities()
 
                 duration_ms = int((time.monotonic() - start) * 1000)
-                await self._dispatch_result(True, duration_ms, None, trace_id)
-
+                self.hass.bus.async_fire(
+                    EVT_RUN_END,
+                    {
+                        ATTR_TRACE_ID: trace_id,
+                        ATTR_REASON: reason,
+                        ATTR_ENTITY_IDS: self.entity_ids,
+                        ATTR_DURATION_MS: duration_ms,
+                    },
+                )
+                await self._dispatch_result(
+                    success=True,
+                    duration_ms=duration_ms,
+                    error=None,
+                    trace_id=trace_id,
+                )
             except Exception as err:
                 duration_ms = int((time.monotonic() - start) * 1000)
-                error_msg = f"{type(err).__name__}: {str(err)}"
+                error = f"{type(err).__name__}: {err}"
                 _LOGGER.error(
                     "Speedtest failed after %dms: %s (trace=%s)",
                     duration_ms,
-                    error_msg,
+                    error,
                     trace_id,
-                    exc_info=True,
                 )
-                await self._dispatch_result(False, duration_ms, error_msg, trace_id)
-
-
-__all__ = ["SpeedtestRunner", "ResultCallback", DATA_RUNNER"]
-                    await self._async_refresh_entities(trace_id)
-                    break
-                except Exception as exc:
-                    if attempt == 0:
-                        _LOGGER.warning(
-                            "[%s] First attempt failed: %s",
-                            trace_id,
-                            exc,
-                            exc_info=True,
-                        )
-                        continue
-
-                    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
-                        error = (
-                            f"TimeoutError: Speedtest result not available within "
-                            f"{DEFAULT_MAX_WAIT_S}s (trace={trace_id})"
-                        )
-                    else:
-                        error = f"{type(exc).__name__}: {exc}"
-
-                    _LOGGER.error(
-                        "[%s] Speedtest failed: %s",
-                        trace_id,
-                        error,
-                        exc_info=True,
-                    )
-
-            duration_ms = int((time.monotonic() - start) * 1000)
-
-            if error:
                 self.hass.bus.async_fire(
                     EVT_RUN_ERROR,
                     {
@@ -317,59 +276,18 @@ __all__ = ["SpeedtestRunner", "ResultCallback", DATA_RUNNER"]
                         ATTR_ERROR: error,
                     },
                 )
-                async_create_issue(
-                    self.hass,
-                    DOMAIN,
-                    f"speedtest_run_failed_{trace_id}",
-                    is_fixable=False,
-                    severity=IssueSeverity.ERROR,
-                    translation_key="speedtest_run_failed",
-                    translation_placeholders={
-                        "error": error,
-                        "reason": reason,
-                        "trace_id": trace_id,
-                    },
-                    data={
-                        "error": error,
-                        "entities": self.entity_ids,
-                        "reason": reason,
-                        "trace_id": trace_id,
-                    },
+                await self._dispatch_result(
+                    success=False,
+                    duration_ms=duration_ms,
+                    error=error,
+                    trace_id=trace_id,
                 )
-                maybe_coro = pn.async_create(
-                    self.hass,
-                    (
-                        f"Speedtest failed ({reason}). Error: **{error}**\n"
-                        f"Trace: `{trace_id}`"
-                    ),
-                    title="UniFi Gateway Refactored • Speedtest",
-                    notification_id=f"{DOMAIN}_speedtest_error",
-                )
-                if isawaitable(maybe_coro):
-                    await maybe_coro
-                _LOGGER.error(
-                    "[%s] Speedtest run ERROR after %sms -> %s",
-                    trace_id,
-                    duration_ms,
-                    error,
-                )
-                await self._dispatch_result(False, duration_ms, error, trace_id)
-                return
-
-            self.hass.bus.async_fire(
-                EVT_RUN_END,
-                {
-                    ATTR_TRACE_ID: trace_id,
-                    ATTR_REASON: reason,
-                    ATTR_ENTITY_IDS: self.entity_ids,
-                    ATTR_DURATION_MS: duration_ms,
-                },
-            )
-            maybe_coro = pn.async_dismiss(self.hass, f"{DOMAIN}_speedtest_error")
-            if isawaitable(maybe_coro):
-                await maybe_coro
-            _LOGGER.info("[%s] Speedtest run END in %sms", trace_id, duration_ms)
-            await self._dispatch_result(True, duration_ms, None, trace_id)
 
 
-__all__ = ["SpeedtestRunner", "ResultCallback", DATA_RUNNER"]
+__all__ = [
+    "SpeedtestRunner",
+    "ResultCallback",
+    "DEFAULT_MAX_WAIT_S",
+    "DEFAULT_POLL_INTERVAL",
+    "RETRY_DELAY_S",
+]

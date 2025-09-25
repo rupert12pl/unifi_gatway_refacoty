@@ -5,14 +5,13 @@ import hashlib
 import logging
 from datetime import timedelta
 from functools import partial
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
-from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.event import async_track_time_interval
-from homeassistant.helpers.typing import ConfigType
+if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
+    from homeassistant.helpers import entity_registry as er
+    from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CONF_HOST,
@@ -40,29 +39,24 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
-from .sensor import (
-    _sanitize_stable_key,
-    _wan_identifier_candidates,
-    build_lan_unique_id,
-    build_wan_unique_id,
-    build_wlan_unique_id,
-)
 from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
 from .monitor import SpeedtestRunner
 
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+async def async_setup(hass: "HomeAssistant", config: "ConfigType") -> bool:
     """Set up the UniFi Gateway Refactored component."""
     _LOGGER.debug("Setting up UniFi Gateway Refactored integration")
     hass.data.setdefault(DOMAIN, {})
     return True
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
     """Set up UniFi Gateway Refactored from a config entry."""
     _LOGGER.debug("Setting up config entry %s", entry.title)
+
+    from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
     client_kwargs: dict[str, Any] = {
         "host": entry.data[CONF_HOST],
@@ -197,6 +191,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def _periodic(_now) -> None:
         await runner.async_trigger(reason="schedule")
 
+    from homeassistant.helpers.event import async_track_time_interval
+
     undo = async_track_time_interval(
         hass,
         _periodic,
@@ -213,7 +209,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
     """Unload a config entry."""
     _LOGGER.debug("Unloading config entry %s", entry.title)
     stored = hass.data.get(DOMAIN, {}).get(entry.entry_id)
@@ -230,12 +226,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_migrate_interface_unique_ids(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
+    hass: "HomeAssistant",
+    entry: "ConfigEntry",
     client: UniFiOSClient,
     data: UniFiGatewayData | None,
 ) -> None:
     """Normalize WAN/LAN/WLAN sensor unique IDs."""
+
+    from homeassistant.helpers import entity_registry as er
+    from .sensor import (
+        _wan_identifier_candidates,
+        build_lan_unique_id,
+        build_wan_unique_id,
+        build_wlan_unique_id,
+    )
 
     if not data:
         return

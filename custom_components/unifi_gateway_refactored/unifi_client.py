@@ -7,12 +7,14 @@ import logging
 import socket
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
-import requests
 from urllib.parse import urlsplit
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+
+if TYPE_CHECKING:  # pragma: no cover - for typing only
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
 
 from .const import DEFAULT_SITE
 
@@ -49,6 +51,12 @@ class ConnectivityError(APIError):
 
 
 class UniFiOSClient:
+    @staticmethod
+    def _requests_module():
+        import requests
+
+        return requests
+
     def __init__(
         self,
         host: str,
@@ -73,6 +81,10 @@ class UniFiOSClient:
         self._site_id: Optional[str] = None
         self._username = username
         self._password = password
+
+        requests = self._requests_module()
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
 
         self._session = requests.Session()
         retries = Retry(
@@ -276,7 +288,7 @@ class UniFiOSClient:
             return f"{host}{path}"
         return path
 
-    def _update_csrf_token(self, response: requests.Response) -> None:
+    def _update_csrf_token(self, response: "requests.Response") -> None:
         token: Optional[str] = None
         header_token = response.headers.get("X-CSRF-Token")
         if isinstance(header_token, str) and header_token:
@@ -292,6 +304,8 @@ class UniFiOSClient:
             self._session.headers.update({"X-CSRF-Token": token})
 
     def _refresh_csrf_token(self, base_url: str, timeout: int) -> None:
+        requests = self._requests_module()
+
         for path in ("/api/auth/csrf", "/api/csrf"):
             url = f"{base_url}{path}"
             try:
@@ -318,7 +332,7 @@ class UniFiOSClient:
         json_payload: Any = None,
         data: Any = None,
         timeout: Optional[int] = None,
-    ) -> tuple[requests.Response, str]:
+    ) -> tuple["requests.Response", str]:
         url = self._join(path)
         req_timeout = timeout or self._timeout
         kwargs: Dict[str, Any] = {"timeout": req_timeout, "allow_redirects": False}
@@ -329,6 +343,8 @@ class UniFiOSClient:
         if data is not None:
             kwargs["data"] = data
         LOGGER.debug("UniFi request %s %s", method, url)
+        requests = self._requests_module()
+
         try:
             response = self._session.request(method, url, **kwargs)
         except requests.exceptions.SSLError as err:
@@ -442,6 +458,8 @@ class UniFiOSClient:
         return self._request_json("GET", path, timeout=timeout)
 
     def _login(self, host: str, port: int, ssl_verify: bool, timeout: int) -> None:
+        requests = self._requests_module()
+
         base = f"{self._scheme}://{host}:{port}"
         self._session.verify = ssl_verify
         self._session.cookies.clear()
