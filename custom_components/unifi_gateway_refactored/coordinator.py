@@ -113,6 +113,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             raise UpdateFailed(str(err)) from err
 
     def _fetch_data(self) -> UniFiGatewayData:
+        """Fetch data with improved VPN and speedtest handling."""
+        start_time = time.monotonic()
         _LOGGER.debug(
             "Starting UniFi Gateway data fetch for instance %s",
             self._client.instance_key(),
@@ -203,56 +205,93 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         clients_all = self._client.get_clients() or []
         _LOGGER.debug("Retrieved %s clients", len(clients_all))
 
-        # VPN tunnels (best-effort; may be empty if unsupported)
+        # Enhanced VPN tunnel handling
+        vpn_tunnels = []
         try:
-            vpn_tunnels = self._client.get_vpn_tunnels() or []
+            vpn_raw = self._client.get_vpn_tunnels() or []
+            for tunnel in vpn_raw:
+                if not isinstance(tunnel, dict):
+                    continue
+                    
+                # Normalize VPN data
+                tunnel_type = str(tunnel.get("type", "")).lower()
+                if "client" in tunnel_type or "remote_user" in tunnel_type:
+                    tunnel["type"] = "client"
+                elif "server" in tunnel_type:
+                    tunnel["type"] = "server"
+                elif "s2s" in tunnel_type or "site" in tunnel_type:
+                    tunnel["type"] = "s2s"
+                else:
+                    tunnel["type"] = "vpn"
+                
+                # Add connection status
+                tunnel["established"] = any([
+                    tunnel.get("status") == "connected",
+                    tunnel.get("state") == "up",
+                    tunnel.get("connected") is True,
+                    tunnel.get("active") is True
+                ])
+                
+                vpn_tunnels.append(tunnel)
+            
             if vpn_tunnels:
-                _LOGGER.debug("Retrieved %s VPN tunnel records", len(vpn_tunnels))
+                _LOGGER.debug(
+                    "Retrieved %s VPN tunnels (types: %s)",
+                    len(vpn_tunnels),
+                    {t["type"] for t in vpn_tunnels}
+                )
         except APIError as err:
-            _LOGGER.debug("Fetching VPN tunnels failed: %s", err)
-            vpn_tunnels = []
+            _LOGGER.debug("Failed to fetch VPN tunnels: %s", err)
 
+        # Improved speedtest handling
+        speedtest = None
         try:
             speedtest = self._client.get_last_speedtest(cache_sec=5)
             if speedtest:
-                _LOGGER.debug("Retrieved cached speedtest result")
-        except APIError as err:
-            _LOGGER.warning("Fetching last speedtest failed: %s", err)
-            speedtest = None
-
-        interval = self._speedtest_interval
-        has_values = bool(
-            speedtest
-            and any(
-                speedtest.get(key) not in (None, "")
-                for key in ("download_mbps", "upload_mbps", "latency_ms")
-            )
-        )
-        speedtest_missing = not has_values
-        trigger_reason: Optional[str] = None
-        should_trigger = False
-        now_ts = time.time()
-        if speedtest_missing:
-            should_trigger = True
-            trigger_reason = "missing"
-        elif interval > 0:
-            last_ts = self._speedtest_last_timestamp(speedtest)
-            if last_ts is None or now_ts - last_ts >= interval:
-                should_trigger = True
-                trigger_reason = "stale"
-
-        cooldown = max(interval, 60) if interval > 0 else 3600
-        if should_trigger:
-            try:
-                self._client.maybe_start_speedtest(cooldown_sec=cooldown)
-                _LOGGER.debug(
-                    "Speedtest trigger evaluated (reason=%s, interval=%s, cooldown=%s)",
-                    trigger_reason,
-                    interval,
-                    cooldown,
+                # Validate speedtest data
+                has_values = any(
+                    isinstance(speedtest.get(key), (int, float)) and speedtest[key] > 0
+                    for key in ("download_mbps", "upload_mbps", "latency_ms")
                 )
-            except APIError as err:
-                _LOGGER.debug("Speedtest trigger failed: %s", err)
+                if not has_values:
+                    _LOGGER.debug("Cached speedtest result has no valid measurements")
+                    speedtest = None
+                else:
+                    _LOGGER.debug(
+                        "Valid speedtest result: %0.1f/%0.1f Mbps, %0.1f ms",
+                        speedtest.get("download_mbps", 0),
+                        speedtest.get("upload_mbps", 0),
+                        speedtest.get("latency_ms", 0)
+                    )
+        except APIError as err:
+            _LOGGER.warning("Failed to fetch speedtest results: %s", err)
+
+        # Improved speedtest trigger logic
+        interval = self._speedtest_interval
+        if interval > 0:
+            last_ts = self._speedtest_last_timestamp(speedtest)
+            now_ts = time.time()
+            
+            should_trigger = False
+            if not speedtest:
+                should_trigger = True
+                reason = "missing"
+            elif last_ts and (now_ts - last_ts) >= interval:
+                should_trigger = True
+                reason = f"stale ({int(now_ts - last_ts)}s old)"
+                
+            if should_trigger:
+                cooldown = max(interval, 60)
+                try:
+                    self._client.maybe_start_speedtest(cooldown_sec=cooldown)
+                    _LOGGER.info(
+                        "Triggered speedtest (reason=%s, interval=%ss, cooldown=%ss)",
+                        reason,
+                        interval,
+                        cooldown
+                    )
+                except APIError as err:
+                    _LOGGER.warning("Failed to trigger speedtest: %s", err)
 
         data = UniFiGatewayData(
             controller=controller_info,
@@ -270,11 +309,14 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             speedtest=speedtest,
             vpn_tunnels=vpn_tunnels,
         )
+        fetch_time = time.monotonic() - start_time
         _LOGGER.debug(
-            "Completed UniFi Gateway data fetch for instance %s",
+            "Completed UniFi Gateway data fetch in %.1fs for instance %s",
+            fetch_time,
             self._client.instance_key(),
         )
         return data
+
     def _derive_wan_links_from_networks(
         self, networks: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
