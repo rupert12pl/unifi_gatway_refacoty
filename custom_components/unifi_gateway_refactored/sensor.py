@@ -1516,9 +1516,3 @@ def _extract_network_ip_address(network: Dict[str, Any]) -> Optional[str]:
         if result:
             return result
     return None
-            return result
-    for key in ("subnet", "ip_subnet", "cidr"):
-        result = _extract_ip_from_value(network.get(key))
-        if result:
-            return result
-    return None
