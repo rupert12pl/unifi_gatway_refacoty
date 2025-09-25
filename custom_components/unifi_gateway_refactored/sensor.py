@@ -25,7 +25,7 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
-from .const import CONF_HOST, DOMAIN
+from .const import CONF_HOST, DOMAIN, VPN_TYPES_MAP, normalize_vpn_type
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, UniFiOSClient
 
@@ -356,6 +356,48 @@ def build_wlan_unique_id(entry_id: str, wlan: Dict[str, Any]) -> str:
 
 def build_vpn_unique_id(entry_id: str, tunnel: Dict[str, Any], suffix: str) -> str:
     return f"{entry_id}::vpn::{vpn_instance_key(tunnel)}::{suffix}"
+
+
+def _count_items(value: Any) -> int:
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, dict):
+        return len(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return 0
+
+
+def _is_connected(record: Any) -> bool:
+    if isinstance(record, dict):
+        for key in ("connected", "active", "up"):
+            if key in record:
+                value = record[key]
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, (int, float)):
+                    return bool(value)
+        status = record.get("status")
+        if isinstance(status, str):
+            lowered = status.strip().lower()
+            if lowered in ("up", "connected", "online", "active"):
+                return True
+            if lowered in ("down", "disconnected", "offline", "inactive"):
+                return False
+        return True
+    if isinstance(record, (int, float)):
+        return bool(record)
+    return record is True
+
+
+def _count_connected_items(value: Any) -> int:
+    if isinstance(value, list):
+        return len([item for item in value if _is_connected(item)])
+    if isinstance(value, dict):
+        return len([item for item in value.values() if _is_connected(item)])
+    if isinstance(value, (int, float)):
+        return int(value)
+    return 0
 
 
 def _first_non_empty(record: Dict[str, Any], keys: Iterable[str]) -> Optional[str]:
@@ -722,24 +764,21 @@ class UniFiGatewayVpnInstanceSensor(UniFiGatewaySensorBase):
             or "vpn"
         )
         
-        # Improved VPN type detection
-        vpn_type = str(tunnel.get("type") or "").lower()
-        if "client" in vpn_type or "remote_user" in vpn_type:
-            self._type = "client"
-        elif "server" in vpn_type:
-            self._type = "server"
-        elif "s2s" in vpn_type or "site" in vpn_type:
-            self._type = "s2s"
-        else:
-            self._type = "vpn"
+        raw_type = (
+            tunnel.get("type")
+            or tunnel.get("mode")
+            or tunnel.get("role")
+            or tunnel.get("category")
+            or tunnel.get("kind")
+        )
+        self._type = normalize_vpn_type(raw_type)
 
-        # Better naming and icon selection
+        # Better naming and icon selection leveraging constant map
         vpn_types = {
-            "client": ("Client", "mdi:account-network"),
-            "server": ("Server", "mdi:server-network"),
-            "s2s": ("Site-to-Site", "mdi:wan"),
-            "vpn": ("VPN", "mdi:vpn"),
+            key: (info.get("name", key.title()), info.get("icon", "mdi:vpn"))
+            for key, info in VPN_TYPES_MAP.items()
         }
+        vpn_types.setdefault("vpn", ("VPN", "mdi:vpn"))
         label_type, icon = vpn_types.get(self._type, vpn_types["vpn"])
         self._attr_icon = icon
         
@@ -766,11 +805,16 @@ class UniFiGatewayVpnInstanceSensor(UniFiGatewaySensorBase):
             return 0
             
         if self._type == "s2s":
-            peers = tunnel.get("peers", [])
-            return len([p for p in peers if p.get("status") == "connected"])
-            
-        clients = tunnel.get("clients", [])
-        return len([c for c in clients if c.get("connected", True)])
+            peers = tunnel.get("peers")
+            return _count_connected_items(peers)
+
+        collection_keys = ["sessions", "clients", "peers"]
+        for key in collection_keys:
+            if key not in tunnel:
+                continue
+            return _count_connected_items(tunnel.get(key))
+
+        return 0
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
@@ -812,9 +856,10 @@ class UniFiGatewayVpnInstanceSensor(UniFiGatewaySensorBase):
 
     def _get_s2s_attributes(self, tunnel: Dict[str, Any]) -> Dict[str, Any]:
         """Get Site-to-Site specific attributes."""
+        peers = tunnel.get("peers")
         return {
-            "peers": len(tunnel.get("peers", [])),
-            "active_peers": len([p for p in tunnel.get("peers", []) if p.get("status") == "connected"]),
+            "peers": _count_items(peers),
+            "active_peers": _count_connected_items(peers),
             "networks": tunnel.get("networks", []),
             "local_networks": tunnel.get("local_networks", []),
             "remote_networks": tunnel.get("remote_networks", []),
@@ -822,13 +867,25 @@ class UniFiGatewayVpnInstanceSensor(UniFiGatewaySensorBase):
 
     def _get_client_server_attributes(self, tunnel: Dict[str, Any]) -> Dict[str, Any]:
         """Get Client/Server specific attributes."""
-        return {
-            "clients": len(tunnel.get("clients", [])),
-            "active_clients": len([c for c in tunnel.get("clients", []) if c.get("connected", True)]),
+        clients = tunnel.get("clients")
+        attrs = {
+            "clients": _count_items(clients),
+            "active_clients": _count_connected_items(clients),
             "protocol": tunnel.get("protocol"),
             "port": tunnel.get("port"),
             "encryption": tunnel.get("encryption") or tunnel.get("cipher"),
         }
+
+        if self._type == "teleport":
+            sessions = tunnel.get("sessions")
+            attrs.update(
+                {
+                    "sessions": _count_items(sessions),
+                    "active_sessions": _count_connected_items(sessions),
+                }
+            )
+
+        return attrs
 
 
 class UniFiGatewayFirmwareSensor(UniFiGatewaySensorBase):
@@ -1359,17 +1416,29 @@ class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
         }
 
         if record:
-            # Add detailed server information
-            server_attrs = {
-                key: record.get(key)
-                for key in (
-                    "server_id", "server_name", "server_host",
-                    "server_location", "server_country", "server_cc",
-                    "server_sponsor", "server_latency"
-                )
-                if record.get(key) is not None
-            }
-            attrs.update(server_attrs)
+            server_details: Dict[str, Any] = {}
+
+            raw_server = record.get("server")
+            if raw_server not in (None, "", {}):
+                server_details["server_raw"] = raw_server
+
+            for key, value in record.items():
+                if not key.startswith("server_"):
+                    continue
+                if value in (None, "", [], {}):
+                    continue
+                server_details[key] = value
+
+            if "server_location" not in server_details:
+                for fallback_key in ("server_city", "server_region"):
+                    if fallback_key in server_details:
+                        server_details["server_location"] = server_details[fallback_key]
+                        break
+
+            if "server_sponsor" not in server_details and "server_provider" in server_details:
+                server_details["server_sponsor"] = server_details["server_provider"]
+
+            attrs.update(server_details)
 
         attrs.update(self._controller_attrs())
         return attrs
