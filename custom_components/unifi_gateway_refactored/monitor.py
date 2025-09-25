@@ -190,13 +190,13 @@ class SpeedtestRunner:
 
     async def async_trigger(self, reason: str) -> None:
         """Trigger a speedtest update with full observability."""
-        # Prevent overlapping runs that can confuse the controller and timeout
         if self._lock.locked():
             _LOGGER.debug("Speedtest trigger ignored because a run is already in progress (%s)", reason)
             return
         async with self._lock:
             trace_id = str(uuid.uuid4())
             start = time.monotonic()
+            max_wait_s = 600  # Moved to top for consistency
 
             self.hass.bus.async_fire(
                 EVT_RUN_START,
@@ -216,7 +216,6 @@ class SpeedtestRunner:
             previous_record = await self._async_get_last_speedtest(cache_sec=0)
             previous_marker = self._record_marker(previous_record)
             error: str | None = None
-            max_wait_s = 600
 
             try:
                 await self._async_start_speedtest(trace_id)
@@ -234,8 +233,11 @@ class SpeedtestRunner:
                     await self._async_start_speedtest(trace_id)
                     await self._async_wait_for_result(trace_id, previous_marker, max_wait_s=max_wait_s)
                     await self._async_refresh_entities(trace_id)
-                except Exception as retry_exc:  # pragma: no cover - error path
-                    error = f"{type(retry_exc).__name__}: {retry_exc}"
+                except Exception as retry_exc:
+                    if isinstance(retry_exc, (asyncio.TimeoutError, TimeoutError)):
+                        error = f"TimeoutError: Speedtest result not available within {max_wait_s}s (trace={trace_id})"
+                    else:
+                        error = f"{type(retry_exc).__name__}: {retry_exc}"
 
             duration_ms = int((time.monotonic() - start) * 1000)
 
@@ -306,8 +308,6 @@ class SpeedtestRunner:
 
 
 __all__ = ["SpeedtestRunner", "ResultCallback", DATA_RUNNER]
-        await self._gateway.run_speed_test()
-        try:
             await asyncio.wait_for(
                 self._gateway.wait_for_speed_test_result(), timeout=600
             )

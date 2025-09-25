@@ -708,7 +708,8 @@ class UniFiGatewayAlertsSensor(UniFiGatewaySensorBase):
 
 
 class UniFiGatewayVpnInstanceSensor(UniFiGatewaySensorBase):
-    _attr_icon = "mdi:lock-network-outline"
+    _attr_native_unit_of_measurement = "clients"
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(
         self,
@@ -731,11 +732,20 @@ class UniFiGatewayVpnInstanceSensor(UniFiGatewaySensorBase):
         self._type = str(tunnel.get("type") or "vpn").lower()
         unique_id = build_vpn_unique_id(entry_id, tunnel, "status")
         label_type = self._type.upper() if self._type else "VPN"
+
+        icon_map = {
+            "client": "mdi:account-network",
+            "server": "mdi:server-network",
+            "s2s": "mdi:wan",
+            "teleport": "mdi:transit-connection-variant",
+        }
+        self._attr_icon = icon_map.get(self._type, "mdi:vpn")
+        
         super().__init__(
             coordinator,
             client,
             unique_id,
-            f"VPN {label_type} {self._name} Status",
+            f"VPN {label_type} {self._name}",
         )
 
     def _current_tunnel(self) -> Optional[Dict[str, Any]]:
@@ -755,48 +765,13 @@ class UniFiGatewayVpnInstanceSensor(UniFiGatewaySensorBase):
                 return t
         return None
 
-    @staticmethod
-    def _normalize_status(value: Any) -> Optional[str]:
-        if value in (None, ""):
-            return None
-        if isinstance(value, (int, float)):
-            return "UP" if float(value) > 0 else "DOWN"
-        if isinstance(value, bool):
-            return "UP" if value else "DOWN"
-        text = str(value).strip()
-        if not text:
-            return None
-        lowered = text.lower()
-        mapping: Dict[str, str] = {
-            "ok": "UP",
-            "up": "UP",
-            "connected": "UP",
-            "established": "UP",
-            "active": "UP",
-            "running": "UP",
-            "down": "DOWN",
-            "offline": "DOWN",
-            "disconnected": "DOWN",
-            "error": "DOWN",
-            "failed": "DOWN",
-            "inactive": "DOWN",
-        }
-        if lowered in mapping:
-            return mapping[lowered]
-        return text.upper()
-
     @property
-    def native_value(self) -> Optional[str]:
+    def native_value(self) -> Optional[int]:
+        """Return the number of connected clients/peers."""
         t = self._current_tunnel() or {}
-        status = (
-            t.get("status")
-            or t.get("state")
-            or t.get("connected")
-            or t.get("is_connected")
-            or t.get("up")
-            or t.get("established")
-        )
-        return self._normalize_status(status)
+        if self._type == "s2s":
+            return len(t.get("peers", []))
+        return len(t.get("clients", []))
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
@@ -807,10 +782,30 @@ class UniFiGatewayVpnInstanceSensor(UniFiGatewaySensorBase):
             "name": t.get("name") or self._name,
             "remote": t.get("remote") or t.get("peer"),
             "local": t.get("local") or t.get("tunnel_ip"),
+            "interface": t.get("interface") or t.get("wan_interface"),
+            "status": t.get("status") or t.get("state"),
+            "established": t.get("established", False),
             "rx_bytes": t.get("rx_bytes") or t.get("rx") or t.get("bytes_rx"),
             "tx_bytes": t.get("tx_bytes") or t.get("tx") or t.get("bytes_tx"),
             "since": t.get("since") or t.get("uptime") or t.get("connected_since"),
         }
+
+        # Dodatkowe atrybuty specyficzne dla typu VPN
+        if self._type == "s2s":
+            attrs.update({
+                "peers": len(t.get("peers", [])),
+                "networks": t.get("networks", []),
+                "local_networks": t.get("local_networks", []),
+                "remote_networks": t.get("remote_networks", []),
+            })
+        elif self._type in ("client", "server"):
+            attrs.update({
+                "clients": len(t.get("clients", [])),
+                "protocol": t.get("protocol"),
+                "port": t.get("port"),
+                "encryption": t.get("encryption") or t.get("cipher"),
+            })
+        
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -886,7 +881,6 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
             "active": "UP",
             "running": "UP",
             "ready": "UP",
-            "primary": "UP",
             "down": "DOWN",
             "offline": "DOWN",
             "disconnected": "DOWN",
@@ -1485,6 +1479,12 @@ def _extract_network_ip_address(network: Dict[str, Any]) -> Optional[str]:
     ):
         result = _extract_ip_from_value(network.get(key))
         if result:
+            return result
+    for key in ("subnet", "ip_subnet", "cidr"):
+        result = _extract_ip_from_value(network.get(key))
+        if result:
+            return result
+    return None
             return result
     for key in ("subnet", "ip_subnet", "cidr"):
         result = _extract_ip_from_value(network.get(key))

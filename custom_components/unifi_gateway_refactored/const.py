@@ -1,4 +1,3 @@
-
 from homeassistant.const import Platform
 
 DOMAIN = "unifi_gateway_refactored"
@@ -40,3 +39,11 @@ ATTR_REASON = "reason"
 ATTR_ENTITY_IDS = "entity_ids"
 ATTR_DURATION_MS = "duration_ms"
 ATTR_ERROR = "error"
+
+# VPN types
+VPN_TYPE_CLIENT = "client"
+VPN_TYPE_SERVER = "server"
+VPN_TYPE_S2S = "s2s"
+VPN_TYPE_TELEPORT = "teleport"
+
+VPN_TYPES = [VPN_TYPE_CLIENT, VPN_TYPE_SERVER, VPN_TYPE_S2S, VPN_TYPE_TELEPORT]
