@@ -179,7 +179,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             trace_id=trace_id,
         )
 
-    runner = SpeedtestRunner(hass, entity_ids, _dispatch_result)
+    runner = SpeedtestRunner(hass, entity_ids, _dispatch_result, client, coordinator)
     entry_data[DATA_RUNNER] = runner
 
     _LOGGER.debug(
