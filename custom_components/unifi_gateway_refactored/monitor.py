@@ -4,6 +4,8 @@ import asyncio
 import logging
 import time
 import uuid
+from dataclasses import dataclass
+from datetime import datetime
 from inspect import isawaitable
 from typing import Awaitable, Callable, Sequence
 
@@ -29,6 +31,66 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 ResultCallback = Callable[[bool, int, str | None, str], Awaitable[None]]
+
+
+@dataclass(slots=True, frozen=True)
+class _StateFingerprint:
+    """Immutable snapshot of key state metadata for change detection."""
+
+    exists: bool
+    state: str | None = None
+    last_changed: datetime | None = None
+    last_updated: datetime | None = None
+    context_id: str | None = None
+
+    def is_refresh_of(self, previous: "_StateFingerprint") -> bool:
+        """Return True if the fingerprint indicates a newer refresh."""
+
+        if not self.exists:
+            return False
+        if not previous.exists:
+            return True
+
+        if self.last_changed and previous.last_changed:
+            if self.last_changed != previous.last_changed:
+                return True
+        elif self.last_changed and not previous.last_changed:
+            return True
+
+        if self.last_updated and previous.last_updated:
+            if self.last_updated > previous.last_updated:
+                return True
+        elif self.last_updated and not previous.last_updated:
+            return True
+
+        if self.context_id and previous.context_id:
+            if self.context_id != previous.context_id:
+                return True
+        elif self.context_id and not previous.context_id:
+            return True
+
+        if self.state != previous.state:
+            return True
+
+        return False
+
+    @classmethod
+    def capture(cls, state: State | None) -> "_StateFingerprint":
+        """Create a fingerprint from a Home Assistant state object."""
+
+        if state is None:
+            return cls(False)
+
+        context = getattr(state, "context", None)
+        context_id = getattr(context, "id", None)
+
+        return cls(
+            True,
+            getattr(state, "state", None),
+            getattr(state, "last_changed", None),
+            getattr(state, "last_updated", None),
+            context_id,
+        )
 
 
 class SpeedtestRunner:
@@ -64,7 +126,7 @@ class SpeedtestRunner:
     async def _postcondition_wait(
         self,
         trace_id: str,
-        before_states: dict[str, State | None],
+        before_states: dict[str, _StateFingerprint],
         max_wait_s: int = 90,
     ) -> None:
         """Ensure that sensor states changed after the service call."""
@@ -73,29 +135,11 @@ class SpeedtestRunner:
         while time.monotonic() < end:
             updated = 0
             for entity_id, before in before_states.items():
-                current = self.hass.states.get(entity_id)
-                if current is None:
-                    continue
+                current = _StateFingerprint.capture(
+                    self.hass.states.get(entity_id)
+                )
 
-                # If we did not have a previous state we consider any state
-                # retrieval to be a successful update for that entity.
-                if before is None:
-                    updated += 1
-                    continue
-
-                before_changed = getattr(before, "last_changed", None)
-                before_updated = getattr(before, "last_updated", before_changed)
-                current_changed = getattr(current, "last_changed", None)
-                current_updated = getattr(current, "last_updated", current_changed)
-
-                # Some integrations keep the same value (and therefore the
-                # same ``last_changed`` timestamp) when an update occurs.
-                # ``last_updated`` is bumped in those cases, so we check both
-                # fields to determine whether the entity really refreshed.
-                if current_changed != before_changed:
-                    updated += 1
-                    continue
-                if current_updated and before_updated and current_updated > before_updated:
+                if current.is_refresh_of(before):
                     updated += 1
                     continue
             if updated == len(before_states):
@@ -134,7 +178,10 @@ class SpeedtestRunner:
             self.entity_ids,
         )
 
-        before = {entity_id: self.hass.states.get(entity_id) for entity_id in self.entity_ids}
+        before = {
+            entity_id: _StateFingerprint.capture(self.hass.states.get(entity_id))
+            for entity_id in self.entity_ids
+        }
         error: str | None = None
 
         try:
@@ -148,9 +195,13 @@ class SpeedtestRunner:
                 exc_info=True,
             )
             await asyncio.sleep(5)
+            before_retry = {
+                entity_id: _StateFingerprint.capture(self.hass.states.get(entity_id))
+                for entity_id in self.entity_ids
+            }
             try:
                 await self._call_update_entity(trace_id)
-                await self._postcondition_wait(trace_id, before)
+                await self._postcondition_wait(trace_id, before_retry)
             except Exception as retry_exc:  # pragma: no cover - error path
                 error = f"{type(retry_exc).__name__}: {retry_exc}"
 
