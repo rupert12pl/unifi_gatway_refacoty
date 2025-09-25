@@ -9,7 +9,7 @@ from typing import Awaitable, Callable, Sequence
 import async_timeout
 from homeassistant.core import HomeAssistant, State
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import persistent_notification as pn
+from homeassistant.components import persistent_notification as pn
 from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
 
 from .const import (
