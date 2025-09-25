@@ -143,7 +143,7 @@ class SpeedtestRunner:
         self,
         trace_id: str,
         previous_marker: tuple[Any, ...] | None,
-        max_wait_s: int = 240,
+        max_wait_s: int = 600,
         poll_interval: float = 5.0,
     ) -> dict[str, Any]:
         end = time.monotonic() + max_wait_s
@@ -195,117 +195,117 @@ class SpeedtestRunner:
             _LOGGER.debug("Speedtest trigger ignored because a run is already in progress (%s)", reason)
             return
         async with self._lock:
-        trace_id = str(uuid.uuid4())
-        start = time.monotonic()
+            trace_id = str(uuid.uuid4())
+            start = time.monotonic()
 
-        self.hass.bus.async_fire(
-            EVT_RUN_START,
-            {
-                ATTR_TRACE_ID: trace_id,
-                ATTR_REASON: reason,
-                ATTR_ENTITY_IDS: self.entity_ids,
-            },
-        )
-        _LOGGER.info(
-            "[%s] Speedtest run START (reason=%s, entities=%s)",
-            trace_id,
-            reason,
-            self.entity_ids,
-        )
-
-        previous_record = await self._async_get_last_speedtest(cache_sec=0)
-        previous_marker = self._record_marker(previous_record)
-        error: str | None = None
-
-        try:
-            await self._async_start_speedtest(trace_id)
-            await self._async_wait_for_result(trace_id, previous_marker)
-            await self._async_refresh_entities(trace_id)
-        except (asyncio.TimeoutError, TimeoutError, HomeAssistantError, Exception) as exc:
-            _LOGGER.warning(
-                "[%s] First attempt failed: %s. Retrying once...",
-                trace_id,
-                exc,
-                exc_info=True,
+            self.hass.bus.async_fire(
+                EVT_RUN_START,
+                {
+                    ATTR_TRACE_ID: trace_id,
+                    ATTR_REASON: reason,
+                    ATTR_ENTITY_IDS: self.entity_ids,
+                },
             )
-            await asyncio.sleep(5)
+            _LOGGER.info(
+                "[%s] Speedtest run START (reason=%s, entities=%s)",
+                trace_id,
+                reason,
+                self.entity_ids,
+            )
+
+            previous_record = await self._async_get_last_speedtest(cache_sec=0)
+            previous_marker = self._record_marker(previous_record)
+            error: str | None = None
+            max_wait_s = 600
+
             try:
                 await self._async_start_speedtest(trace_id)
-                await self._async_wait_for_result(trace_id, previous_marker)
+                await self._async_wait_for_result(trace_id, previous_marker, max_wait_s=max_wait_s)
                 await self._async_refresh_entities(trace_id)
-            except Exception as retry_exc:  # pragma: no cover - error path
-                error = f"{type(retry_exc).__name__}: {retry_exc}"
+            except (asyncio.TimeoutError, TimeoutError, HomeAssistantError, Exception) as exc:
+                _LOGGER.warning(
+                    "[%s] First attempt failed: %s. Retrying once...",
+                    trace_id,
+                    exc,
+                    exc_info=True,
+                )
+                await asyncio.sleep(5)
+                try:
+                    await self._async_start_speedtest(trace_id)
+                    await self._async_wait_for_result(trace_id, previous_marker, max_wait_s=max_wait_s)
+                    await self._async_refresh_entities(trace_id)
+                except Exception as retry_exc:  # pragma: no cover - error path
+                    error = f"{type(retry_exc).__name__}: {retry_exc}"
 
-        duration_ms = int((time.monotonic() - start) * 1000)
+            duration_ms = int((time.monotonic() - start) * 1000)
 
-        if error:
+            if error:
+                self.hass.bus.async_fire(
+                    EVT_RUN_ERROR,
+                    {
+                        ATTR_TRACE_ID: trace_id,
+                        ATTR_REASON: reason,
+                        ATTR_ENTITY_IDS: self.entity_ids,
+                        ATTR_DURATION_MS: duration_ms,
+                        ATTR_ERROR: error,
+                    },
+                )
+                async_create_issue(
+                    self.hass,
+                    DOMAIN,
+                    f"speedtest_run_failed_{trace_id}",
+                    is_fixable=False,
+                    severity=IssueSeverity.ERROR,
+                    translation_key="speedtest_run_failed",
+                    translation_placeholders={
+                        "error": error,
+                        "reason": reason,
+                        "trace_id": trace_id,
+                    },
+                    data={
+                        "error": error,
+                        "entities": self.entity_ids,
+                        "reason": reason,
+                        "trace_id": trace_id,
+                    },
+                )
+                maybe_coro = pn.async_create(
+                    self.hass,
+                    (
+                        f"Speedtest failed ({reason}). Error: **{error}**\n"
+                        f"Trace: `{trace_id}`"
+                    ),
+                    title="UniFi Gateway Refactored • Speedtest",
+                    notification_id=f"{DOMAIN}_speedtest_error",
+                )
+                if isawaitable(maybe_coro):
+                    await maybe_coro
+                _LOGGER.error(
+                    "[%s] Speedtest run ERROR after %sms -> %s",
+                    trace_id,
+                    duration_ms,
+                    error,
+                )
+                await self._dispatch_result(False, duration_ms, error, trace_id)
+                return
+
             self.hass.bus.async_fire(
-                EVT_RUN_ERROR,
+                EVT_RUN_END,
                 {
                     ATTR_TRACE_ID: trace_id,
                     ATTR_REASON: reason,
                     ATTR_ENTITY_IDS: self.entity_ids,
                     ATTR_DURATION_MS: duration_ms,
-                    ATTR_ERROR: error,
                 },
             )
-            async_create_issue(
-                self.hass,
-                DOMAIN,
-                f"speedtest_run_failed_{trace_id}",
-                is_fixable=False,
-                severity=IssueSeverity.ERROR,
-                translation_key=None,
-                data={
-                    "error": error,
-                    "entities": self.entity_ids,
-                    "reason": reason,
-                    "trace_id": trace_id,
-                },
-            )
-            maybe_coro = pn.async_create(
-                self.hass,
-                (
-                    f"Speedtest failed ({reason}). Error: **{error}**\n"
-                    f"Trace: `{trace_id}`"
-                ),
-                title="UniFi Gateway Refactored • Speedtest",
-                notification_id=f"{DOMAIN}_speedtest_error",
-            )
+            maybe_coro = pn.async_dismiss(self.hass, f"{DOMAIN}_speedtest_error")
             if isawaitable(maybe_coro):
                 await maybe_coro
-            _LOGGER.error(
-                "[%s] Speedtest run ERROR after %sms -> %s",
-                trace_id,
-                duration_ms,
-                error,
-            )
-            await self._dispatch_result(False, duration_ms, error, trace_id)
-            return
+            _LOGGER.info("[%s] Speedtest run END in %sms", trace_id, duration_ms)
+            await self._dispatch_result(True, duration_ms, None, trace_id)
 
-        self.hass.bus.async_fire(
-            EVT_RUN_END,
-            {
-                ATTR_TRACE_ID: trace_id,
-                ATTR_REASON: reason,
-                ATTR_ENTITY_IDS: self.entity_ids,
-                ATTR_DURATION_MS: duration_ms,
-            },
-        )
-        maybe_coro = pn.async_dismiss(self.hass, f"{DOMAIN}_speedtest_error")
-        if isawaitable(maybe_coro):
-            await maybe_coro
-        _LOGGER.info("[%s] Speedtest run END in %sms", trace_id, duration_ms)
-        await self._dispatch_result(True, duration_ms, None, trace_id)
 
-    async def _async_run_speed_test_and_get_results(self) -> dict:
-        """Run speed test and get results."""
-        trace = uuid.uuid4()
-        _LOGGER.debug(
-            "[%s] Speedtest run START",
-            trace,
-        )
-        start_time = time.monotonic()
+__all__ = ["SpeedtestRunner", "ResultCallback", DATA_RUNNER]
         await self._gateway.run_speed_test()
         try:
             await asyncio.wait_for(
