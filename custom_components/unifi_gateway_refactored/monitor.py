@@ -76,11 +76,28 @@ class SpeedtestRunner:
                 current = self.hass.states.get(entity_id)
                 if current is None:
                     continue
+
+                # If we did not have a previous state we consider any state
+                # retrieval to be a successful update for that entity.
                 if before is None:
                     updated += 1
                     continue
-                if current.last_changed != getattr(before, "last_changed", None):
+
+                before_changed = getattr(before, "last_changed", None)
+                before_updated = getattr(before, "last_updated", before_changed)
+                current_changed = getattr(current, "last_changed", None)
+                current_updated = getattr(current, "last_updated", current_changed)
+
+                # Some integrations keep the same value (and therefore the
+                # same ``last_changed`` timestamp) when an update occurs.
+                # ``last_updated`` is bumped in those cases, so we check both
+                # fields to determine whether the entity really refreshed.
+                if current_changed != before_changed:
                     updated += 1
+                    continue
+                if current_updated and before_updated and current_updated > before_updated:
+                    updated += 1
+                    continue
             if updated == len(before_states):
                 return
             await asyncio.sleep(2)
