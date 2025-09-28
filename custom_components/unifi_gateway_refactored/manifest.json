@@ -8,7 +8,8 @@
   "iot_class": "local_polling",
   "requirements": [
     "requests>=2.31.0",
-    "async-timeout>=4.0.0"
+    "async-timeout>=4.0.0",
+    "ipwhois>=1.2.0"
   ],
   "codeowners": [
     "@robert-machejek"
