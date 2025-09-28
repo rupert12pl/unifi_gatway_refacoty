@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect to UniFi Gateway",
+        "title": "Connect to UniFi Gateway Dashboard Analyzer",
         "description": "Enter local admin credentials for the UniFi Network Application. We'll validate by fetching health and sites.",
         "data": {
           "host": "Host (UDM IP)",
@@ -20,7 +20,6 @@
           "use_proxy_prefix": "Use /proxy/network prefix",
           "timeout": "HTTP timeout (seconds)",
           "speedtest_interval": "Speedtest interval (minutes)",
-          "speedtest_interval_minutes": "Speedtest runner interval (minutes)",
           "speedtest_entities": "Speedtest entity IDs (comma separated)"
         }
       }
@@ -35,7 +34,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "UniFi Gateway Options",
+        "title": "UniFi Gateway Dashboard Analyzer Options",
         "description": "Update the connection details or advanced controller settings.",
         "data": {
           "host": "Host (UDM IP)",
@@ -47,7 +46,6 @@
           "use_proxy_prefix": "Use /proxy/network prefix",
           "timeout": "HTTP timeout (seconds)",
           "speedtest_interval": "Speedtest interval (minutes)",
-          "speedtest_interval_minutes": "Speedtest runner interval (minutes)",
           "speedtest_entities": "Speedtest entity IDs (comma separated)"
         }
       }
@@ -59,5 +57,5 @@
       "unknown": "Unknown error."
     }
   },
-  "title": "UniFi Gateway (Refactored)"
+  "title": "UniFi Gateway Dashboard Analyzer"
 }

@@ -14,7 +14,8 @@ CONF_VERIFY_SSL = "verify_ssl"
 CONF_USE_PROXY_PREFIX = "use_proxy_prefix"
 CONF_TIMEOUT = "timeout"
 CONF_SPEEDTEST_INTERVAL = "speedtest_interval"
-CONF_SPEEDTEST_INTERVAL_MIN = "speedtest_interval_minutes"
+# Legacy option key kept for backwards compatibility with pre-0.6.1 releases
+LEGACY_CONF_SPEEDTEST_INTERVAL_MIN = "speedtest_interval_minutes"
 CONF_SPEEDTEST_ENTITIES = "speedtest_entities"
 
 DEFAULT_PORT = 443
@@ -22,8 +23,8 @@ DEFAULT_SITE = "default"
 DEFAULT_VERIFY_SSL = False
 DEFAULT_USE_PROXY_PREFIX = True
 DEFAULT_TIMEOUT = 10
-DEFAULT_SPEEDTEST_INTERVAL = 3600
-DEFAULT_SPEEDTEST_INTERVAL_MIN = 60
+DEFAULT_SPEEDTEST_INTERVAL = 3600  # seconds
+DEFAULT_SPEEDTEST_INTERVAL_MINUTES = 60
 DEFAULT_SPEEDTEST_ENTITIES = (
     "sensor.speedtest_download,sensor.speedtest_upload,sensor.speedtest_ping"
 )
