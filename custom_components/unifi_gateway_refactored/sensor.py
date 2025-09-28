@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
+import time
 import ipaddress
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -25,15 +26,17 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
-from .const import CONF_HOST, DOMAIN, VPN_TYPES_MAP, normalize_vpn_type
+from homeassistant.util import Throttle
+from .const import CONF_HOST, DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
-from .unifi_client import APIError, UniFiOSClient
+from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
 
 _LOGGER = logging.getLogger(__name__)
 
 
 MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=30)
+VPN_MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=10)
 
 
 SUBSYSTEM_SENSORS: Dict[str, tuple[str, str]] = {
@@ -198,19 +201,66 @@ async def async_setup_entry(
             )
             pending_unique_ids.add(unique_id)
 
-        # VPN tunnels (dynamic, per-instance)
-        for tunnel in getattr(coordinator_data, "vpn_tunnels", []) or []:
-            key = vpn_instance_key(tunnel)
+        # VPN usage sensors derived from network/VPN server associations
+        for network in coordinator_data.networks:
+            purpose = str(network.get("purpose") or network.get("role") or "").strip().lower()
+            if purpose == "wan":
+                continue
+
+            vlan = network.get("vlan")
+            if isinstance(vlan, int) or (isinstance(vlan, str) and vlan.isdigit()):
+                continue
+
+            net_id = network.get("_id") or network.get("id")
+            server: Optional[Dict[str, Any]] = None
+
+            if net_id:
+                try:
+                    candidates = client.get_vpn_servers(net_id=str(net_id))
+                    if candidates:
+                        server = candidates[0]
+                except APIError as err:
+                    _LOGGER.debug("VPN lookup for network %s failed: %s", net_id, err)
+
+            if server is None:
+                server = {
+                    "id": net_id,
+                    "name": network.get("name") or "VPN",
+                    "vpn_type": network.get("vpn_type") or "Unknown",
+                    "linked_network_id": net_id,
+                    "_raw": {"source": "network_only"},
+                }
+
+            vpn_type_raw = server.get("vpn_type") or network.get("vpn_type") or ""
+            protocol_type, mode = _parse_protocol_and_mode(vpn_type_raw)
+            if (
+                vpn_type_raw.strip().lower() in {"", "unknown"}
+                and protocol_type == "unknown"
+                and mode == "unknown"
+            ):
+                continue
+
+            entity_key = build_vpn_server_unique_id(entry.entry_id, server, network)
+            key = vpn_instance_key({"id": entity_key})
             if key in known_vpn:
                 continue
             known_vpn.add(key)
-            unique_id = build_vpn_unique_id(entry.entry_id, tunnel, "status")
-            if unique_id in pending_unique_ids or _should_skip(unique_id):
+
+            if entity_key in pending_unique_ids or _should_skip(entity_key):
                 continue
+
             new_entities.append(
-                UniFiGatewayVpnInstanceSensor(coordinator, client, entry.entry_id, tunnel)
+                UniFiGatewayVpnUsageSensor(
+                    coordinator,
+                    client,
+                    entry.entry_id,
+                    base_name,
+                    server,
+                    network,
+                    unique_id=entity_key,
+                )
             )
-            pending_unique_ids.add(unique_id)
+            pending_unique_ids.add(entity_key)
 
         if new_entities:
             names = [
@@ -343,6 +393,50 @@ def vpn_instance_key(tunnel: Dict[str, Any]) -> str:
     return _sanitize_stable_key(str(token))
 
 
+def _parse_protocol_and_mode(vpn_type_value: Optional[str]) -> Tuple[str, str]:
+    """Parse ``vpn_type`` textual description into protocol/mode pair."""
+
+    text = (vpn_type_value or "").strip().lower()
+    normalized = text.replace("_", " ").replace("-", " ")
+
+    if "wireguard" in normalized or normalized.startswith("wg "):
+        protocol = "wireguard"
+    elif "openvpn" in normalized or "ovpn" in normalized:
+        protocol = "openvpn"
+    elif "l2tp" in normalized and ("ipsec" in normalized or "ikev2" in normalized):
+        protocol = "l2tp-ipsec"
+    elif "ikev2" in normalized:
+        protocol = "ikev2"
+    elif "ipsec" in normalized:
+        protocol = "ipsec"
+    elif "l2tp" in normalized:
+        protocol = "l2tp"
+    elif "pptp" in normalized:
+        protocol = "pptp"
+    elif "sstp" in normalized:
+        protocol = "sstp"
+    elif "gre" in normalized:
+        protocol = "gre"
+    else:
+        protocol = "unknown"
+
+    if "server" in normalized:
+        mode = "server"
+    elif "client" in normalized:
+        mode = "client"
+    elif any(
+        term in normalized
+        for term in ("site to site", "site-to-site", "s2s", "gateway to gateway", "peer", "peering", "tunnel")
+    ):
+        mode = "site-to-site"
+    elif "remote user" in normalized or "road warrior" in normalized or "roadwarrior" in normalized:
+        mode = "server"
+    else:
+        mode = "unknown"
+
+    return protocol, mode
+
+
 def build_wan_unique_id(entry_id: str, link: Dict[str, Any], suffix: str) -> str:
     return f"{entry_id}::wan::{wan_interface_key(link)}::{suffix}"
 
@@ -356,6 +450,23 @@ def build_wlan_unique_id(entry_id: str, wlan: Dict[str, Any]) -> str:
 
 def build_vpn_unique_id(entry_id: str, tunnel: Dict[str, Any], suffix: str) -> str:
     return f"{entry_id}::vpn::{vpn_instance_key(tunnel)}::{suffix}"
+
+
+def build_vpn_server_unique_id(
+    entry_id: str, server: Dict[str, Any], network: Dict[str, Any]
+) -> str:
+    pseudo = dict(server)
+    if not pseudo.get("id"):
+        pseudo["id"] = (
+            network.get("_id")
+            or network.get("id")
+            or network.get("uuid")
+            or network.get("name")
+            or "vpn"
+        )
+    if not pseudo.get("name"):
+        pseudo["name"] = network.get("name") or "VPN"
+    return build_vpn_unique_id(entry_id, pseudo, "clients")
 
 
 def _count_items(value: Any) -> int:
@@ -738,154 +849,246 @@ class UniFiGatewayAlertsSensor(UniFiGatewaySensorBase):
         return attrs
 
 
-class UniFiGatewayVpnInstanceSensor(UniFiGatewaySensorBase):
-    """VPN tunnel instance sensor with improved status handling."""
-    
+class UniFiGatewayVpnUsageSensor(SensorEntity):
+    """Sensor providing VPN client counts with enhanced detection."""
+
     _attr_native_unit_of_measurement = "clients"
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_should_poll = True
 
     def __init__(
         self,
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
-        tunnel: Dict[str, Any],
+        base_name: str,
+        server: Dict[str, Any],
+        linked_network: Dict[str, Any],
+        *,
+        unique_id: str,
     ) -> None:
-        """Initialize VPN sensor with better type detection."""
-        self._entry_id = entry_id
-        self._tunnel = tunnel
-        self._tunnel_id = str(
-            tunnel.get("id")
-            or tunnel.get("_id")
-            or tunnel.get("uuid")
-            or tunnel.get("name")
-            or tunnel.get("peer")
-            or tunnel.get("remote")
-            or "vpn"
-        )
-        
-        raw_type = (
-            tunnel.get("type")
-            or tunnel.get("mode")
-            or tunnel.get("role")
-            or tunnel.get("category")
-            or tunnel.get("kind")
-        )
-        self._type = normalize_vpn_type(raw_type)
+        self._coordinator = coordinator
+        self._client = client
+        self._base_name = base_name
+        self._server = server
+        self._linked_network = linked_network or {}
+        self._attr_unique_id = unique_id
 
-        # Better naming and icon selection leveraging constant map
-        vpn_types = {
-            key: (info.get("name", key.title()), info.get("icon", "mdi:vpn"))
-            for key, info in VPN_TYPES_MAP.items()
+        self._srv_id = server.get("id")
+        self._srv_name = server.get("name") or "VPN"
+        self._linked_net_id = (
+            server.get("linked_network_id")
+            or self._linked_network.get("_id")
+            or self._linked_network.get("id")
+        )
+        self._subnet = (
+            self._linked_network.get("subnet")
+            or self._linked_network.get("ip_subnet")
+            or self._linked_network.get("cidr")
+            or self._server.get("_raw", {}).get("tunnel_network")
+            or self._server.get("_raw", {}).get("subnet")
+        )
+        self._ip_network = None
+        if self._subnet:
+            try:
+                self._ip_network = ipaddress.ip_network(self._subnet, strict=False)
+            except ValueError:
+                self._ip_network = None
+
+        vpn_type_raw = (
+            self._server.get("vpn_type")
+            or self._linked_network.get("vpn_type")
+            or "Unknown"
+        )
+        protocol_type, mode = _parse_protocol_and_mode(vpn_type_raw)
+
+        self._attr_name = f"VPN {vpn_type_raw} {self._srv_name}"
+        self._state: Optional[int] = None
+        self._attrs: Dict[str, Any] = {
+            "family": "VPN",
+            "type": "VPN",
+            "vpn_type": vpn_type_raw,
+            "protocol_type": protocol_type,
+            "mode": mode,
+            "vpn_name": self._srv_name,
+            "linked_network_id": self._linked_net_id,
+            "debug_v2_filter": {
+                "network_id": self._linked_net_id,
+                "status": "online",
+            },
+            "instance": base_name,
         }
-        vpn_types.setdefault("vpn", ("VPN", "mdi:vpn"))
-        label_type, icon = vpn_types.get(self._type, vpn_types["vpn"])
-        self._attr_icon = icon
-        
-        name = (
-            tunnel.get("name")
-            or tunnel.get("peer")
-            or tunnel.get("remote")
-            or self._tunnel_id
-        )
-        unique_id = build_vpn_unique_id(entry_id, tunnel, "status")
-        
-        super().__init__(
-            coordinator,
-            client,
-            unique_id,
-            f"VPN {label_type} {name}",
-        )
+        self._apply_network_overrides()
+
+    def _apply_network_overrides(self) -> None:
+        raw = self._linked_network if isinstance(self._linked_network, dict) else {}
+        if not raw:
+            return
+
+        if raw.get("vpn_type"):
+            proto, mode = _parse_protocol_and_mode(raw.get("vpn_type"))
+            self._attrs["vpn_type"] = raw["vpn_type"]
+            self._attrs["protocol_type"] = proto
+            self._attrs["mode"] = mode
+            self._attr_name = f"VPN {raw['vpn_type']} {self._srv_name}"
+
+        if "purpose" in raw or "role" in raw:
+            self._attrs["purpose"] = raw.get("purpose") or raw.get("role")
+
+        for key in ("local_port", "listen_port", "port", "openvpn_port"):
+            if raw.get(key) is not None:
+                self._attrs["local_port"] = raw.get(key)
+                break
+
+        wan_ip = raw.get("wan_ip") or raw.get("local_wan_ip")
+        if not wan_ip:
+            for key, value in raw.items():
+                if isinstance(key, str) and key.endswith("_local_wan_ip") and value:
+                    wan_ip = value
+                    break
+        if wan_ip:
+            self._attrs["wan_ip"] = wan_ip
+
+        if "enabled" in raw:
+            self._attrs["enabled"] = raw.get("enabled")
+
+    def _controller_attrs(self) -> Dict[str, Any]:
+        data = self._coordinator.data if self._coordinator else None
+        if data and isinstance(data.controller, dict):
+            return {
+                "controller_ui": data.controller.get("url"),
+                "controller_api": data.controller.get("api_url"),
+                "controller_site": data.controller.get("site"),
+            }
+        return {
+            "controller_ui": self._client.get_controller_url(),
+            "controller_api": self._client.get_controller_api_url(),
+            "controller_site": self._client.get_site(),
+        }
+
+    @property
+    def name(self) -> str:
+        return self._attr_name
+
+    @property
+    def icon(self) -> str:
+        proto = str(self._attrs.get("protocol_type") or "").lower()
+        mapping = {
+            "openvpn": "selfhst:openvpn",
+            "wireguard": "selfhst:wireguard",
+            "ipsec": "selfhst:ipsec",
+            "ikev2": "selfhst:ipsec",
+            "l2tp": "selfhst:ipsec",
+            "l2tp-ipsec": "selfhst:ipsec",
+            "pptp": "selfhst:pptp",
+            "sstp": "selfhst:sstp",
+            "gre": "mdi:lock",
+        }
+        return mapping.get(proto, "mdi:lock")
 
     @property
     def native_value(self) -> Optional[int]:
-        """Return number of connected clients/peers with better counting."""
-        tunnel = self._current_tunnel()
-        if not tunnel:
-            return 0
-            
-        if self._type == "s2s":
-            peers = tunnel.get("peers")
-            return _count_connected_items(peers)
-
-        collection_keys = ["sessions", "clients", "peers"]
-        for key in collection_keys:
-            if key not in tunnel:
-                continue
-            return _count_connected_items(tunnel.get(key))
-
-        return 0
+        return self._state
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        """Return enhanced VPN attributes."""
-        tunnel = self._current_tunnel() or {}
-        
-        # Base attributes
-        attrs = {
-            "tunnel_id": self._tunnel_id,
-            "type": self._type,
-            "name": tunnel.get("name") or tunnel.get("description"),
-            "remote": tunnel.get("remote") or tunnel.get("peer"),
-            "local": tunnel.get("local") or tunnel.get("tunnel_ip"),
-            "interface": tunnel.get("interface") or tunnel.get("wan_interface"),
-            "established": tunnel.get("established", False),
-            "status": self._get_tunnel_status(tunnel),
-            "last_seen": _parse_datetime_24h(
-                tunnel.get("last_seen") or tunnel.get("last_contact")
-            ),
-        }
-
-        # Add type-specific attributes
-        if self._type == "s2s":
-            attrs.update(self._get_s2s_attributes(tunnel))
-        else:
-            attrs.update(self._get_client_server_attributes(tunnel))
-
+        attrs = dict(self._attrs)
         attrs.update(self._controller_attrs())
         return attrs
 
-    def _get_tunnel_status(self, tunnel: Dict[str, Any]) -> str:
-        """Get normalized tunnel status."""
-        status = tunnel.get("status", "")
-        if isinstance(status, bool):
-            return "up" if status else "down"
-        if not status:
-            return "unknown"
-        return str(status).lower()
-
-    def _get_s2s_attributes(self, tunnel: Dict[str, Any]) -> Dict[str, Any]:
-        """Get Site-to-Site specific attributes."""
-        peers = tunnel.get("peers")
+    @property
+    def device_info(self) -> Dict[str, Any]:
         return {
-            "peers": _count_items(peers),
-            "active_peers": _count_connected_items(peers),
-            "networks": tunnel.get("networks", []),
-            "local_networks": tunnel.get("local_networks", []),
-            "remote_networks": tunnel.get("remote_networks", []),
+            "identifiers": {(DOMAIN, self._client.instance_key())},
+            "manufacturer": "Ubiquiti Networks",
+            "name": self._base_name,
         }
 
-    def _get_client_server_attributes(self, tunnel: Dict[str, Any]) -> Dict[str, Any]:
-        """Get Client/Server specific attributes."""
-        clients = tunnel.get("clients")
-        attrs = {
-            "clients": _count_items(clients),
-            "active_clients": _count_connected_items(clients),
-            "protocol": tunnel.get("protocol"),
-            "port": tunnel.get("port"),
-            "encryption": tunnel.get("encryption") or tunnel.get("cipher"),
-        }
+    @Throttle(VPN_MIN_TIME_BETWEEN_UPDATES)
+    def update(self) -> None:
+        now_ts = time.time()
+        count = 0
+        v2_total = 0
+        v2_for_net = 0
 
-        if self._type == "teleport":
-            sessions = tunnel.get("sessions")
-            attrs.update(
-                {
-                    "sessions": _count_items(sessions),
-                    "active_sessions": _count_connected_items(sessions),
-                }
-            )
+        try:
+            clients_v2 = self._client.get_active_clients_v2()
+            v2_total = len(clients_v2)
+            target = str(self._linked_net_id) if self._linked_net_id else None
+            for client in clients_v2:
+                if target and str(client.get("network_id")) != target:
+                    continue
+                status = str(client.get("status", "")).lower()
+                if status == "online" or client.get("is_online") is True or client.get("online") is True:
+                    v2_for_net += 1
+            count = v2_for_net
+        except (APIError, ConnectivityError) as err:
+            _LOGGER.debug("Active clients v2 fetch failed for VPN %s: %s", self._srv_name, err)
 
-        return attrs
+        if count == 0:
+            try:
+                leases = self._client.get_dhcp_leases()
+            except (APIError, ConnectivityError) as err:
+                leases = []
+                _LOGGER.debug("DHCP leases fetch failed for VPN %s: %s", self._srv_name, err)
+            for lease in leases or []:
+                try:
+                    if not self._client._lease_is_active(lease, now_ts):
+                        continue
+                except Exception:
+                    continue
+                lease_ip = lease.get("ip") or lease.get("lease_ip") or lease.get("assigned_ip")
+                lease_network = (
+                    lease.get("network_id")
+                    or lease.get("networkconf_id")
+                    or lease.get("network")
+                )
+                if self._linked_net_id and str(lease_network) == str(self._linked_net_id):
+                    count += 1
+                    continue
+                if self._ip_network and lease_ip:
+                    try:
+                        if ipaddress.ip_address(lease_ip) in self._ip_network:
+                            count += 1
+                    except ValueError:
+                        continue
+
+        if count == 0:
+            try:
+                session_map = self._client.get_vpn_active_sessions_map()
+            except (APIError, ConnectivityError) as err:
+                session_map = {"by_server": {}, "by_net": {}}
+                _LOGGER.debug("VPN session fetch failed for %s: %s", self._srv_name, err)
+            by_server = session_map.get("by_server", {})
+            by_net = session_map.get("by_net", {})
+            if self._srv_id and str(self._srv_id) in by_server:
+                count = by_server[str(self._srv_id)]
+            elif self._linked_net_id and str(self._linked_net_id) in by_net:
+                count = by_net[str(self._linked_net_id)]
+
+        if count == 0:
+            try:
+                legacy_clients = self._client.get_clients()
+            except (APIError, ConnectivityError) as err:
+                legacy_clients = []
+                _LOGGER.debug("Legacy clients fetch failed for VPN %s: %s", self._srv_name, err)
+            for client in legacy_clients or []:
+                if not self._client.is_client_active(client, now_ts):
+                    continue
+                if self._linked_net_id and str(client.get("network_id")) == str(self._linked_net_id):
+                    count += 1
+                    continue
+                if self._ip_network and client.get("ip"):
+                    try:
+                        if ipaddress.ip_address(client["ip"]) in self._ip_network:
+                            count += 1
+                    except ValueError:
+                        continue
+
+        self._state = count
+        self._attrs["debug_v2_seen_total"] = v2_total
+        self._attrs["Online users"] = v2_for_net
+
 
 
 class UniFiGatewayFirmwareSensor(UniFiGatewaySensorBase):
