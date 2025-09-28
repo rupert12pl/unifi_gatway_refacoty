@@ -1356,17 +1356,23 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         count = 0
         v2_total = 0
         v2_for_net = 0
+        connected_records: List[Dict[str, Any]] = []
 
         try:
             clients_v2 = self._client.get_active_clients_v2()
             v2_total = len(clients_v2)
             target = str(self._linked_net_id) if self._linked_net_id else None
+            filtered_clients: List[Dict[str, Any]] = []
             for client in clients_v2:
+                if not isinstance(client, Mapping):
+                    continue
                 if target and str(client.get("network_id")) != target:
                     continue
                 status = str(client.get("status", "")).lower()
                 if status == "online" or client.get("is_online") is True or client.get("online") is True:
-                    v2_for_net += 1
+                    filtered_clients.append(dict(client))
+            v2_for_net = len(filtered_clients)
+            connected_records = filtered_clients
             count = v2_for_net
         except (APIError, ConnectivityError) as err:
             _LOGGER.debug("Active clients v2 fetch failed for VPN %s: %s", self._srv_name, err)
@@ -1377,7 +1383,10 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
             except (APIError, ConnectivityError) as err:
                 leases = []
                 _LOGGER.debug("DHCP leases fetch failed for VPN %s: %s", self._srv_name, err)
+            lease_matches: List[Dict[str, Any]] = []
             for lease in leases or []:
+                if not isinstance(lease, Mapping):
+                    continue
                 try:
                     if not self._client._lease_is_active(lease, now_ts):
                         continue
@@ -1389,15 +1398,23 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
                     or lease.get("networkconf_id")
                     or lease.get("network")
                 )
+                matched = False
                 if self._linked_net_id and str(lease_network) == str(self._linked_net_id):
-                    count += 1
-                    continue
+                    matched = True
                 if self._ip_network and lease_ip:
                     try:
                         if ipaddress.ip_address(lease_ip) in self._ip_network:
-                            count += 1
+                            matched = True
                     except ValueError:
                         continue
+                if matched:
+                    normalized = dict(lease)
+                    if lease_ip and not normalized.get("assigned_ip"):
+                        normalized.setdefault("assigned_ip", lease_ip)
+                    lease_matches.append(normalized)
+            if lease_matches:
+                connected_records = lease_matches
+                count = len(lease_matches)
 
         if count == 0:
             try:
@@ -1418,26 +1435,47 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
             except (APIError, ConnectivityError) as err:
                 legacy_clients = []
                 _LOGGER.debug("Legacy clients fetch failed for VPN %s: %s", self._srv_name, err)
+            legacy_matches: List[Dict[str, Any]] = []
             for client in legacy_clients or []:
+                if not isinstance(client, Mapping):
+                    continue
                 if not self._client.is_client_active(client, now_ts):
                     continue
+                matched = False
                 if self._linked_net_id and str(client.get("network_id")) == str(self._linked_net_id):
-                    count += 1
-                    continue
+                    matched = True
                 if self._ip_network and client.get("ip"):
                     try:
                         if ipaddress.ip_address(client["ip"]) in self._ip_network:
-                            count += 1
+                            matched = True
                     except ValueError:
                         continue
+                if matched:
+                    legacy_matches.append(dict(client))
+            if legacy_matches:
+                connected_records = legacy_matches
+                count = len(legacy_matches)
 
         self._state = count
         self._attrs["debug_v2_seen_total"] = v2_total
         self._attrs["Online users"] = v2_for_net
-        self._update_connected_clients()
+        self._update_connected_clients(connected_records)
 
-    def _update_connected_clients(self) -> None:
+    def _update_connected_clients(
+        self, primary_records: Optional[Iterable[Mapping[str, Any]]] = None
+    ) -> None:
         self._connected_clients = []
+
+        if primary_records:
+            prepared: List[Mapping[str, Any]] = []
+            for record in primary_records:
+                if isinstance(record, Mapping):
+                    prepared.append(record)
+            if prepared:
+                formatted = _format_vpn_connected_clients({"connected_clients": prepared})
+                if formatted:
+                    self._connected_clients = formatted
+                    return
 
         try:
             servers = self._client.get_vpn_servers()
