@@ -1566,27 +1566,23 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
                 ),
                 "num_guest": ("num_guest", "guest", "guests", "user_guest"),
                 "num_iot": ("num_iot", "user_iot", "iot", "users_iot"),
-                "num_it": ("num_it", "user_it", "it", "users_it"),
             }
-            normalized_counts: Dict[str, int] = {}
+            normalized_counts: Dict[str, int] = {
+                key: 0 for key in count_sources
+            }
             for target, keys in count_sources.items():
                 count = _resolve_client_count_from_record(record, keys)
                 if count is None:
                     continue
                 normalized_counts[target] = count
-                attrs[target] = count
-            if "num_user" in normalized_counts:
-                attrs["user"] = normalized_counts["num_user"]
-            if "num_guest" in normalized_counts:
-                attrs["user_guest"] = normalized_counts["num_guest"]
-            if "num_iot" in normalized_counts:
-                attrs["user_iot"] = normalized_counts["num_iot"]
-            if "num_it" in normalized_counts:
-                attrs["user_it"] = normalized_counts["num_it"]
-            if normalized_counts:
-                total = sum(normalized_counts.values())
-                attrs["num_user_total"] = total
-                attrs["user_total"] = total
+            for target, value in normalized_counts.items():
+                attrs[target] = value
+            attrs["user"] = normalized_counts["num_user"]
+            attrs["user_guest"] = normalized_counts["num_guest"]
+            attrs["user_iot"] = normalized_counts["num_iot"]
+            total = sum(normalized_counts.values())
+            attrs["num_user_total"] = total
+            attrs["user_total"] = total
         attrs.update(self._controller_attrs())
         return attrs
 
