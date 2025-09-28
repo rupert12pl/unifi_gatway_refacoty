@@ -999,6 +999,7 @@ def _collect_vpn_connected_clients_details(
                 (
                     "name",
                     "display_name",
+                    "user-name",
                     "user_name",
                     "username",
                     "user",
@@ -1015,7 +1016,9 @@ def _collect_vpn_connected_clients_details(
                 (
                     "source_ip",
                     "remote_ip",
+                    "remoteIP",
                     "remote_addr",
+                    "remoteAddr",
                     "public_ip",
                     "wan_ip",
                     "peer_ip",
@@ -1023,6 +1026,33 @@ def _collect_vpn_connected_clients_details(
                     "ip_address",
                     "internet_ip",
                     "src_ip",
+                ),
+            )
+        )
+        source_ipv6 = _normalize_client_field(
+            _extract_nested_value(
+                client,
+                (
+                    "source_ipv6",
+                    "sourceIPV6",
+                    "source_ip6",
+                    "remote_ipv6",
+                    "remoteIPV6",
+                    "remote_ipv6_address",
+                    "remoteIPv6Address",
+                    "remote_addr_ipv6",
+                    "remote_addr6",
+                    "public_ipv6",
+                    "publicIPV6",
+                    "wan_ipv6",
+                    "peer_ipv6",
+                    "peerIPv6",
+                    "ip_address_v6",
+                    "internet_ipv6",
+                    "src_ipv6",
+                    "ipv6",
+                    "ip6",
+                    "ip_v6",
                 ),
             )
         )
@@ -1038,6 +1068,29 @@ def _collect_vpn_connected_clients_details(
                     "tunnel_ip",
                     "network_ip",
                     "lan_ip",
+                ),
+            )
+        )
+        internal_ipv6 = _normalize_client_field(
+            _extract_nested_value(
+                client,
+                (
+                    "internal_ipv6",
+                    "internalIPV6",
+                    "internal_ip6",
+                    "client_ipv6",
+                    "clientIPV6",
+                    "assigned_ipv6",
+                    "assignedIPV6",
+                    "ip_v6",
+                    "ipv6",
+                    "ip6",
+                    "local_ipv6",
+                    "localIPV6",
+                    "local_ip6",
+                    "tunnel_ipv6",
+                    "vpn_ipv6",
+                    "lan_ipv6",
                 ),
             )
         )
@@ -1079,15 +1132,19 @@ def _collect_vpn_connected_clients_details(
             )
         )
 
-        city, country, isp = _enrich_remote_ip_details(
-            source_ip, city, country, isp
-        )
+        lookup_ip = source_ip if source_ip != "Unknown" else source_ipv6
+        if lookup_ip and lookup_ip != "Unknown":
+            city, country, isp = _enrich_remote_ip_details(
+                lookup_ip, city, country, isp
+            )
 
         details.append(
             {
                 "name": name,
                 "source_ip": source_ip,
+                "source_ipv6": source_ipv6,
                 "internal_ip": internal_ip,
+                "internal_ipv6": internal_ipv6,
                 "country": country,
                 "city": city,
                 "isp": isp,
@@ -1108,7 +1165,9 @@ def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
             "<tr>"
             f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('name', ''))}</td>"
             f"<td style=\"padding: 4px; text-align: right;\">{html.escape(client.get('source_ip', ''))}</td>"
+            f"<td style=\"padding: 4px; text-align: right;\">{html.escape(client.get('source_ipv6', ''))}</td>"
             f"<td style=\"padding: 4px; text-align: right;\">{html.escape(client.get('internal_ip', ''))}</td>"
+            f"<td style=\"padding: 4px; text-align: right;\">{html.escape(client.get('internal_ipv6', ''))}</td>"
             f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('country', ''))}</td>"
             f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('city', ''))}</td>"
             f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('isp', ''))}</td>"
@@ -1117,7 +1176,7 @@ def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
 
     if not rows:
         rows.append(
-            "<tr><td style=\"padding: 4px; text-align: center;\" colspan=\"6\">"
+            "<tr><td style=\"padding: 4px; text-align: center;\" colspan=\"8\">"
             "No connected clients"
             "</td></tr>"
         )
@@ -1126,7 +1185,9 @@ def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
         "<tr>"
         "<th style=\"padding: 4px; text-align: left;\">Client</th>"
         "<th style=\"padding: 4px; text-align: right;\">Remote IP</th>"
+        "<th style=\"padding: 4px; text-align: right;\">Remote IPv6</th>"
         "<th style=\"padding: 4px; text-align: right;\">Internal IP</th>"
+        "<th style=\"padding: 4px; text-align: right;\">Internal IPv6</th>"
         "<th style=\"padding: 4px; text-align: left;\">Country</th>"
         "<th style=\"padding: 4px; text-align: left;\">City</th>"
         "<th style=\"padding: 4px; text-align: left;\">ISP</th>"
@@ -1141,10 +1202,12 @@ def _prepare_connected_clients_output(raw: Mapping[str, Any]) -> Tuple[List[str]
     formatted: List[str] = []
     for client in details:
         formatted.append(
-            "{} ~ {} | {} | {} | {} | {}".format(
+            "{} ~ {} | {} | {} | {} | {} | {} | {}".format(
                 client["name"],
                 client["source_ip"],
+                client["source_ipv6"],
                 client["internal_ip"],
+                client["internal_ipv6"],
                 client["country"],
                 client["city"],
                 client["isp"],
