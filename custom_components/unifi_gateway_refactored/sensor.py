@@ -794,6 +794,20 @@ def _extract_client_count(value: Any) -> Optional[int]:
     return _coerce_int(value)
 
 
+def _resolve_client_count_from_record(
+    record: Optional[Mapping[str, Any]], keys: Iterable[str]
+) -> Optional[int]:
+    if not record:
+        return None
+    for key in keys:
+        if key not in record:
+            continue
+        count = _extract_client_count(record.get(key))
+        if count is not None:
+            return count
+    return None
+
+
 def _normalize_client_field(value: Optional[Any]) -> str:
     if value in (None, ""):
         return "Unknown"
@@ -1541,15 +1555,36 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
         attrs: Dict[str, Any] = {}
         if record:
             attrs.update({k: v for k, v in record.items() if k != "subsystem"})
-            total = 0
-            total_found = False
-            for key in ("num_user", "num_guest", "num_iot", "num_it"):
-                count = _coerce_int(record.get(key))
+            count_sources: Dict[str, Iterable[str]] = {
+                "num_user": (
+                    "num_user",
+                    "user",
+                    "users",
+                    "num_sta",
+                    "sta",
+                    "clients",
+                ),
+                "num_guest": ("num_guest", "guest", "guests", "user_guest"),
+                "num_iot": ("num_iot", "user_iot", "iot", "users_iot"),
+                "num_it": ("num_it", "user_it", "it", "users_it"),
+            }
+            normalized_counts: Dict[str, int] = {}
+            for target, keys in count_sources.items():
+                count = _resolve_client_count_from_record(record, keys)
                 if count is None:
                     continue
-                total += count
-                total_found = True
-            if total_found:
+                normalized_counts[target] = count
+                attrs[target] = count
+            if "num_user" in normalized_counts:
+                attrs["user"] = normalized_counts["num_user"]
+            if "num_guest" in normalized_counts:
+                attrs["user_guest"] = normalized_counts["num_guest"]
+            if "num_iot" in normalized_counts:
+                attrs["user_iot"] = normalized_counts["num_iot"]
+            if "num_it" in normalized_counts:
+                attrs["user_it"] = normalized_counts["num_it"]
+            if normalized_counts:
+                total = sum(normalized_counts.values())
                 attrs["num_user_total"] = total
                 attrs["user_total"] = total
         attrs.update(self._controller_attrs())
