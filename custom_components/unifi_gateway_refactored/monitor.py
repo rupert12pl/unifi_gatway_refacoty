@@ -44,11 +44,24 @@ class SpeedtestRunner:
         coordinator: UniFiGatewayDataUpdateCoordinator,
     ) -> None:
         self.hass = hass
-        self.entity_ids = [entity_id for entity_id in entity_ids if entity_id]
+        self.entity_ids = self._normalize_entity_ids(entity_ids)
         self._on_result_cb = on_result_cb
         self._client = client
         self._coordinator = coordinator
         self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _normalize_entity_ids(entity_ids: Sequence[str]) -> list[str]:
+        """Return entity IDs stripped of blanks and duplicates while preserving order."""
+
+        normalized: dict[str, None] = {}
+        for candidate in entity_ids:
+            if not candidate:
+                continue
+            text = str(candidate).strip()
+            if text and text not in normalized:
+                normalized[text] = None
+        return list(normalized)
 
     @staticmethod
     def _record_marker(record: dict[str, Any] | None) -> tuple[Any, ...] | None:

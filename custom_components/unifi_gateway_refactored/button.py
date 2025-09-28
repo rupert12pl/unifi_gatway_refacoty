@@ -9,6 +9,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DATA_RUNNER, DOMAIN
 from .unifi_client import UniFiOSClient
+from .utils import build_speedtest_button_unique_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,10 +28,8 @@ async def async_setup_entry(
         [SpeedtestRunButton(hass, entry, client, device_name)], True
     )
 
-
 class SpeedtestRunButton(ButtonEntity):
     _attr_name = "Run Speedtest"
-    _attr_unique_id = "unifi_gateway_refactored_run_speedtest"
     _attr_icon = "mdi:speedometer"
 
     def __init__(
@@ -42,18 +41,22 @@ class SpeedtestRunButton(ButtonEntity):
     ) -> None:
         self.hass = hass
         self._entry = entry
+        self._entry_id = entry.entry_id
         self._client = client
         self._device_name = device_name
+        self._attr_unique_id = build_speedtest_button_unique_id(self._entry_id)
 
     async def async_press(self) -> None:
         store = self.hass.data.get(DOMAIN, {})
-        entry_data = store.get(self._entry.entry_id)
+        entry_data = store.get(self._entry_id)
         if not entry_data:
-            _LOGGER.error("Button pressed but entry data missing for %s", self._entry.entry_id)
+            _LOGGER.error("Button pressed but entry data missing for %s", self._entry_id)
             return
         runner = entry_data.get(DATA_RUNNER)
         if runner is None:
-            _LOGGER.error("Button pressed but speedtest runner missing for %s", self._entry.entry_id)
+            _LOGGER.error(
+                "Button pressed but speedtest runner missing for %s", self._entry_id
+            )
             return
         _LOGGER.info("Button pressed -> triggering Speedtest (runner handles trace).")
         await runner.async_trigger(reason="button")
