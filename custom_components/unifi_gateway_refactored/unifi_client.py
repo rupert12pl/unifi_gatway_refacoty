@@ -1454,6 +1454,20 @@ class UniFiOSClient:
                 pass
             return result
 
+    def restart_gateway(self, mac: Optional[str] = None):
+        """Trigger a soft restart of the UniFi gateway device."""
+
+        if mac is None:
+            mac = self.get_gateway_mac()
+        payload: Dict[str, Any] = {"cmd": "restart"}
+        if mac:
+            payload["mac"] = mac
+
+        result, _ = self._call_speedtest_endpoint(
+            "POST", "cmd/devmgr", payload=payload
+        )
+        return result
+
     def get_speedtest_status(self, mac: Optional[str] = None):
         if mac is None:
             mac = self.get_gateway_mac()
