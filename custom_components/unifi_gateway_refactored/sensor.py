@@ -1577,10 +1577,17 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         subnet_value = self._resolve_network_subnet()
         if subnet_value:
             attrs["subnet"] = subnet_value
-        attrs["Connected Clients"] = list(self._connected_clients)
+        attrs["connected_clients"] = list(self._connected_clients)
         if self._connected_clients_html is not None:
             attrs["connected_clients_html"] = self._connected_clients_html
         return attrs
+
+    @property
+    def extra_state_attribute_names(self) -> Dict[str, str]:
+        names: Dict[str, str] = {"connected_clients": "Connected Clients"}
+        if self._connected_clients_html is not None:
+            names["connected_clients_html"] = "Connected Clients HTML"
+        return names
 
     @property
     def device_info(self) -> Dict[str, Any]:
