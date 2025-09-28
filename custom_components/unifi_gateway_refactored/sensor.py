@@ -55,6 +55,20 @@ MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=30)
 VPN_MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=10)
 
 
+def _freeze_state(value: Any) -> Any:
+    """Create a hashable representation of an arbitrary value."""
+
+    if isinstance(value, Mapping):
+        return tuple(sorted((key, _freeze_state(val)) for key, val in value.items()))
+    if isinstance(value, (list, tuple, set)):
+        return tuple(_freeze_state(item) for item in value)
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc).isoformat()
+        return value.astimezone(timezone.utc).isoformat()
+    return value
+
+
 SUBSYSTEM_SENSORS: Dict[str, tuple[str, str]] = {
     "wan": ("WAN", "mdi:shield-outline"),
     "lan": ("LAN", "mdi:lan"),
@@ -1427,6 +1441,7 @@ class UniFiGatewaySensorBase(
         self._attr_name = name
         self._default_icon = getattr(self, "_attr_icon", None)
         self._device_name = device_name or self._derive_device_name()
+        self._last_signature: Any | None = None
 
     def _derive_device_name(self) -> str:
         site = self._client.get_site()
@@ -1456,6 +1471,25 @@ class UniFiGatewaySensorBase(
         except Exception:  # pragma: no cover - guard against unexpected client errors
             pass
         return info
+
+    def _state_signature(self) -> Any:
+        native = self.native_value
+        attrs = self.extra_state_attributes
+        icon = getattr(self, "icon", None)
+        available = self.available
+        return (
+            _freeze_state(native),
+            _freeze_state(attrs) if attrs is not None else None,
+            icon,
+            available,
+        )
+
+    def _handle_coordinator_update(self) -> None:
+        signature = self._state_signature()
+        if signature == self._last_signature and self._last_signature is not None:
+            return
+        self._last_signature = signature
+        self.async_write_ha_state()
 
 
 class UniFiGatewayWanSensorBase(UniFiGatewaySensorBase):
@@ -1694,6 +1728,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         self._apply_network_overrides()
         self._connected_clients: List[str] = []
         self._connected_clients_html: Optional[str] = None
+        self._connected_clients_signature: Any | None = None
 
     def _apply_network_overrides(self) -> None:
         raw = self._linked_network if isinstance(self._linked_network, dict) else {}
@@ -1938,8 +1973,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
     def _update_connected_clients(
         self, primary_records: Optional[Iterable[Mapping[str, Any]]] = None
     ) -> None:
-        self._connected_clients = []
-        self._connected_clients_html = None
+        raw_payload: Optional[Mapping[str, Any]] = None
 
         if primary_records:
             prepared: List[Mapping[str, Any]] = []
@@ -1947,12 +1981,20 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
                 if isinstance(record, Mapping):
                     prepared.append(record)
             if prepared:
-                formatted, html_value = _prepare_connected_clients_output(
-                    {"connected_clients": prepared}
-                )
-                self._connected_clients = formatted
-                self._connected_clients_html = html_value
+                raw_payload = {"connected_clients": prepared}
+
+        if raw_payload is not None:
+            signature = _freeze_state(raw_payload)
+            if (
+                signature == self._connected_clients_signature
+                and self._connected_clients_html is not None
+            ):
                 return
+            formatted, html_value = _prepare_connected_clients_output(raw_payload)
+            self._connected_clients = formatted
+            self._connected_clients_html = html_value
+            self._connected_clients_signature = signature
+            return
 
         try:
             servers = self._client.get_vpn_servers()
@@ -1960,6 +2002,13 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
             _LOGGER.debug(
                 "Fetching VPN server clients failed for %s: %s", self._srv_name, err
             )
+            if (
+                self._connected_clients_signature is None
+                or self._connected_clients_html is None
+            ):
+                self._connected_clients = []
+                self._connected_clients_html = _render_connected_clients_html([])
+                self._connected_clients_signature = ("empty",)
             return
 
         target_id = str(self._srv_id) if self._srv_id is not None else None
@@ -1975,9 +2024,16 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
             linked_id = server.get("linked_network_id") if isinstance(server, Mapping) else None
 
             if target_id is not None and server_id is not None and str(server_id) == target_id:
+                signature = _freeze_state(raw)
+                if (
+                    signature == self._connected_clients_signature
+                    and self._connected_clients_html is not None
+                ):
+                    return
                 formatted, html_value = _prepare_connected_clients_output(raw)
                 self._connected_clients = formatted
                 self._connected_clients_html = html_value
+                self._connected_clients_signature = signature
                 return
 
             if (
@@ -1992,13 +2048,27 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
                 fallback_raw = raw
 
         if fallback_raw is not None:
+            signature = _freeze_state(fallback_raw)
+            if (
+                signature == self._connected_clients_signature
+                and self._connected_clients_html is not None
+            ):
+                return
             formatted, html_value = _prepare_connected_clients_output(fallback_raw)
             self._connected_clients = formatted
             self._connected_clients_html = html_value
+            self._connected_clients_signature = signature
             return
 
-        if self._connected_clients_html is None:
-            self._connected_clients_html = _render_connected_clients_html([])
+        signature = ("empty",)
+        if (
+            signature == self._connected_clients_signature
+            and self._connected_clients_html is not None
+        ):
+            return
+        self._connected_clients = []
+        self._connected_clients_html = _render_connected_clients_html([])
+        self._connected_clients_signature = signature
 
 
 
