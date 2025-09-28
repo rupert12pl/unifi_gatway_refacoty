@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import html
 import hashlib
 import logging
 import time
@@ -865,94 +866,169 @@ def _iter_connected_client_records(raw: Mapping[str, Any]) -> Iterable[Mapping[s
                     yield item
 
 
-def _format_vpn_connected_clients(raw: Mapping[str, Any]) -> List[str]:
-    formatted: List[str] = []
+def _collect_vpn_connected_clients_details(
+    raw: Mapping[str, Any]
+) -> List[Dict[str, str]]:
+    details: List[Dict[str, str]] = []
     for client in _iter_connected_client_records(raw):
-        name = _extract_nested_value(
-            client,
-            (
-                "name",
-                "display_name",
-                "user_name",
-                "username",
-                "user",
-                "identity",
-                "client_name",
-                "description",
-                "peer",
-            ),
+        name = _normalize_client_field(
+            _extract_nested_value(
+                client,
+                (
+                    "name",
+                    "display_name",
+                    "user_name",
+                    "username",
+                    "user",
+                    "identity",
+                    "client_name",
+                    "description",
+                    "peer",
+                ),
+            )
         )
-        source_ip = _extract_nested_value(
-            client,
-            (
-                "source_ip",
-                "remote_ip",
-                "remote_addr",
-                "public_ip",
-                "wan_ip",
-                "peer_ip",
-                "peer_addr",
-                "ip_address",
-                "internet_ip",
-                "src_ip",
-            ),
+        source_ip = _normalize_client_field(
+            _extract_nested_value(
+                client,
+                (
+                    "source_ip",
+                    "remote_ip",
+                    "remote_addr",
+                    "public_ip",
+                    "wan_ip",
+                    "peer_ip",
+                    "peer_addr",
+                    "ip_address",
+                    "internet_ip",
+                    "src_ip",
+                ),
+            )
         )
-        internal_ip = _extract_nested_value(
-            client,
-            (
-                "internal_ip",
-                "client_ip",
-                "assigned_ip",
-                "ip",
-                "local_ip",
-                "tunnel_ip",
-                "network_ip",
-                "lan_ip",
-            ),
+        internal_ip = _normalize_client_field(
+            _extract_nested_value(
+                client,
+                (
+                    "internal_ip",
+                    "client_ip",
+                    "assigned_ip",
+                    "ip",
+                    "local_ip",
+                    "tunnel_ip",
+                    "network_ip",
+                    "lan_ip",
+                ),
+            )
         )
-        country = _extract_nested_value(
-            client,
-            (
-                "country",
-                "country_name",
-                "geoip_country",
-                "countryCode",
-                "country_code",
-            ),
+        country = _normalize_client_field(
+            _extract_nested_value(
+                client,
+                (
+                    "country",
+                    "country_name",
+                    "geoip_country",
+                    "countryCode",
+                    "country_code",
+                ),
+            )
         )
-        city = _extract_nested_value(
-            client,
-            (
-                "city",
-                "geoip_city",
-                "town",
-                "region",
-            ),
+        city = _normalize_client_field(
+            _extract_nested_value(
+                client,
+                (
+                    "city",
+                    "geoip_city",
+                    "town",
+                    "region",
+                ),
+            )
         )
-        isp = _extract_nested_value(
-            client,
-            (
-                "isp",
-                "isp_name",
-                "organization",
-                "org",
-                "ispOrg",
-                "isp_org",
-                "isp_provider",
-            ),
-        )
-
-        formatted.append(
-            "{} ~ {} | {} | {} | {} | {}".format(
-                _normalize_client_field(name),
-                _normalize_client_field(source_ip),
-                _normalize_client_field(internal_ip),
-                _normalize_client_field(country),
-                _normalize_client_field(city),
-                _normalize_client_field(isp),
+        isp = _normalize_client_field(
+            _extract_nested_value(
+                client,
+                (
+                    "isp",
+                    "isp_name",
+                    "organization",
+                    "org",
+                    "ispOrg",
+                    "isp_org",
+                    "isp_provider",
+                ),
             )
         )
 
+        details.append(
+            {
+                "name": name,
+                "source_ip": source_ip,
+                "internal_ip": internal_ip,
+                "country": country,
+                "city": city,
+                "isp": isp,
+            }
+        )
+
+    return details
+
+
+def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
+    table_open = (
+        '<table width="100%" border="1" '
+        'style="border: 1px black solid; border-collapse: collapse;">'
+    )
+    rows: List[str] = []
+    for client in clients:
+        rows.append(
+            "<tr>"
+            f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('name', ''))}</td>"
+            f"<td style=\"padding: 4px; text-align: right;\">{html.escape(client.get('source_ip', ''))}</td>"
+            f"<td style=\"padding: 4px; text-align: right;\">{html.escape(client.get('internal_ip', ''))}</td>"
+            f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('country', ''))}</td>"
+            f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('city', ''))}</td>"
+            f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('isp', ''))}</td>"
+            "</tr>"
+        )
+
+    if not rows:
+        rows.append(
+            "<tr><td style=\"padding: 4px; text-align: center;\" colspan=\"6\">"
+            "No connected clients"
+            "</td></tr>"
+        )
+
+    header = (
+        "<tr>"
+        "<th style=\"padding: 4px; text-align: left;\">Client</th>"
+        "<th style=\"padding: 4px; text-align: right;\">Remote IP</th>"
+        "<th style=\"padding: 4px; text-align: right;\">Internal IP</th>"
+        "<th style=\"padding: 4px; text-align: left;\">Country</th>"
+        "<th style=\"padding: 4px; text-align: left;\">City</th>"
+        "<th style=\"padding: 4px; text-align: left;\">ISP</th>"
+        "</tr>"
+    )
+
+    return f"{table_open}{header}{''.join(rows)}</table>"
+
+
+def _prepare_connected_clients_output(raw: Mapping[str, Any]) -> Tuple[List[str], str]:
+    details = _collect_vpn_connected_clients_details(raw)
+    formatted: List[str] = []
+    for client in details:
+        formatted.append(
+            "{} ~ {} | {} | {} | {} | {}".format(
+                client["name"],
+                client["source_ip"],
+                client["internal_ip"],
+                client["country"],
+                client["city"],
+                client["isp"],
+            )
+        )
+    return formatted, _render_connected_clients_html(details)
+
+
+def _format_vpn_connected_clients(raw: Mapping[str, Any]) -> List[str]:
+    formatted, _ = _prepare_connected_clients_output(raw)
     return formatted
 
 
@@ -1264,6 +1340,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         }
         self._apply_network_overrides()
         self._connected_clients: List[str] = []
+        self._connected_clients_html: Optional[str] = None
 
     def _apply_network_overrides(self) -> None:
         raw = self._linked_network if isinstance(self._linked_network, dict) else {}
@@ -1375,6 +1452,8 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         if subnet_value:
             attrs["subnet"] = subnet_value
         attrs["Connected Clients"] = list(self._connected_clients)
+        if self._connected_clients_html is not None:
+            attrs["Connected Clients HTML"] = self._connected_clients_html
         return attrs
 
     @property
@@ -1500,6 +1579,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         self, primary_records: Optional[Iterable[Mapping[str, Any]]] = None
     ) -> None:
         self._connected_clients = []
+        self._connected_clients_html = None
 
         if primary_records:
             prepared: List[Mapping[str, Any]] = []
@@ -1507,10 +1587,12 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
                 if isinstance(record, Mapping):
                     prepared.append(record)
             if prepared:
-                formatted = _format_vpn_connected_clients({"connected_clients": prepared})
-                if formatted:
-                    self._connected_clients = formatted
-                    return
+                formatted, html_value = _prepare_connected_clients_output(
+                    {"connected_clients": prepared}
+                )
+                self._connected_clients = formatted
+                self._connected_clients_html = html_value
+                return
 
         try:
             servers = self._client.get_vpn_servers()
@@ -1533,7 +1615,9 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
             linked_id = server.get("linked_network_id") if isinstance(server, Mapping) else None
 
             if target_id is not None and server_id is not None and str(server_id) == target_id:
-                self._connected_clients = _format_vpn_connected_clients(raw)
+                formatted, html_value = _prepare_connected_clients_output(raw)
+                self._connected_clients = formatted
+                self._connected_clients_html = html_value
                 return
 
             if (
@@ -1548,7 +1632,13 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
                 fallback_raw = raw
 
         if fallback_raw is not None:
-            self._connected_clients = _format_vpn_connected_clients(fallback_raw)
+            formatted, html_value = _prepare_connected_clients_output(fallback_raw)
+            self._connected_clients = formatted
+            self._connected_clients_html = html_value
+            return
+
+        if self._connected_clients_html is None:
+            self._connected_clients_html = _render_connected_clients_html([])
 
 
 
