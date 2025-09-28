@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from custom_components.unifi_gateway_refactored.sensor import (
+    _collect_vpn_connected_clients_details,
     _format_vpn_connected_clients,
     _prepare_connected_clients_output,
     UniFiGatewayVpnUsageSensor,
@@ -50,6 +51,9 @@ def test_format_vpn_connected_clients_extracts_values():
     }
 
     with patch(
+        "custom_components.unifi_gateway_refactored.sensor._lookup_remote_ip_geolocation",
+        side_effect=[{}, {}, {}],
+    ), patch(
         "custom_components.unifi_gateway_refactored.sensor._lookup_remote_ip_whois",
         side_effect=[
             {"city": "Poznań", "country": "Poland", "isp": "ISP Name A"},
@@ -93,6 +97,9 @@ def test_format_vpn_connected_clients_keeps_existing_city_when_whois_lacks_city(
     }
 
     with patch(
+        "custom_components.unifi_gateway_refactored.sensor._lookup_remote_ip_geolocation",
+        return_value={},
+    ), patch(
         "custom_components.unifi_gateway_refactored.sensor._lookup_remote_ip_whois",
         return_value={"state": "Fallback State"},
     ):
@@ -122,17 +129,53 @@ def test_prepare_connected_clients_output_merges_remote_ip_columns_in_html():
     }
 
     with patch(
+        "custom_components.unifi_gateway_refactored.sensor._lookup_remote_ip_geolocation",
+        return_value={},
+    ), patch(
         "custom_components.unifi_gateway_refactored.sensor._lookup_remote_ip_whois",
         return_value={},
     ):
         _, html_value = _prepare_connected_clients_output(raw)
 
     assert "Remote IPv6" not in html_value
-    assert html_value.count("<th") == 7
+    assert html_value.count("<th") == 6
     assert "1.2.3.4" in html_value
     assert "2001:db8::1" in html_value
     assert "5.6.7.8" in html_value
     assert "Unknown" not in html_value.split("5.6.7.8", 1)[1].split("</td>")[0]
+    assert "Internal IPv6" not in html_value
+
+
+def test_connected_clients_city_uses_ipv6_when_ipv4_lookup_empty():
+    raw = {
+        "connected_clients": [
+            {
+                "name": "Client IPv6",
+                "remoteIP": "1.2.3.4",
+                "remote_ipv6": "2001:db8::10",
+                "assigned_ip": "10.0.0.8",
+                "assigned_ipv6": "fd00::8",
+            }
+        ]
+    }
+
+    def geolocation_side_effect(remote_ip: str):
+        if ":" in remote_ip:
+            return {"city": "Poznań", "country": "Poland", "isp": "IPv6 ISP"}
+        return {}
+
+    with patch(
+        "custom_components.unifi_gateway_refactored.sensor._lookup_remote_ip_geolocation",
+        side_effect=geolocation_side_effect,
+    ), patch(
+        "custom_components.unifi_gateway_refactored.sensor._lookup_remote_ip_whois",
+        return_value={},
+    ):
+        details = _collect_vpn_connected_clients_details(raw)
+
+    assert details[0]["city"] == "Poznań"
+    assert details[0]["country"] == "Poland"
+    assert details[0]["isp"] == "IPv6 ISP"
 
 
 class _DummyClient:

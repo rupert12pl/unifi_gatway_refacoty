@@ -10,6 +10,15 @@ import time
 import ipaddress
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
+try:  # pragma: no cover - optional dependency in test environment
+    import requests
+    from requests import Response
+    from requests.exceptions import RequestException
+except ImportError:  # pragma: no cover - gracefully handle missing dependency
+    requests = None  # type: ignore[assignment]
+    Response = Any  # type: ignore[assignment]
+    RequestException = Exception  # type: ignore[assignment]
+
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -796,6 +805,85 @@ def _normalize_client_field(value: Optional[Any]) -> str:
     return str(value)
 
 
+def _lookup_remote_ip_geolocation(remote_ip: str) -> Dict[str, str]:
+    normalized_ip = remote_ip.strip()
+    if not normalized_ip:
+        return {}
+
+    try:
+        ip_obj = ipaddress.ip_address(normalized_ip)
+    except ValueError:
+        return {}
+
+    if (
+        ip_obj.is_private
+        or ip_obj.is_loopback
+        or ip_obj.is_multicast
+        or ip_obj.is_reserved
+        or ip_obj.is_unspecified
+    ):
+        return {}
+
+    return _cached_geolocation_lookup(normalized_ip)
+
+
+@lru_cache(maxsize=512)
+def _cached_geolocation_lookup(remote_ip: str) -> Dict[str, str]:
+    if requests is None:
+        return {}
+
+    extracted: Dict[str, str] = {}
+
+    try:
+        response: Response = requests.get(
+            f"https://ipapi.co/{remote_ip}/json/", timeout=5
+        )
+    except RequestException as err:  # pragma: no cover - defensive logging
+        _LOGGER.debug("Geolocation lookup failed for %s: %s", remote_ip, err)
+        return {}
+
+    if response.status_code != 200:
+        _LOGGER.debug(
+            "Geolocation lookup for %s returned status %s",
+            remote_ip,
+            response.status_code,
+        )
+        return {}
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return {}
+
+    if not isinstance(payload, Mapping):
+        return {}
+
+    if payload.get("error"):
+        return {}
+
+    def _store(key: str, value: Any) -> None:
+        if value is None:
+            return
+        text = str(value).strip()
+        if text:
+            extracted[key] = text
+
+    _store("city", payload.get("city"))
+    _store("region", payload.get("region"))
+    _store("state", payload.get("region"))
+    _store("country", payload.get("country_name") or payload.get("country"))
+    isp_value = (
+        payload.get("org")
+        or payload.get("asn_org")
+        or payload.get("company")
+        or payload.get("as")
+        or payload.get("isp")
+    )
+    _store("isp", isp_value)
+
+    return extracted
+
+
 def _lookup_remote_ip_whois(remote_ip: str) -> Dict[str, str]:
     if IPWhois is None:
         return {}
@@ -883,35 +971,44 @@ def _enrich_remote_ip_details(
     if not remote_ip or remote_ip == "Unknown":
         return city, country, isp
 
-    details = _lookup_remote_ip_whois(remote_ip)
-    if not details:
-        return city, country, isp
+    detail_sources = (
+        _lookup_remote_ip_geolocation(remote_ip),
+        _lookup_remote_ip_whois(remote_ip),
+    )
 
-    candidate_city = details.get("city")
-    if candidate_city:
-        city = _normalize_client_field(candidate_city)
-    elif not city or city == "Unknown":
-        candidate_city = details.get("state")
+    for details in detail_sources:
+        if not details:
+            continue
+
+        candidate_city = details.get("city")
         if candidate_city:
             city = _normalize_client_field(candidate_city)
+        elif not city or city == "Unknown":
+            for fallback_key in ("state", "region"):
+                candidate_city = details.get(fallback_key)
+                if candidate_city:
+                    city = _normalize_client_field(candidate_city)
+                    break
 
-    candidate_country = details.get("country")
-    if candidate_country:
-        country = _normalize_client_field(candidate_country)
-    elif not country or country == "Unknown":
-        candidate_country = details.get("state")
+        candidate_country = details.get("country")
         if candidate_country:
             country = _normalize_client_field(candidate_country)
+        elif not country or country == "Unknown":
+            for fallback_key in ("state", "region"):
+                candidate_country = details.get(fallback_key)
+                if candidate_country:
+                    country = _normalize_client_field(candidate_country)
+                    break
 
-    candidate_isp = details.get("isp")
-    if candidate_isp:
-        isp = _normalize_client_field(candidate_isp)
-    elif not isp or isp == "Unknown":
-        for key in ("asn_description", "asn"):
-            candidate = details.get(key)
-            if candidate:
-                isp = _normalize_client_field(candidate)
-                break
+        candidate_isp = details.get("isp")
+        if candidate_isp:
+            isp = _normalize_client_field(candidate_isp)
+        elif not isp or isp == "Unknown":
+            for key in ("organization", "org", "asn_description", "asn"):
+                candidate = details.get(key)
+                if candidate:
+                    isp = _normalize_client_field(candidate)
+                    break
 
     return city, country, isp
 
@@ -1136,11 +1233,22 @@ def _collect_vpn_connected_clients_details(
             )
         )
 
-        lookup_ip = source_ip if source_ip != "Unknown" else source_ipv6
-        if lookup_ip and lookup_ip != "Unknown":
+        lookup_candidates: List[str] = []
+        if source_ip and source_ip != "Unknown":
+            lookup_candidates.append(source_ip)
+        if source_ipv6 and source_ipv6 != "Unknown":
+            lookup_candidates.append(source_ipv6)
+
+        for lookup_ip in lookup_candidates:
             city, country, isp = _enrich_remote_ip_details(
                 lookup_ip, city, country, isp
             )
+            if (
+                city not in (None, "Unknown")
+                and country not in (None, "Unknown")
+                and isp not in (None, "Unknown")
+            ):
+                break
 
         details.append(
             {
@@ -1176,12 +1284,25 @@ def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
                 f"<span style=\"font-size: 0.9em; color: #555;\">{html.escape(remote_ipv6)}" "</span>"
             )
         remote_ip_cell = "<br>".join(remote_ip_parts)
+
+        internal_ip_parts: List[str] = []
+        internal_ip_value = client.get("internal_ip", "")
+        escaped_internal_ip = html.escape(internal_ip_value)
+        if escaped_internal_ip:
+            internal_ip_parts.append(escaped_internal_ip)
+
+        internal_ipv6_value = client.get("internal_ipv6", "")
+        if internal_ipv6_value and internal_ipv6_value != "Unknown":
+            internal_ip_parts.append(
+                f"<span style=\"font-size: 0.9em; color: #555;\">{html.escape(internal_ipv6_value)}" "</span>"
+            )
+        internal_ip_cell = "<br>".join(internal_ip_parts)
+
         rows.append(
             "<tr>"
             f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('name', ''))}</td>"
             f"<td style=\"padding: 4px; text-align: right;\">{remote_ip_cell}</td>"
-            f"<td style=\"padding: 4px; text-align: right;\">{html.escape(client.get('internal_ip', ''))}</td>"
-            f"<td style=\"padding: 4px; text-align: right;\">{html.escape(client.get('internal_ipv6', ''))}</td>"
+            f"<td style=\"padding: 4px; text-align: right;\">{internal_ip_cell}</td>"
             f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('country', ''))}</td>"
             f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('city', ''))}</td>"
             f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('isp', ''))}</td>"
@@ -1190,7 +1311,7 @@ def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
 
     if not rows:
         rows.append(
-            "<tr><td style=\"padding: 4px; text-align: center;\" colspan=\"7\">"
+            "<tr><td style=\"padding: 4px; text-align: center;\" colspan=\"6\">"
             "No connected clients"
             "</td></tr>"
         )
@@ -1199,8 +1320,7 @@ def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
         "<tr>"
         "<th style=\"padding: 4px; text-align: left;\">Client</th>"
         "<th style=\"padding: 4px; text-align: right;\">Remote IP</th>"
-        "<th style=\"padding: 4px; text-align: right;\">Internal IP</th>"
-        "<th style=\"padding: 4px; text-align: right;\">Internal IPv6</th>"
+        "<th style=\"padding: 4px; text-align: right;\">Internal Addresses</th>"
         "<th style=\"padding: 4px; text-align: left;\">Country</th>"
         "<th style=\"padding: 4px; text-align: left;\">City</th>"
         "<th style=\"padding: 4px; text-align: left;\">ISP</th>"
