@@ -887,18 +887,23 @@ def _enrich_remote_ip_details(
     if not details:
         return city, country, isp
 
-    if not city or city == "Unknown":
-        candidate = details.get("city") or details.get("state")
-        if candidate:
-            city = _normalize_client_field(candidate)
+    candidate_city = details.get("city") or details.get("state")
+    if candidate_city:
+        city = _normalize_client_field(candidate_city)
 
-    if not country or country == "Unknown":
-        candidate = details.get("country")
-        if candidate:
-            country = _normalize_client_field(candidate)
+    candidate_country = details.get("country")
+    if candidate_country:
+        country = _normalize_client_field(candidate_country)
+    elif not country or country == "Unknown":
+        candidate_country = details.get("state")
+        if candidate_country:
+            country = _normalize_client_field(candidate_country)
 
-    if not isp or isp == "Unknown":
-        for key in ("isp", "asn_description", "asn"):
+    candidate_isp = details.get("isp")
+    if candidate_isp:
+        isp = _normalize_client_field(candidate_isp)
+    elif not isp or isp == "Unknown":
+        for key in ("asn_description", "asn"):
             candidate = details.get(key)
             if candidate:
                 isp = _normalize_client_field(candidate)
@@ -1572,10 +1577,17 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         subnet_value = self._resolve_network_subnet()
         if subnet_value:
             attrs["subnet"] = subnet_value
-        attrs["Connected Clients"] = list(self._connected_clients)
+        attrs["connected_clients"] = list(self._connected_clients)
         if self._connected_clients_html is not None:
             attrs["connected_clients_html"] = self._connected_clients_html
         return attrs
+
+    @property
+    def extra_state_attribute_names(self) -> Dict[str, str]:
+        return {
+            "connected_clients": "Connected Clients",
+            "connected_clients_html": "Connected Clients HTML",
+        }
 
     @property
     def device_info(self) -> Dict[str, Any]:
