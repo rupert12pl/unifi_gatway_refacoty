@@ -1584,10 +1584,10 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
 
     @property
     def extra_state_attribute_names(self) -> Dict[str, str]:
-        names: Dict[str, str] = {"connected_clients": "Connected Clients"}
-        if self._connected_clients_html is not None:
-            names["connected_clients_html"] = "Connected Clients HTML"
-        return names
+        return {
+            "connected_clients": "Connected Clients",
+            "connected_clients_html": "Connected Clients HTML",
+        }
 
     @property
     def device_info(self) -> Dict[str, Any]:

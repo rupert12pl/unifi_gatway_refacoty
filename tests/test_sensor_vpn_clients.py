@@ -1,7 +1,9 @@
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from custom_components.unifi_gateway_refactored.sensor import (
     _format_vpn_connected_clients,
+    UniFiGatewayVpnUsageSensor,
 )
 
 
@@ -58,3 +60,32 @@ def test_format_vpn_connected_clients_handles_missing_fields():
     assert _format_vpn_connected_clients(raw) == [
         "Client C ~ Unknown | Unknown | Unknown | Unknown | Unknown"
     ]
+
+
+class _DummyClient:
+    def instance_key(self) -> str:
+        return "dummy"
+
+
+def test_vpn_sensor_attribute_display_names():
+    sensor = UniFiGatewayVpnUsageSensor(
+        coordinator=SimpleNamespace(data=None),
+        client=_DummyClient(),
+        entry_id="entry-id",
+        base_name="Gateway",
+        server={},
+        linked_network={},
+        unique_id="unique",
+    )
+
+    assert sensor.extra_state_attribute_names == {
+        "connected_clients": "Connected Clients",
+        "connected_clients_html": "Connected Clients HTML",
+    }
+
+    sensor._connected_clients_html = "<p>content</p>"
+
+    assert sensor.extra_state_attribute_names == {
+        "connected_clients": "Connected Clients",
+        "connected_clients_html": "Connected Clients HTML",
+    }
