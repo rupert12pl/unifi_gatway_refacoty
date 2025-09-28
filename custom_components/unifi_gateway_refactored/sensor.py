@@ -999,6 +999,7 @@ def _collect_vpn_connected_clients_details(
                 (
                     "name",
                     "display_name",
+                    "user-name",
                     "user_name",
                     "username",
                     "user",
@@ -1015,7 +1016,9 @@ def _collect_vpn_connected_clients_details(
                 (
                     "source_ip",
                     "remote_ip",
+                    "remoteIP",
                     "remote_addr",
+                    "remoteAddr",
                     "public_ip",
                     "wan_ip",
                     "peer_ip",

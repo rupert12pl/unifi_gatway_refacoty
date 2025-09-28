@@ -12,7 +12,7 @@ def test_format_vpn_connected_clients_extracts_values():
         "connected_clients": [
             {
                 "name": "Client A",
-                "remote_ip": "1.2.3.4",
+                "remoteIP": "1.2.3.4",
                 "assigned_ip": "10.0.0.5",
                 "geoip": {
                     "country": "Poland",
@@ -30,6 +30,16 @@ def test_format_vpn_connected_clients_extracts_values():
                 },
                 "isp_info": {"organization": "ISP2"},
             },
+            {
+                "user-name": "Client C",
+                "remote_addr": "9.10.11.12",
+                "details": {"local_ip": "10.0.0.7"},
+                "metadata": {
+                    "country": "France",
+                    "city": "Paris",
+                    "isp_provider": "ISP3",
+                },
+            },
         ]
     }
 
@@ -38,11 +48,13 @@ def test_format_vpn_connected_clients_extracts_values():
         side_effect=[
             {"city": "Poznań", "country": "Poland", "isp": "ISP Name A"},
             {"city": "Munich", "country": "Germany", "isp": "ISP Name B"},
+            {"city": "Lyon", "country": "France", "isp": "ISP Name C"},
         ],
     ):
         assert _format_vpn_connected_clients(raw) == [
             "Client A ~ 1.2.3.4 | 10.0.0.5 | Poland | Poznań | ISP Name A",
             "Client B ~ 5.6.7.8 | 10.0.0.6 | Germany | Munich | ISP Name B",
+            "Client C ~ 9.10.11.12 | 10.0.0.7 | France | Lyon | ISP Name C",
         ]
 
 
