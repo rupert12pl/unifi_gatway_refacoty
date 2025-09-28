@@ -182,7 +182,7 @@ async def async_setup_entry(
         runner_state.last_duration_ms = duration_ms
         runner_state.last_run = datetime.now(timezone.utc)
         for entity in monitor_entities:
-            entity.async_write_ha_state()
+            entity.async_write_ha_state_if_changed()
 
     entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     if entry_store is not None:
@@ -401,6 +401,7 @@ class SpeedtestMonitorEntity(SensorEntity):
         self._device_name = device_name
         self._controller_url = controller_url
         self._entry_id = entry_id
+        self._last_signature: Any | None = None
 
     @property
     def device_info(self) -> Dict[str, Any]:
@@ -412,6 +413,29 @@ class SpeedtestMonitorEntity(SensorEntity):
         if self._controller_url:
             info["configuration_url"] = self._controller_url
         return info
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_write_ha_state_if_changed()
+
+    def _state_signature(self) -> Any:
+        native = self.native_value
+        attrs = self.extra_state_attributes
+        icon = getattr(self, "icon", None)
+        available = self.available
+        return (
+            _freeze_state(native),
+            _freeze_state(attrs) if attrs is not None else None,
+            icon,
+            available,
+        )
+
+    def async_write_ha_state_if_changed(self) -> None:
+        signature = self._state_signature()
+        if signature == self._last_signature and self._last_signature is not None:
+            return
+        self._last_signature = signature
+        super().async_write_ha_state()
 
 
 class SpeedtestLastRunSensor(SpeedtestMonitorEntity):
