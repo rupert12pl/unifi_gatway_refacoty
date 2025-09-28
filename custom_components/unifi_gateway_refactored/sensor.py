@@ -66,24 +66,74 @@ async def async_setup_entry(
     coordinator: UniFiGatewayDataUpdateCoordinator = data["coordinator"]
 
     base_name = entry.title or entry.data.get(CONF_HOST) or "UniFi Gateway"
+    device_name = base_name
 
     static_entities: List[SensorEntity] = []
     for subsystem, (label, icon) in SUBSYSTEM_SENSORS.items():
         static_entities.append(
-            UniFiGatewaySubsystemSensor(coordinator, client, subsystem, label, icon)
+            UniFiGatewaySubsystemSensor(
+                coordinator,
+                client,
+                subsystem,
+                label,
+                icon,
+                device_name=device_name,
+            )
         )
-    static_entities.append(UniFiGatewayAlertsSensor(coordinator, client))
-    static_entities.append(UniFiGatewayFirmwareSensor(coordinator, client))
-    static_entities.append(UniFiGatewaySpeedtestDownloadSensor(coordinator, client))
-    static_entities.append(UniFiGatewaySpeedtestUploadSensor(coordinator, client))
-    static_entities.append(UniFiGatewaySpeedtestPingSensor(coordinator, client))
+    static_entities.append(
+        UniFiGatewayAlertsSensor(coordinator, client, device_name=device_name)
+    )
+    static_entities.append(
+        UniFiGatewayFirmwareSensor(coordinator, client, device_name=device_name)
+    )
+    static_entities.append(
+        UniFiGatewaySpeedtestDownloadSensor(
+            coordinator, client, device_name=device_name
+        )
+    )
+    static_entities.append(
+        UniFiGatewaySpeedtestUploadSensor(
+            coordinator, client, device_name=device_name
+        )
+    )
+    static_entities.append(
+        UniFiGatewaySpeedtestPingSensor(
+            coordinator, client, device_name=device_name
+        )
+    )
 
     runner_state = RunnerState()
+    device_identifier = (DOMAIN, client.instance_key())
+    controller_url = client.get_controller_url()
     monitor_entities = [
-        SpeedtestStatusSensor(entry.entry_id, runner_state),
-        SpeedtestLastErrorSensor(entry.entry_id, runner_state),
-        SpeedtestDurationSensor(entry.entry_id, runner_state),
-        SpeedtestLastRunSensor(entry.entry_id, runner_state),
+        SpeedtestStatusSensor(
+            entry.entry_id,
+            runner_state,
+            device_identifier,
+            device_name,
+            controller_url,
+        ),
+        SpeedtestLastErrorSensor(
+            entry.entry_id,
+            runner_state,
+            device_identifier,
+            device_name,
+            controller_url,
+        ),
+        SpeedtestDurationSensor(
+            entry.entry_id,
+            runner_state,
+            device_identifier,
+            device_name,
+            controller_url,
+        ),
+        SpeedtestLastRunSensor(
+            entry.entry_id,
+            runner_state,
+            device_identifier,
+            device_name,
+            controller_url,
+        ),
     ]
     static_entities.extend(monitor_entities)
 
@@ -171,7 +221,13 @@ async def async_setup_entry(
                 if unique_id in pending_unique_ids or _should_skip(unique_id):
                     continue
                 new_entities.append(
-                    cls(coordinator, client, entry.entry_id, link)
+                    cls(
+                        coordinator,
+                        client,
+                        entry.entry_id,
+                        link,
+                        device_name=device_name,
+                    )
                 )
                 pending_unique_ids.add(unique_id)
 
@@ -184,7 +240,13 @@ async def async_setup_entry(
             if unique_id in pending_unique_ids or _should_skip(unique_id):
                 continue
             new_entities.append(
-                UniFiGatewayLanClientsSensor(coordinator, client, entry.entry_id, network)
+                UniFiGatewayLanClientsSensor(
+                    coordinator,
+                    client,
+                    entry.entry_id,
+                    network,
+                    device_name=device_name,
+                )
             )
             pending_unique_ids.add(unique_id)
 
@@ -197,7 +259,13 @@ async def async_setup_entry(
             if unique_id in pending_unique_ids or _should_skip(unique_id):
                 continue
             new_entities.append(
-                UniFiGatewayWlanClientsSensor(coordinator, client, entry.entry_id, wlan)
+                UniFiGatewayWlanClientsSensor(
+                    coordinator,
+                    client,
+                    entry.entry_id,
+                    wlan,
+                    device_name=device_name,
+                )
             )
             pending_unique_ids.add(unique_id)
 
@@ -284,14 +352,51 @@ async def async_setup_entry(
     await coordinator.async_request_refresh()
 
 
-class SpeedtestLastRunSensor(SensorEntity):
-    _attr_name = "Speedtest Last Run"
-    _attr_device_class = SensorDeviceClass.TIMESTAMP
+class SpeedtestMonitorEntity(SensorEntity):
+    """Base class providing device binding for speedtest monitor sensors."""
+
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, entry_id: str, state: RunnerState) -> None:
+    def __init__(
+        self,
+        entry_id: str,
+        state: RunnerState,
+        device_identifier: tuple[str, str],
+        device_name: str,
+        controller_url: Optional[str],
+    ) -> None:
         self._state = state
+        self._device_identifier = device_identifier
+        self._device_name = device_name
+        self._controller_url = controller_url
+        self._entry_id = entry_id
+
+    @property
+    def device_info(self) -> Dict[str, Any]:
+        info: Dict[str, Any] = {
+            "identifiers": {self._device_identifier},
+            "manufacturer": "Ubiquiti Networks",
+            "name": self._device_name,
+        }
+        if self._controller_url:
+            info["configuration_url"] = self._controller_url
+        return info
+
+
+class SpeedtestLastRunSensor(SpeedtestMonitorEntity):
+    _attr_name = "Speedtest Last Run"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(
+        self,
+        entry_id: str,
+        state: RunnerState,
+        device_identifier: tuple[str, str],
+        device_name: str,
+        controller_url: Optional[str],
+    ) -> None:
+        super().__init__(entry_id, state, device_identifier, device_name, controller_url)
         self._attr_unique_id = f"{entry_id}_speedtest_last_run"
 
     @property
@@ -299,15 +404,20 @@ class SpeedtestLastRunSensor(SensorEntity):
         return self._state.last_run
 
 
-class SpeedtestDurationSensor(SensorEntity):
+class SpeedtestDurationSensor(SpeedtestMonitorEntity):
     _attr_name = "Speedtest Last Duration"
     _attr_device_class = SensorDeviceClass.DURATION
     _attr_native_unit_of_measurement = UNIT_MILLISECONDS
-    _attr_should_poll = False
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, entry_id: str, state: RunnerState) -> None:
-        self._state = state
+    def __init__(
+        self,
+        entry_id: str,
+        state: RunnerState,
+        device_identifier: tuple[str, str],
+        device_name: str,
+        controller_url: Optional[str],
+    ) -> None:
+        super().__init__(entry_id, state, device_identifier, device_name, controller_url)
         self._attr_unique_id = f"{entry_id}_speedtest_last_duration"
 
     @property
@@ -315,14 +425,19 @@ class SpeedtestDurationSensor(SensorEntity):
         return self._state.last_duration_ms
 
 
-class SpeedtestLastErrorSensor(SensorEntity):
+class SpeedtestLastErrorSensor(SpeedtestMonitorEntity):
     _attr_name = "Speedtest Last Error"
     _attr_icon = "mdi:alert-circle-outline"
-    _attr_should_poll = False
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, entry_id: str, state: RunnerState) -> None:
-        self._state = state
+    def __init__(
+        self,
+        entry_id: str,
+        state: RunnerState,
+        device_identifier: tuple[str, str],
+        device_name: str,
+        controller_url: Optional[str],
+    ) -> None:
+        super().__init__(entry_id, state, device_identifier, device_name, controller_url)
         self._attr_unique_id = f"{entry_id}_speedtest_last_error"
 
     @property
@@ -330,14 +445,19 @@ class SpeedtestLastErrorSensor(SensorEntity):
         return self._state.last_error or ""
 
 
-class SpeedtestStatusSensor(SensorEntity):
+class SpeedtestStatusSensor(SpeedtestMonitorEntity):
     _attr_name = "Speedtest Last Run OK"
     _attr_icon = "mdi:check-network"
-    _attr_should_poll = False
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, entry_id: str, state: RunnerState) -> None:
-        self._state = state
+    def __init__(
+        self,
+        entry_id: str,
+        state: RunnerState,
+        device_identifier: tuple[str, str],
+        device_name: str,
+        controller_url: Optional[str],
+    ) -> None:
+        super().__init__(entry_id, state, device_identifier, device_name, controller_url)
         self._attr_unique_id = f"{entry_id}_speedtest_last_run_ok"
 
     @property
@@ -708,12 +828,21 @@ class UniFiGatewaySensorBase(
         client: UniFiOSClient,
         unique_id: str,
         name: str,
+        *,
+        device_name: Optional[str] = None,
     ) -> None:
         super().__init__(coordinator)
         self._client = client
         self._attr_unique_id = unique_id
         self._attr_name = name
         self._default_icon = getattr(self, "_attr_icon", None)
+        self._device_name = device_name or self._derive_device_name()
+
+    def _derive_device_name(self) -> str:
+        site = self._client.get_site()
+        if site:
+            return f"UniFi Gateway ({site})"
+        return "UniFi Gateway"
 
     def _controller_attrs(self) -> Dict[str, Any]:
         data = self.coordinator.data
@@ -724,6 +853,19 @@ class UniFiGatewaySensorBase(
             "controller_api": data.controller.get("api_url"),
             "controller_site": data.controller.get("site"),
         }
+
+    @property
+    def device_info(self) -> Dict[str, Any]:
+        info: Dict[str, Any] = {
+            "identifiers": {(DOMAIN, self._client.instance_key())},
+            "manufacturer": "Ubiquiti Networks",
+            "name": self._device_name,
+        }
+        try:
+            info["configuration_url"] = self._client.get_controller_url()
+        except Exception:  # pragma: no cover - guard against unexpected client errors
+            pass
+        return info
 
 
 class UniFiGatewayWanSensorBase(UniFiGatewaySensorBase):
@@ -737,6 +879,8 @@ class UniFiGatewayWanSensorBase(UniFiGatewaySensorBase):
         link: Dict[str, Any],
         suffix: str,
         name_suffix: str = "",
+        *,
+        device_name: Optional[str] = None,
     ) -> None:
         self._entry_id = entry_id
         self._link_id = str(link.get("id") or link.get("_id") or link.get("ifname") or "wan")
@@ -748,7 +892,11 @@ class UniFiGatewayWanSensorBase(UniFiGatewaySensorBase):
         self._uid_source = canonical
         unique_id = build_wan_unique_id(entry_id, link, suffix)
         super().__init__(
-            coordinator, client, unique_id, f"WAN {self._link_name}{name_suffix}"
+            coordinator,
+            client,
+            unique_id,
+            f"WAN {self._link_name}{name_suffix}",
+            device_name=device_name,
         )
 
     def _link(self) -> Optional[Dict[str, Any]]:
@@ -769,9 +917,17 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
         subsystem: str,
         label: str,
         icon: str,
+        *,
+        device_name: Optional[str] = None,
     ) -> None:
         unique_id = f"unifigw_{client.instance_key()}_{subsystem}"
-        super().__init__(coordinator, client, unique_id, label)
+        super().__init__(
+            coordinator,
+            client,
+            unique_id,
+            label,
+            device_name=device_name,
+        )
         self._subsystem = subsystem
         self._attr_icon = icon
         self._default_icon = icon
@@ -829,10 +985,20 @@ class UniFiGatewayAlertsSensor(UniFiGatewaySensorBase):
     _attr_icon = "mdi:information-outline"
 
     def __init__(
-        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        *,
+        device_name: Optional[str] = None,
     ) -> None:
         unique_id = f"unifigw_{client.instance_key()}_alerts"
-        super().__init__(coordinator, client, unique_id, "Alerts")
+        super().__init__(
+            coordinator,
+            client,
+            unique_id,
+            "Alerts",
+            device_name=device_name,
+        )
 
     @property
     def native_value(self) -> Optional[int]:
@@ -1095,10 +1261,20 @@ class UniFiGatewayFirmwareSensor(UniFiGatewaySensorBase):
     _attr_icon = "mdi:database-plus"
 
     def __init__(
-        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        *,
+        device_name: Optional[str] = None,
     ) -> None:
         unique_id = f"unifigw_{client.instance_key()}_firmware"
-        super().__init__(coordinator, client, unique_id, "Firmware Upgradable")
+        super().__init__(
+            coordinator,
+            client,
+            unique_id,
+            "Firmware Upgradable",
+            device_name=device_name,
+        )
 
     @property
     def native_value(self) -> Optional[int]:
@@ -1133,8 +1309,17 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
         client: UniFiOSClient,
         entry_id: str,
         link: Dict[str, Any],
+        *,
+        device_name: Optional[str] = None,
     ) -> None:
-        super().__init__(coordinator, client, entry_id, link, "status")
+        super().__init__(
+            coordinator,
+            client,
+            entry_id,
+            link,
+            "status",
+            device_name=device_name,
+        )
         self._default_icon = getattr(self, "_attr_icon", None)
         self._last_status: Optional[str] = None
         self._last_status_source: Optional[str] = None
@@ -1291,8 +1476,18 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
         client: UniFiOSClient,
         entry_id: str,
         link: Dict[str, Any],
+        *,
+        device_name: Optional[str] = None,
     ) -> None:
-        super().__init__(coordinator, client, entry_id, link, "ip", " IP")
+        super().__init__(
+            coordinator,
+            client,
+            entry_id,
+            link,
+            "ip",
+            " IP",
+            device_name=device_name,
+        )
         self._last_ip: Optional[str] = None
         self._last_source: Optional[str] = None
 
@@ -1362,8 +1557,18 @@ class UniFiGatewayWanIspSensor(UniFiGatewayWanSensorBase):
         client: UniFiOSClient,
         entry_id: str,
         link: Dict[str, Any],
+        *,
+        device_name: Optional[str] = None,
     ) -> None:
-        super().__init__(coordinator, client, entry_id, link, "isp", " ISP")
+        super().__init__(
+            coordinator,
+            client,
+            entry_id,
+            link,
+            "isp",
+            " ISP",
+            device_name=device_name,
+        )
         self._last_isp: Optional[str] = None
         self._last_source: Optional[str] = None
 
@@ -1449,6 +1654,8 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
         client: UniFiOSClient,
         entry_id: str,
         network: Dict[str, Any],
+        *,
+        device_name: Optional[str] = None,
     ) -> None:
         self._network = network
         self._lan_key = lan_interface_key(network)
@@ -1468,6 +1675,7 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
             client,
             unique_id,
             f"LAN {self._network_name}",
+            device_name=device_name,
         )
 
     def _current_network(self) -> Dict[str, Any]:
@@ -1559,11 +1767,19 @@ class UniFiGatewayWlanClientsSensor(UniFiGatewaySensorBase):
         client: UniFiOSClient,
         entry_id: str,
         wlan: Dict[str, Any],
+        *,
+        device_name: Optional[str] = None,
     ) -> None:
         self._wlan = wlan
         self._ssid = wlan.get("name") or wlan.get("ssid") or "WLAN"
         unique_id = build_wlan_unique_id(entry_id, wlan)
-        super().__init__(coordinator, client, unique_id, f"WLAN {self._ssid}")
+        super().__init__(
+            coordinator,
+            client,
+            unique_id,
+            f"WLAN {self._ssid}",
+            device_name=device_name,
+        )
 
     def _clients(self) -> Iterable[Dict[str, Any]]:
         data = self.coordinator.data
@@ -1602,8 +1818,26 @@ class UniFiGatewayWlanClientsSensor(UniFiGatewaySensorBase):
 
 class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
     """Base speedtest sensor with improved status handling."""
-    
+
     _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        suffix: str,
+        name: str,
+        *,
+        device_name: Optional[str] = None,
+    ) -> None:
+        unique_id = f"unifigw_{client.instance_key()}_speedtest_{suffix}"
+        super().__init__(
+            coordinator,
+            client,
+            unique_id,
+            name,
+            device_name=device_name,
+        )
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
@@ -1671,9 +1905,19 @@ class UniFiGatewaySpeedtestDownloadSensor(UniFiGatewaySpeedtestSensor):
     _attr_native_unit_of_measurement = "Mbps"
 
     def __init__(
-        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        *,
+        device_name: Optional[str] = None,
     ) -> None:
-        super().__init__(coordinator, client, "down", "Speedtest Download")
+        super().__init__(
+            coordinator,
+            client,
+            "down",
+            "Speedtest Download",
+            device_name=device_name,
+        )
 
     @property
     def native_value(self) -> Optional[float]:
@@ -1689,9 +1933,19 @@ class UniFiGatewaySpeedtestUploadSensor(UniFiGatewaySpeedtestSensor):
     _attr_native_unit_of_measurement = "Mbps"
 
     def __init__(
-        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        *,
+        device_name: Optional[str] = None,
     ) -> None:
-        super().__init__(coordinator, client, "up", "Speedtest Upload")
+        super().__init__(
+            coordinator,
+            client,
+            "up",
+            "Speedtest Upload",
+            device_name=device_name,
+        )
 
     @property
     def native_value(self) -> Optional[float]:
@@ -1707,9 +1961,19 @@ class UniFiGatewaySpeedtestPingSensor(UniFiGatewaySpeedtestSensor):
     _attr_native_unit_of_measurement = "ms"
 
     def __init__(
-        self, coordinator: UniFiGatewayDataUpdateCoordinator, client: UniFiOSClient
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        *,
+        device_name: Optional[str] = None,
     ) -> None:
-        super().__init__(coordinator, client, "ping", "Speedtest Ping")
+        super().__init__(
+            coordinator,
+            client,
+            "ping",
+            "Speedtest Ping",
+            device_name=device_name,
+        )
 
     @property
     def native_value(self) -> Optional[float]:
