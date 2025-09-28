@@ -1297,6 +1297,38 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         if "enabled" in raw:
             self._attrs["enabled"] = raw.get("enabled")
 
+    def _resolve_network_subnet(self) -> Optional[str]:
+        if self._subnet:
+            return self._subnet
+
+        data = self._coordinator.data if self._coordinator else None
+        if not data:
+            return None
+
+        net_id = str(self._linked_net_id) if self._linked_net_id else None
+        if net_id:
+            candidate = data.network_map.get(net_id)
+            if candidate and candidate.get("subnet"):
+                self._subnet = candidate["subnet"]
+                if not self._ip_network:
+                    self._ip_network = _to_ip_network(self._subnet)
+                return self._subnet
+
+        if net_id:
+            for network in data.networks:
+                candidate_id = network.get("_id") or network.get("id")
+                if candidate_id and str(candidate_id) == net_id:
+                    for key in ("subnet", "ip_subnet", "cidr"):
+                        value = network.get(key)
+                        if value:
+                            self._subnet = value
+                            if not self._ip_network:
+                                self._ip_network = _to_ip_network(value)
+                            return value
+                    break
+
+        return None
+
     def _controller_attrs(self) -> Dict[str, Any]:
         data = self._coordinator.data if self._coordinator else None
         if data and isinstance(data.controller, dict):
@@ -1339,6 +1371,9 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
     def extra_state_attributes(self) -> Dict[str, Any]:
         attrs = dict(self._attrs)
         attrs.update(self._controller_attrs())
+        subnet_value = self._resolve_network_subnet()
+        if subnet_value:
+            attrs["subnet"] = subnet_value
         attrs["Connected Clients"] = list(self._connected_clients)
         return attrs
 
