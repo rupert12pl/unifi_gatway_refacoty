@@ -147,6 +147,8 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
     ) -> None:
         return None
 
+    base_name = entry.title or entry.data.get(CONF_HOST) or "UniFi Gateway"
+
     entry_data = hass.data[DOMAIN][entry.entry_id] = {
         "client": client,
         "coordinator": coordinator,
@@ -155,6 +157,7 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
         DATA_UNDO_TIMER: None,
         "speedtest_entities": list(entity_ids),
         "speedtest_interval_minutes": interval_minutes,
+        "device_name": base_name,
     }
 
     async def _dispatch_result(
