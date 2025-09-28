@@ -887,9 +887,13 @@ def _enrich_remote_ip_details(
     if not details:
         return city, country, isp
 
-    candidate_city = details.get("city") or details.get("state")
+    candidate_city = details.get("city")
     if candidate_city:
         city = _normalize_client_field(candidate_city)
+    elif not city or city == "Unknown":
+        candidate_city = details.get("state")
+        if candidate_city:
+            city = _normalize_client_field(candidate_city)
 
     candidate_country = details.get("country")
     if candidate_country:
@@ -1161,11 +1165,21 @@ def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
     )
     rows: List[str] = []
     for client in clients:
+        remote_ipv6 = client.get("source_ipv6", "")
+        remote_ip_parts: List[str] = []
+        remote_ip_value = client.get("source_ip", "")
+        escaped_remote_ip = html.escape(remote_ip_value)
+        if escaped_remote_ip:
+            remote_ip_parts.append(escaped_remote_ip)
+        if remote_ipv6 and remote_ipv6 != "Unknown":
+            remote_ip_parts.append(
+                f"<span style=\"font-size: 0.9em; color: #555;\">{html.escape(remote_ipv6)}" "</span>"
+            )
+        remote_ip_cell = "<br>".join(remote_ip_parts)
         rows.append(
             "<tr>"
             f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('name', ''))}</td>"
-            f"<td style=\"padding: 4px; text-align: right;\">{html.escape(client.get('source_ip', ''))}</td>"
-            f"<td style=\"padding: 4px; text-align: right;\">{html.escape(client.get('source_ipv6', ''))}</td>"
+            f"<td style=\"padding: 4px; text-align: right;\">{remote_ip_cell}</td>"
             f"<td style=\"padding: 4px; text-align: right;\">{html.escape(client.get('internal_ip', ''))}</td>"
             f"<td style=\"padding: 4px; text-align: right;\">{html.escape(client.get('internal_ipv6', ''))}</td>"
             f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('country', ''))}</td>"
@@ -1176,7 +1190,7 @@ def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
 
     if not rows:
         rows.append(
-            "<tr><td style=\"padding: 4px; text-align: center;\" colspan=\"8\">"
+            "<tr><td style=\"padding: 4px; text-align: center;\" colspan=\"7\">"
             "No connected clients"
             "</td></tr>"
         )
@@ -1185,7 +1199,6 @@ def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
         "<tr>"
         "<th style=\"padding: 4px; text-align: left;\">Client</th>"
         "<th style=\"padding: 4px; text-align: right;\">Remote IP</th>"
-        "<th style=\"padding: 4px; text-align: right;\">Remote IPv6</th>"
         "<th style=\"padding: 4px; text-align: right;\">Internal IP</th>"
         "<th style=\"padding: 4px; text-align: right;\">Internal IPv6</th>"
         "<th style=\"padding: 4px; text-align: left;\">Country</th>"

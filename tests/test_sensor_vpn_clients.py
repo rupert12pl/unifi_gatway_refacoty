@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from custom_components.unifi_gateway_refactored.sensor import (
     _format_vpn_connected_clients,
+    _prepare_connected_clients_output,
     UniFiGatewayVpnUsageSensor,
 )
 
@@ -77,6 +78,61 @@ def test_format_vpn_connected_clients_handles_missing_fields():
     assert _format_vpn_connected_clients(raw) == [
         "Client C ~ Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown"
     ]
+
+
+def test_format_vpn_connected_clients_keeps_existing_city_when_whois_lacks_city():
+    raw = {
+        "connected_clients": [
+            {
+                "name": "Client A",
+                "remoteIP": "1.1.1.1",
+                "assigned_ip": "10.0.0.5",
+                "geoip": {"city": "Initial City"},
+            }
+        ]
+    }
+
+    with patch(
+        "custom_components.unifi_gateway_refactored.sensor._lookup_remote_ip_whois",
+        return_value={"state": "Fallback State"},
+    ):
+        formatted = _format_vpn_connected_clients(raw)
+
+    assert formatted == [
+        "Client A ~ 1.1.1.1 | Unknown | 10.0.0.5 | Unknown | Fallback State | Initial City | Unknown"
+    ]
+
+
+def test_prepare_connected_clients_output_merges_remote_ip_columns_in_html():
+    raw = {
+        "connected_clients": [
+            {
+                "name": "Client A",
+                "remoteIP": "1.2.3.4",
+                "remote_ipv6": "2001:db8::1",
+                "assigned_ip": "10.0.0.5",
+            },
+            {
+                "name": "Client B",
+                "remoteIP": "5.6.7.8",
+                "remote_ipv6": "Unknown",
+                "assigned_ip": "10.0.0.6",
+            },
+        ]
+    }
+
+    with patch(
+        "custom_components.unifi_gateway_refactored.sensor._lookup_remote_ip_whois",
+        return_value={},
+    ):
+        _, html_value = _prepare_connected_clients_output(raw)
+
+    assert "Remote IPv6" not in html_value
+    assert html_value.count("<th") == 7
+    assert "1.2.3.4" in html_value
+    assert "2001:db8::1" in html_value
+    assert "5.6.7.8" in html_value
+    assert "Unknown" not in html_value.split("5.6.7.8", 1)[1].split("</td>")[0]
 
 
 class _DummyClient:
