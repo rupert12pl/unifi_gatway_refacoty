@@ -19,6 +19,18 @@ if TYPE_CHECKING:  # pragma: no cover - for typing only
 from .const import DEFAULT_SITE
 
 
+DEFAULT_ACTIVE_WINDOW_SEC = 120
+_VPN_NET_ID_KEYS = (
+    "networkconf_id",
+    "network_id",
+    "listen_networkconf_id",
+    "client_network_id",
+    "vpn_network_id",
+    "lan_network_id",
+    "user_group_network_id",
+)
+
+
 LOGGER = logging.getLogger(__name__)
 _LOGGER = LOGGER
 
@@ -118,6 +130,13 @@ class UniFiOSClient:
 
         self._login(host, port, ssl_verify, timeout)
         self._ensure_connected()
+        self._active_window = DEFAULT_ACTIVE_WINDOW_SEC
+
+        # caches used by advanced VPN discovery helpers
+        self._leases_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
+        self._clients_v2_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
+        self._vpn_servers_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
+        self._vpn_sessions_cache: Optional[Tuple[float, Dict[str, Dict[str, int]]]] = None
     def _net_base(self) -> str:
         """Return the normalized base URL for UniFi Network requests."""
 
@@ -631,6 +650,362 @@ class UniFiOSClient:
             if clients:
                 return clients
         return self._get_list(self._site_path("stat/alluser"))
+
+    def get_active_clients_v2(self, cache_sec: int = 5) -> List[Dict[str, Any]]:
+        """Return active client list from the UniFi Network v2 API if available."""
+
+        now = time.time()
+        if self._clients_v2_cache and (now - self._clients_v2_cache[0]) < cache_sec:
+            return self._clients_v2_cache[1]
+
+        query = "clients/active?includeTrafficUsage=true&includeUnifiDevices=true"
+        clients: List[Dict[str, Any]] = []
+        last_error: Optional[Exception] = None
+
+        for path in self._iter_speedtest_paths(query):
+            try:
+                payload = self._request_json("GET", path, timeout=6)
+            except APIError as err:
+                last_error = err
+                if err.status_code in (404, 405) or err.expected or err.status_code == 400:
+                    continue
+                raise
+            except ConnectivityError as err:
+                last_error = err
+                continue
+
+            if isinstance(payload, list):
+                clients = [item for item in payload if isinstance(item, dict)]
+                break
+            if isinstance(payload, dict):
+                data = payload.get("data")
+                if isinstance(data, list):
+                    clients = [item for item in data if isinstance(item, dict)]
+                    break
+
+        if not clients and last_error:
+            LOGGER.debug("Active clients v2 endpoint unavailable: %s", last_error)
+
+        self._clients_v2_cache = (now, clients)
+        return clients
+
+    def _leases_fetch(self) -> List[Dict[str, Any]]:
+        paths = (
+            "stat/lease",
+            "list/lease",
+            "list/dhcpleases",
+            "stat/dhcpleases",
+            "rest/dhcpleases",
+        )
+        for path in paths:
+            try:
+                payload = self._request_json("GET", self._site_path(path))
+            except APIError:
+                continue
+            except ConnectivityError:
+                continue
+
+            if isinstance(payload, list):
+                return [item for item in payload if isinstance(item, dict)]
+            if isinstance(payload, dict):
+                for value in payload.values():
+                    if isinstance(value, list):
+                        return [item for item in value if isinstance(item, dict)]
+        return []
+
+    def get_dhcp_leases(self, cache_sec: int = 8) -> List[Dict[str, Any]]:
+        """Return cached DHCP leases from the controller."""
+
+        now = time.time()
+        if self._leases_cache and (now - self._leases_cache[0]) < cache_sec:
+            return self._leases_cache[1]
+
+        leases = self._leases_fetch()
+        self._leases_cache = (now, leases)
+        return leases
+
+    @staticmethod
+    def _lease_is_active(lease: Dict[str, Any], now_ts: float) -> bool:
+        if "expired" in lease:
+            try:
+                return not bool(lease.get("expired"))
+            except Exception:  # pragma: no cover - defensive
+                pass
+        if "is_active" in lease:
+            try:
+                return bool(lease.get("is_active"))
+            except Exception:  # pragma: no cover - defensive
+                pass
+        end = lease.get("end") or lease.get("expires") or lease.get("expire_time")
+        if end is None:
+            return True
+        try:
+            end_ts = float(end)
+        except (TypeError, ValueError):
+            return True
+        if end_ts > 1e12:
+            end_ts /= 1000.0
+        return now_ts < end_ts
+
+    def is_client_active(self, client: Dict[str, Any], now_ts: float) -> bool:
+        """Determine if a client record should be considered active."""
+
+        status = str(client.get("status") or client.get("state") or "").lower()
+        if status in {"online", "connected", "up", "active", "authorized"}:
+            return True
+
+        if client.get("is_online") is True or client.get("connected") is True:
+            return True
+
+        try:
+            uptime = int(client.get("uptime", 0))
+        except (TypeError, ValueError):
+            uptime = 0
+        if uptime > 0:
+            return True
+
+        for key in ("rx_bytes-r", "tx_bytes-r", "rx_rate", "tx_rate"):
+            try:
+                if float(client.get(key, 0)) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+
+        for key in ("last_seen", "last_seen_ts"):
+            ts = client.get(key)
+            if ts is None:
+                continue
+            try:
+                ts_value = float(ts)
+            except (TypeError, ValueError):
+                continue
+            if ts_value > 1e12:
+                ts_value /= 1000.0
+            if (now_ts - ts_value) <= self._active_window:
+                return True
+
+        return False
+
+    def _vpn_type_from(self, server: Dict[str, Any]) -> str:
+        text = " ".join(
+            str(server.get(key, "")).lower()
+            for key in (
+                "type",
+                "vpn_type",
+                "protocol",
+                "proto",
+                "impl",
+                "implementation",
+                "name",
+                "display_name",
+                "server_name",
+                "mode",
+            )
+        )
+        if "openvpn" in text:
+            return "OpenVPN"
+        if "wireguard" in text or "wg" in text:
+            return "WireGuard"
+        if "l2tp" in text and "ipsec" in text:
+            return "L2TP/IPsec"
+        if "ipsec" in text or "ikev2" in text:
+            return "IPsec/IKEv2"
+        if "l2tp" in text:
+            return "L2TP"
+        if "pptp" in text:
+            return "PPTP"
+        return "Unknown"
+
+    def get_vpn_servers(
+        self, cache_sec: int = 8, *, net_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Return VPN server definitions discovered on the controller."""
+
+        now = time.time()
+        if (
+            net_id is None
+            and self._vpn_servers_cache
+            and (now - self._vpn_servers_cache[0]) < cache_sec
+        ):
+            return self._vpn_servers_cache[1]
+
+        candidates: List[Dict[str, Any]] = []
+        for endpoint in (
+            "internet/vpn/servers",
+            "internet/vpn",
+            "stat/vpn",
+            "list/vpn",
+        ):
+            try:
+                payload, _ = self._call_vpn_endpoint("GET", endpoint)
+            except Exception:
+                continue
+
+            records: List[Dict[str, Any]] = []
+            if isinstance(payload, list):
+                records = [item for item in payload if isinstance(item, dict)]
+            elif isinstance(payload, dict):
+                servers = payload.get("servers")
+                if isinstance(servers, list):
+                    records = [item for item in servers if isinstance(item, dict)]
+                if not records:
+                    for value in payload.values():
+                        if isinstance(value, list):
+                            records = [item for item in value if isinstance(item, dict)]
+                            break
+
+            if not records:
+                continue
+
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                if net_id:
+                    linked = any(
+                        str(record.get(key)) == str(net_id) for key in _VPN_NET_ID_KEYS
+                    )
+                    if not linked:
+                        continue
+                server = {
+                    "id": record.get("_id")
+                    or record.get("id")
+                    or record.get("server_id")
+                    or record.get("uuid"),
+                    "name": record.get("name")
+                    or record.get("display_name")
+                    or record.get("server_name"),
+                    "local_ip": record.get("local_ip")
+                    or record.get("ip")
+                    or record.get("wan_ip")
+                    or record.get("listen_ip"),
+                    "interface": record.get("interface")
+                    or record.get("wan")
+                    or record.get("ifname"),
+                    "vpn_type": record.get("vpn_type") or self._vpn_type_from(record),
+                    "active_clients": None,
+                    "linked_network_id": next(
+                        (record.get(key) for key in _VPN_NET_ID_KEYS if record.get(key)),
+                        None,
+                    ),
+                    "_raw": record,
+                }
+                for key in (
+                    "active_clients",
+                    "online_clients",
+                    "num_active",
+                    "activePeersCount",
+                    "num_peers_active",
+                    "connected",
+                    "connected_clients",
+                ):
+                    value = record.get(key)
+                    if isinstance(value, list):
+                        value = len(value)
+                    if isinstance(value, int):
+                        server["active_clients"] = value
+                        break
+                candidates.append(server)
+
+        unique: Dict[str, Dict[str, Any]] = {}
+        for candidate in candidates:
+            key = candidate.get("id") or f"name:{candidate.get('name')}"
+            unique[key] = candidate
+
+        servers = list(unique.values())
+        if net_id is None:
+            self._vpn_servers_cache = (now, servers)
+        return servers
+
+    def get_vpn_active_sessions_map(
+        self, cache_sec: int = 8
+    ) -> Dict[str, Dict[str, int]]:
+        """Return active VPN session counts indexed by server and network."""
+
+        now = time.time()
+        if (
+            self._vpn_sessions_cache
+            and (now - self._vpn_sessions_cache[0]) < cache_sec
+        ):
+            return self._vpn_sessions_cache[1]
+
+        by_server: Dict[str, int] = {}
+        by_network: Dict[str, int] = {}
+
+        def _inc(target: Dict[str, int], key: Optional[str]) -> None:
+            if not key:
+                return
+            target[key] = target.get(key, 0) + 1
+
+        endpoints = (
+            "internet/vpn/peers",
+            "internet/vpn/users",
+            "internet/vpn/sessions",
+            "stat/remote-user",
+            "stat/remoteuser",
+        )
+
+        for endpoint in endpoints:
+            try:
+                payload, _ = self._call_vpn_endpoint("GET", endpoint)
+            except Exception:
+                continue
+
+            if not isinstance(payload, list):
+                continue
+
+            for record in payload:
+                if not isinstance(record, dict):
+                    continue
+                active = False
+                status = str(
+                    record.get("state")
+                    or record.get("status")
+                    or ""
+                ).lower()
+                if status in {"connected", "up", "established", "active", "online"}:
+                    active = True
+                if not active:
+                    ts = record.get("last_seen_ts") or record.get("last_seen")
+                    if ts is not None:
+                        try:
+                            ts_value = float(ts)
+                            if ts_value > 1e12:
+                                ts_value /= 1000.0
+                            if (now - ts_value) <= self._active_window:
+                                active = True
+                        except (TypeError, ValueError):
+                            pass
+                if not active and (
+                    record.get("connected") is True or record.get("is_online") is True
+                ):
+                    active = True
+                if not active:
+                    try:
+                        uptime = int(record.get("uptime", 0))
+                        if uptime > 0:
+                            active = True
+                    except (TypeError, ValueError):
+                        pass
+                if not active:
+                    continue
+
+                server_id = record.get("server_id") or record.get("vpn_server_id")
+                if server_id is None:
+                    server_id = record.get("id")
+                network_id: Optional[str] = None
+                for key in _VPN_NET_ID_KEYS:
+                    if record.get(key):
+                        network_id = str(record.get(key))
+                        break
+
+                if server_id is not None:
+                    _inc(by_server, str(server_id))
+                if network_id is not None:
+                    _inc(by_network, network_id)
+
+        result = {"by_server": by_server, "by_net": by_network}
+        self._vpn_sessions_cache = (now, result)
+        return result
 
     def get_wan_links(self) -> List[Dict[str, Any]]:
         for path in (

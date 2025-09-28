@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, normalize_vpn_type
+from .const import DOMAIN
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
 
@@ -205,42 +205,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         clients_all = self._client.get_clients() or []
         _LOGGER.debug("Retrieved %s clients", len(clients_all))
 
-        # Enhanced VPN tunnel handling
-        vpn_tunnels = []
-        try:
-            vpn_raw = self._client.get_vpn_tunnels() or []
-            for tunnel in vpn_raw:
-                if not isinstance(tunnel, dict):
-                    continue
-                    
-                # Normalize VPN data
-                raw_type = (
-                    tunnel.get("type")
-                    or tunnel.get("mode")
-                    or tunnel.get("role")
-                    or tunnel.get("category")
-                    or tunnel.get("kind")
-                )
-                tunnel["type"] = normalize_vpn_type(raw_type)
-                
-                # Add connection status
-                tunnel["established"] = any([
-                    tunnel.get("status") == "connected",
-                    tunnel.get("state") == "up",
-                    tunnel.get("connected") is True,
-                    tunnel.get("active") is True
-                ])
-                
-                vpn_tunnels.append(tunnel)
-            
-            if vpn_tunnels:
-                _LOGGER.debug(
-                    "Retrieved %s VPN tunnels (types: %s)",
-                    len(vpn_tunnels),
-                    {t["type"] for t in vpn_tunnels}
-                )
-        except APIError as err:
-            _LOGGER.debug("Failed to fetch VPN tunnels: %s", err)
+        # VPN tunnel list retained for backward compatibility but populated elsewhere
+        vpn_tunnels: List[Dict[str, Any]] = []
 
         # Improved speedtest handling
         speedtest = None
