@@ -5,11 +5,15 @@ import logging
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DATA_RUNNER, DOMAIN
 from .unifi_client import UniFiOSClient
-from .utils import build_speedtest_button_unique_id
+from .utils import (
+    build_reset_button_unique_id,
+    build_speedtest_button_unique_id,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,7 +29,11 @@ async def async_setup_entry(
             "UniFi Gateway Dashboard Analyzer client missing during button setup"
         )
     async_add_entities(
-        [SpeedtestRunButton(hass, entry, client, device_name)], True
+        [
+            SpeedtestRunButton(hass, entry, client, device_name),
+            GatewayResetButton(hass, entry, client, device_name),
+        ],
+        True,
     )
 
 class SpeedtestRunButton(ButtonEntity):
@@ -60,6 +68,43 @@ class SpeedtestRunButton(ButtonEntity):
             return
         _LOGGER.info("Button pressed -> triggering Speedtest (runner handles trace).")
         await runner.async_trigger(reason="button")
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._client.instance_key())},
+            "manufacturer": "Ubiquiti Networks",
+            "name": self._device_name,
+            "configuration_url": self._client.get_controller_url(),
+        }
+
+
+class GatewayResetButton(ButtonEntity):
+    _attr_name = "Reset Gateway"
+    _attr_icon = "mdi:restart"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        client: UniFiOSClient,
+        device_name: str,
+    ) -> None:
+        self.hass = hass
+        self._entry = entry
+        self._entry_id = entry.entry_id
+        self._client = client
+        self._device_name = device_name
+        self._attr_unique_id = build_reset_button_unique_id(self._entry_id)
+
+    async def async_press(self) -> None:
+        try:
+            await self.hass.async_add_executor_job(self._client.restart_gateway)
+        except Exception:  # pragma: no cover - defensive logging
+            _LOGGER.exception(
+                "Failed to trigger gateway reset for entry %s", self._entry_id
+            )
 
     @property
     def device_info(self):
