@@ -1,4 +1,4 @@
-"""The UniFi Gateway Refactored integration."""
+"""The UniFi Gateway Dashboard Analyzer integration."""
 from __future__ import annotations
 
 import hashlib
@@ -18,24 +18,24 @@ from .const import (
     CONF_PASSWORD,
     CONF_PORT,
     CONF_SITE_ID,
-    CONF_SPEEDTEST_ENTITIES,
-    CONF_SPEEDTEST_INTERVAL,
-    CONF_SPEEDTEST_INTERVAL_MIN,
     CONF_TIMEOUT,
     CONF_USE_PROXY_PREFIX,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
+    CONF_SPEEDTEST_ENTITIES,
+    CONF_SPEEDTEST_INTERVAL,
     DATA_RUNNER,
     DATA_UNDO_TIMER,
     DEFAULT_PORT,
     DEFAULT_SITE,
     DEFAULT_SPEEDTEST_ENTITIES,
     DEFAULT_SPEEDTEST_INTERVAL,
-    DEFAULT_SPEEDTEST_INTERVAL_MIN,
+    DEFAULT_SPEEDTEST_INTERVAL_MINUTES,
     DEFAULT_TIMEOUT,
     DEFAULT_USE_PROXY_PREFIX,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
+    LEGACY_CONF_SPEEDTEST_INTERVAL_MIN,
     PLATFORMS,
 )
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
@@ -46,14 +46,14 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup(hass: "HomeAssistant", config: "ConfigType") -> bool:
-    """Set up the UniFi Gateway Refactored component."""
-    _LOGGER.debug("Setting up UniFi Gateway Refactored integration")
+    """Set up the UniFi Gateway Dashboard Analyzer component."""
+    _LOGGER.debug("Setting up UniFi Gateway Dashboard Analyzer integration")
     hass.data.setdefault(DOMAIN, {})
     return True
 
 
 async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
-    """Set up UniFi Gateway Refactored from a config entry."""
+    """Set up UniFi Gateway Dashboard Analyzer from a config entry."""
     _LOGGER.debug("Setting up config entry %s", entry.title)
 
     from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
@@ -82,16 +82,33 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
 
     options = entry.options or {}
 
-    speedtest_interval_candidate = options.get(CONF_SPEEDTEST_INTERVAL)
-    if speedtest_interval_candidate is None:
-        speedtest_interval_candidate = entry.data.get(
-            CONF_SPEEDTEST_INTERVAL, DEFAULT_SPEEDTEST_INTERVAL
-        )
-    try:
-        speedtest_interval_seconds = int(speedtest_interval_candidate)
-    except (TypeError, ValueError):
+    def _coerce_int(value: Any) -> int | None:
+        try:
+            if value is None:
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    speedtest_interval_seconds: int | None = None
+    for source in (options, entry.data):
+        speedtest_interval_seconds = _coerce_int(source.get(CONF_SPEEDTEST_INTERVAL))
+        if speedtest_interval_seconds is not None:
+            break
+
+    if speedtest_interval_seconds is None:
+        legacy_minutes: int | None = None
+        for source in (options, entry.data):
+            legacy_minutes = _coerce_int(source.get(LEGACY_CONF_SPEEDTEST_INTERVAL_MIN))
+            if legacy_minutes is not None:
+                break
+        if legacy_minutes is not None:
+            speedtest_interval_seconds = max(0, legacy_minutes) * 60
+
+    if speedtest_interval_seconds is None:
         speedtest_interval_seconds = DEFAULT_SPEEDTEST_INTERVAL
-    speedtest_interval_seconds = max(0, speedtest_interval_seconds)
+    else:
+        speedtest_interval_seconds = max(0, speedtest_interval_seconds)
 
     try:
         client: UniFiOSClient = await hass.async_add_executor_job(client_factory)
@@ -112,18 +129,10 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
     )
     await coordinator.async_config_entry_first_refresh()
 
-    interval_candidate = options.get(CONF_SPEEDTEST_INTERVAL_MIN)
-    if interval_candidate is None:
-        interval_candidate = entry.data.get(CONF_SPEEDTEST_INTERVAL_MIN)
-    if interval_candidate is None and speedtest_interval_seconds:
-        interval_candidate = round(speedtest_interval_seconds / 60)
-    if interval_candidate is None:
-        interval_candidate = DEFAULT_SPEEDTEST_INTERVAL_MIN
-    try:
-        interval_minutes = int(interval_candidate)
-    except (TypeError, ValueError):
-        interval_minutes = DEFAULT_SPEEDTEST_INTERVAL_MIN
-    interval_minutes = max(5, interval_minutes)
+    if speedtest_interval_seconds <= 0:
+        interval_minutes = DEFAULT_SPEEDTEST_INTERVAL_MINUTES
+    else:
+        interval_minutes = max(5, round(speedtest_interval_seconds / 60))
 
     raw_entities = options.get(CONF_SPEEDTEST_ENTITIES, DEFAULT_SPEEDTEST_ENTITIES)
     entity_ids: list[str] = []
@@ -181,7 +190,7 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
     entry_data[DATA_RUNNER] = runner
 
     _LOGGER.debug(
-        "UniFi Gateway entry %s setup complete; scheduling platform forwards",
+        "UniFi Gateway Dashboard Analyzer entry %s setup complete; scheduling platform forwards",
         entry.entry_id,
     )
 
@@ -204,7 +213,7 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
     entry_data[DATA_UNDO_TIMER] = undo
 
     _LOGGER.info(
-        "UniFi Gateway entry %s fully initialized; Speedtest every %s minutes (entities=%s)",
+        "UniFi Gateway Dashboard Analyzer entry %s fully initialized; Speedtest every %s minutes (entities=%s)",
         entry.entry_id,
         interval_minutes,
         entity_ids,
@@ -224,7 +233,9 @@ async def async_unload_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> boo
         stored = hass.data.get(DOMAIN)
         if stored and entry.entry_id in stored:
             stored.pop(entry.entry_id)
-        _LOGGER.debug("UniFi Gateway entry %s unloaded", entry.entry_id)
+        _LOGGER.debug(
+            "UniFi Gateway Dashboard Analyzer entry %s unloaded", entry.entry_id
+        )
     return unload_ok
 
 

@@ -1,12 +1,12 @@
 
-# UniFi Gateway (Refactored)
+# UniFi Gateway Dashboard Analyzer
 
 Custom integration for Home Assistant that exposes UniFi Gateway metrics with a
 fully UI-driven configuration flow.
 
 ## Features
 
-- **UI-based setup** (no YAML): Add Integration → UniFi Gateway (Refactored).
+- **UI-based setup** (no YAML): Add Integration → UniFi Gateway Dashboard Analyzer.
 - **Live validation on save**: during setup we log in and read `/stat/health` and `/self/sites`.
 - **Options Flow**: you can change host/credentials/site/etc. later from the integration's Options.
 - **Diagnostics**: menu "Download diagnostics" dumps controller URL, current site, health, sites.

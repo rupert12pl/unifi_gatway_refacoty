@@ -21,7 +21,7 @@ async def async_setup_entry(
     device_name = entry_data.get("device_name") or entry.title or "UniFi Gateway"
     if client is None:
         raise RuntimeError(
-            "UniFi Gateway Refactored client missing during button setup"
+            "UniFi Gateway Dashboard Analyzer client missing during button setup"
         )
     async_add_entities(
         [SpeedtestRunButton(hass, entry, client, device_name)], True

@@ -23,7 +23,6 @@ from .const import (
     CONF_SITE_ID,
     CONF_TIMEOUT,
     CONF_SPEEDTEST_INTERVAL,
-    CONF_SPEEDTEST_INTERVAL_MIN,
     CONF_SPEEDTEST_ENTITIES,
     DEFAULT_PORT,
     DEFAULT_SITE,
@@ -31,8 +30,9 @@ from .const import (
     DEFAULT_USE_PROXY_PREFIX,
     DEFAULT_TIMEOUT,
     DEFAULT_SPEEDTEST_INTERVAL,
-    DEFAULT_SPEEDTEST_INTERVAL_MIN,
+    DEFAULT_SPEEDTEST_INTERVAL_MINUTES,
     DEFAULT_SPEEDTEST_ENTITIES,
+    LEGACY_CONF_SPEEDTEST_INTERVAL_MIN,
 )
 from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 
@@ -104,6 +104,26 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return 0
         return (seconds + 59) // 60
 
+    @staticmethod
+    def _resolve_interval_seconds(data: Dict[str, Any]) -> int:
+        candidate = data.get(CONF_SPEEDTEST_INTERVAL)
+        try:
+            seconds = int(candidate)
+        except (TypeError, ValueError):
+            seconds = None
+        if seconds is not None and seconds >= 0:
+            return seconds
+
+        legacy_candidate = data.get(LEGACY_CONF_SPEEDTEST_INTERVAL_MIN)
+        try:
+            minutes = int(legacy_candidate)
+        except (TypeError, ValueError):
+            minutes = None
+        if minutes is not None and minutes >= 0:
+            return minutes * 60
+
+        return DEFAULT_SPEEDTEST_INTERVAL
+
     async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         if user_input is not None:
@@ -129,15 +149,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 sanitized[CONF_SPEEDTEST_INTERVAL] = self._minutes_to_seconds(
                     sanitized[CONF_SPEEDTEST_INTERVAL]
                 )
-            if CONF_SPEEDTEST_INTERVAL_MIN in sanitized:
-                try:
-                    sanitized[CONF_SPEEDTEST_INTERVAL_MIN] = max(
-                        5, int(sanitized[CONF_SPEEDTEST_INTERVAL_MIN])
-                    )
-                except (TypeError, ValueError):
-                    sanitized[CONF_SPEEDTEST_INTERVAL_MIN] = (
-                        DEFAULT_SPEEDTEST_INTERVAL_MIN
-                    )
             if CONF_SPEEDTEST_ENTITIES in sanitized:
                 value = sanitized[CONF_SPEEDTEST_ENTITIES]
                 if isinstance(value, str):
@@ -170,14 +181,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception:
                 errors["base"] = "unknown"
 
-        interval_default = self._cached.get(
-            CONF_SPEEDTEST_INTERVAL_MIN, DEFAULT_SPEEDTEST_INTERVAL_MIN
+        interval_default = self._seconds_to_minutes(
+            self._resolve_interval_seconds(self._cached)
         )
-        try:
-            interval_default = int(interval_default)
-        except (TypeError, ValueError):
-            interval_default = DEFAULT_SPEEDTEST_INTERVAL_MIN
-        interval_default = max(5, interval_default)
+        if interval_default <= 0:
+            interval_default = DEFAULT_SPEEDTEST_INTERVAL_MINUTES
 
         entities_default = self._cached.get(
             CONF_SPEEDTEST_ENTITIES, DEFAULT_SPEEDTEST_ENTITIES
@@ -209,14 +217,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(
                     CONF_SPEEDTEST_INTERVAL,
                     default=self._seconds_to_minutes(
-                        self._cached.get(
-                            CONF_SPEEDTEST_INTERVAL, DEFAULT_SPEEDTEST_INTERVAL
-                        )
-                    ),
-                ): int,
-                vol.Optional(
-                    CONF_SPEEDTEST_INTERVAL_MIN,
-                    default=interval_default,
+                        self._resolve_interval_seconds(self._cached)
+                    )
+                    or DEFAULT_SPEEDTEST_INTERVAL_MINUTES,
                 ): vol.All(vol.Coerce(int), vol.Clamp(min=5)),
                 vol.Optional(
                     CONF_SPEEDTEST_ENTITIES,
@@ -247,13 +250,6 @@ class OptionsFlow(config_entries.OptionsFlow):
                 cleaned[CONF_SPEEDTEST_INTERVAL] = ConfigFlow._minutes_to_seconds(
                     cleaned[CONF_SPEEDTEST_INTERVAL]
                 )
-            if CONF_SPEEDTEST_INTERVAL_MIN in cleaned:
-                try:
-                    cleaned[CONF_SPEEDTEST_INTERVAL_MIN] = max(
-                        5, int(cleaned[CONF_SPEEDTEST_INTERVAL_MIN])
-                    )
-                except (TypeError, ValueError):
-                    cleaned[CONF_SPEEDTEST_INTERVAL_MIN] = DEFAULT_SPEEDTEST_INTERVAL_MIN
             if CONF_SPEEDTEST_ENTITIES in cleaned:
                 value = cleaned[CONF_SPEEDTEST_ENTITIES]
                 if isinstance(value, str):
@@ -287,14 +283,11 @@ class OptionsFlow(config_entries.OptionsFlow):
                     errors["base"] = "unknown"
 
         current = {**self._entry.data, **self._entry.options}
-        interval_default = current.get(
-            CONF_SPEEDTEST_INTERVAL_MIN, DEFAULT_SPEEDTEST_INTERVAL_MIN
+        interval_default = ConfigFlow._seconds_to_minutes(
+            ConfigFlow._resolve_interval_seconds(current)
         )
-        try:
-            interval_default = int(interval_default)
-        except (TypeError, ValueError):
-            interval_default = DEFAULT_SPEEDTEST_INTERVAL_MIN
-        interval_default = max(5, interval_default)
+        if interval_default <= 0:
+            interval_default = DEFAULT_SPEEDTEST_INTERVAL_MINUTES
         entities_default = current.get(
             CONF_SPEEDTEST_ENTITIES, DEFAULT_SPEEDTEST_ENTITIES
         )
@@ -327,12 +320,6 @@ class OptionsFlow(config_entries.OptionsFlow):
                 ): int,
                 vol.Optional(
                     CONF_SPEEDTEST_INTERVAL,
-                    default=ConfigFlow._seconds_to_minutes(
-                        current.get(CONF_SPEEDTEST_INTERVAL, DEFAULT_SPEEDTEST_INTERVAL)
-                    ),
-                ): int,
-                vol.Optional(
-                    CONF_SPEEDTEST_INTERVAL_MIN,
                     default=interval_default,
                 ): vol.All(vol.Coerce(int), vol.Clamp(min=5)),
                 vol.Optional(
