@@ -4,15 +4,78 @@
 Custom integration for Home Assistant that exposes UniFi Gateway metrics with a
 fully UI-driven configuration flow.
 
-## Features
+## Integration guide (English)
 
-- **UI-based setup** (no YAML): Add Integration → UniFi Gateway Dashboard Analyzer.
-- **Live validation on save**: during setup we log in and read `/stat/health` and `/self/sites`.
-- **Options Flow**: you can change host/credentials/site/etc. later from the integration's Options.
-- **Diagnostics**: menu "Download diagnostics" dumps controller URL, current site, health, sites.
+### What this integration does for you
 
-Authentication uses a local **username/password** (the same approach as in
-[`sirkirby/unifi-network-rules`](https://github.com/sirkirby/unifi-network-rules)).
+- Presents WAN, LAN, WLAN and internet health metrics from your UniFi Gateway so
+  you can monitor uptime, throughput and alerts from the Home Assistant
+  dashboard.
+- Tracks firmware status for UniFi devices and highlights upgrades directly in
+  Home Assistant.
+- Creates dedicated VPN server sensors that count active sessions and expose a
+  **Connected Clients** attribute listing each user as
+  `Name ~ Source IP | Internal IP | Source Country | Source City | Source ISP`.
+  No other entity includes that attribute, so you immediately know which card
+  to open when reviewing VPN activity.
+- Provides live diagnostic data (controller URLs, current site, last fetched
+  payloads) that can be shared with support teams when something stops working.
+
+### How to get started
+
+1. In Home Assistant navigate to **Settings → Devices & Services → Add
+   Integration** and search for **UniFi Gateway Dashboard Analyzer**.
+2. Enter the controller address, site and credentials (local UniFi OS username
+   and password). The form validates everything before saving.
+3. After the initial setup you can revisit the entry and use **Configure** to
+   adjust connection details without deleting the integration.
+
+### Daily use tips
+
+- Pin the WAN/LAN/WLAN sensors to a dashboard card to keep latency and alert
+  status in view.
+- Use the VPN server sensor state to trigger automations (for example notify
+  when more than five remote workers are connected).
+- Expand the **Connected Clients** attribute on a VPN sensor to see the device
+  name, public IP origin and geolocation details for every active tunnel.
+- Download **Diagnostics** from the integration's menu whenever you need a
+  snapshot of controller data for troubleshooting.
+
+## Przewodnik integracji (Polski)
+
+### Co daje ta integracja
+
+- Udostępnia w Home Assistant wskaźniki WAN, LAN, WLAN i stanu internetu z
+  bramy UniFi, aby łatwo kontrolować dostępność łącza, przepustowość i alarmy.
+- Śledzi wersje oprogramowania urządzeń UniFi i wskazuje dostępne aktualizacje
+  bezpośrednio w Home Assistant.
+- Tworzy osobne sensory serwerów VPN zliczające aktywne sesje oraz dodające
+  atrybut **Connected Clients** w formacie
+  `Nazwa ~ IP źródłowe | IP wewnętrzne | Kraj | Miasto | ISP`. Żadna inna encja
+  nie pokazuje tego atrybutu, więc przeglądanie aktywności VPN jest proste i
+  szybkie.
+- Umożliwia pobranie diagnostyki (adresy kontrolera, aktualna witryna, ostatnie
+  dane) do przekazania zespołowi wsparcia.
+
+### Jak zacząć
+
+1. W Home Assistant przejdź do **Ustawienia → Urządzenia i usługi → Dodaj
+   integrację** i wyszukaj **UniFi Gateway Dashboard Analyzer**.
+2. Podaj adres kontrolera, witrynę oraz dane logowania (lokalny użytkownik i
+   hasło UniFi OS). Formularz sprawdza poprawność przed zapisaniem.
+3. Po instalacji możesz wybrać **Konfiguruj** przy wpisie integracji, aby w
+   każdej chwili zmienić parametry połączenia.
+
+### Wskazówki do codziennego użycia
+
+- Dodaj sensory WAN/LAN/WLAN na dashboard, aby mieć stale podgląd opóźnień i
+  stanu alarmów.
+- Wykorzystaj stan sensora serwera VPN w automatyzacjach (np. wyślij powiadomienie,
+  gdy liczba zdalnych użytkowników przekroczy pięć).
+- Rozwiń atrybut **Connected Clients** na sensorze VPN, aby zobaczyć nazwę
+  urządzenia, adres publiczny oraz geolokalizację każdego tunelu.
+- W menu integracji wybierz **Pobierz diagnostykę**, aby zebrać migawkę danych do
+  rozwiązywania problemów.
 
 ## Repository layout required by HACS
 

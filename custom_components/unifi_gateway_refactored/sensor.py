@@ -6,7 +6,7 @@ import hashlib
 import logging
 import time
 import ipaddress
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -778,6 +778,184 @@ def _extract_client_count(value: Any) -> Optional[int]:
     return _coerce_int(value)
 
 
+def _normalize_client_field(value: Optional[Any]) -> str:
+    if value in (None, ""):
+        return "Unknown"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or "Unknown"
+    return str(value)
+
+
+def _extract_nested_value(
+    record: Mapping[str, Any], keys: Iterable[str]
+) -> Optional[Any]:
+    value = _value_from_record(record, keys)
+    if value is not None:
+        return value
+
+    nested_sections = (
+        "geoip",
+        "geo",
+        "ip_geo",
+        "location",
+        "client",
+        "user",
+        "details",
+        "info",
+        "metadata",
+        "isp_info",
+        "source",
+        "session",
+        "remote",
+        "origin",
+        "attributes",
+    )
+    for section in nested_sections:
+        nested = record.get(section)
+        if isinstance(nested, Mapping):
+            value = _value_from_record(nested, keys)
+            if value is not None:
+                return value
+    return None
+
+
+def _iter_connected_client_records(raw: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
+    if not isinstance(raw, Mapping):
+        return []
+
+    candidates: List[Any] = []
+    for key in (
+        "connected_clients",
+        "clients",
+        "users",
+        "peers",
+        "remote_users",
+        "active_clients",
+        "sessions",
+    ):
+        value = raw.get(key)
+        if value in (None, ""):
+            continue
+        candidates.append(value)
+
+    stats = raw.get("stats") or raw.get("statistics")
+    if isinstance(stats, Mapping):
+        for key in ("clients", "connected_clients", "users"):
+            value = stats.get(key)
+            if value not in (None, ""):
+                candidates.append(value)
+
+    for value in candidates:
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, Mapping):
+                    yield item
+        elif isinstance(value, Mapping):
+            for nested_key in ("items", "clients", "connected", "users", "data", "list"):
+                nested = value.get(nested_key)
+                if isinstance(nested, list):
+                    for item in nested:
+                        if isinstance(item, Mapping):
+                            yield item
+            for item in value.values():
+                if isinstance(item, Mapping):
+                    yield item
+
+
+def _format_vpn_connected_clients(raw: Mapping[str, Any]) -> List[str]:
+    formatted: List[str] = []
+    for client in _iter_connected_client_records(raw):
+        name = _extract_nested_value(
+            client,
+            (
+                "name",
+                "display_name",
+                "user_name",
+                "username",
+                "user",
+                "identity",
+                "client_name",
+                "description",
+                "peer",
+            ),
+        )
+        source_ip = _extract_nested_value(
+            client,
+            (
+                "source_ip",
+                "remote_ip",
+                "remote_addr",
+                "public_ip",
+                "wan_ip",
+                "peer_ip",
+                "peer_addr",
+                "ip_address",
+                "internet_ip",
+                "src_ip",
+            ),
+        )
+        internal_ip = _extract_nested_value(
+            client,
+            (
+                "internal_ip",
+                "client_ip",
+                "assigned_ip",
+                "ip",
+                "local_ip",
+                "tunnel_ip",
+                "network_ip",
+                "lan_ip",
+            ),
+        )
+        country = _extract_nested_value(
+            client,
+            (
+                "country",
+                "country_name",
+                "geoip_country",
+                "countryCode",
+                "country_code",
+            ),
+        )
+        city = _extract_nested_value(
+            client,
+            (
+                "city",
+                "geoip_city",
+                "town",
+                "region",
+            ),
+        )
+        isp = _extract_nested_value(
+            client,
+            (
+                "isp",
+                "isp_name",
+                "organization",
+                "org",
+                "ispOrg",
+                "isp_org",
+                "isp_provider",
+            ),
+        )
+
+        formatted.append(
+            "{} ~ {} | {} | {} | {} | {}".format(
+                _normalize_client_field(name),
+                _normalize_client_field(source_ip),
+                _normalize_client_field(internal_ip),
+                _normalize_client_field(country),
+                _normalize_client_field(city),
+                _normalize_client_field(isp),
+            )
+        )
+
+    return formatted
+
+
 def _parse_datetime_24h(value: Any) -> Optional[str]:
     """Parse datetime and return in 24h format."""
     if value in (None, ""):
@@ -1085,6 +1263,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
             "instance": base_name,
         }
         self._apply_network_overrides()
+        self._connected_clients: List[str] = []
 
     def _apply_network_overrides(self) -> None:
         raw = self._linked_network if isinstance(self._linked_network, dict) else {}
@@ -1160,6 +1339,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
     def extra_state_attributes(self) -> Dict[str, Any]:
         attrs = dict(self._attrs)
         attrs.update(self._controller_attrs())
+        attrs["Connected Clients"] = list(self._connected_clients)
         return attrs
 
     @property
@@ -1254,6 +1434,48 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         self._state = count
         self._attrs["debug_v2_seen_total"] = v2_total
         self._attrs["Online users"] = v2_for_net
+        self._update_connected_clients()
+
+    def _update_connected_clients(self) -> None:
+        self._connected_clients = []
+
+        try:
+            servers = self._client.get_vpn_servers()
+        except (APIError, ConnectivityError) as err:
+            _LOGGER.debug(
+                "Fetching VPN server clients failed for %s: %s", self._srv_name, err
+            )
+            return
+
+        target_id = str(self._srv_id) if self._srv_id is not None else None
+        target_link = str(self._linked_net_id) if self._linked_net_id is not None else None
+
+        fallback_raw: Optional[Mapping[str, Any]] = None
+        for server in servers:
+            raw = server.get("_raw") if isinstance(server, Mapping) else None
+            if not isinstance(raw, Mapping):
+                continue
+
+            server_id = server.get("id") if isinstance(server, Mapping) else None
+            linked_id = server.get("linked_network_id") if isinstance(server, Mapping) else None
+
+            if target_id is not None and server_id is not None and str(server_id) == target_id:
+                self._connected_clients = _format_vpn_connected_clients(raw)
+                return
+
+            if (
+                target_link is not None
+                and linked_id is not None
+                and str(linked_id) == target_link
+            ):
+                fallback_raw = raw
+                continue
+
+            if fallback_raw is None and target_link is None and target_id is None:
+                fallback_raw = raw
+
+        if fallback_raw is not None:
+            self._connected_clients = _format_vpn_connected_clients(fallback_raw)
 
 
 

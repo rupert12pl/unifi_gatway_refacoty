@@ -44,4 +44,14 @@ class DataUpdateCoordinator(Generic[T]):
         self.data = data
 
 
-__all__ = ["DataUpdateCoordinator", "UpdateFailed"]
+class CoordinatorEntity(Generic[T]):
+    """Minimal CoordinatorEntity stub."""
+
+    def __init__(self, coordinator: DataUpdateCoordinator[T]) -> None:
+        self.coordinator = coordinator
+
+    async def async_added_to_hass(self) -> None:  # pragma: no cover - compatibility
+        return None
+
+
+__all__ = ["DataUpdateCoordinator", "UpdateFailed", "CoordinatorEntity"]
