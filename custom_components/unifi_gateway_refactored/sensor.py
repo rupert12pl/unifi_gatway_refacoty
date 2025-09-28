@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 import html
 import hashlib
 import logging
@@ -31,6 +32,11 @@ from homeassistant.util import Throttle
 from .const import CONF_HOST, DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
+
+try:  # pragma: no cover - optional dependency for WHOIS lookups
+    from ipwhois import IPWhois  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover - dependency is optional at runtime
+    IPWhois = None  # type: ignore[assignment]
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -790,6 +796,117 @@ def _normalize_client_field(value: Optional[Any]) -> str:
     return str(value)
 
 
+def _lookup_remote_ip_whois(remote_ip: str) -> Dict[str, str]:
+    if IPWhois is None:
+        return {}
+
+    normalized_ip = remote_ip.strip()
+    if not normalized_ip:
+        return {}
+
+    try:
+        ip_obj = ipaddress.ip_address(normalized_ip)
+    except ValueError:
+        return {}
+
+    if (
+        ip_obj.is_private
+        or ip_obj.is_loopback
+        or ip_obj.is_multicast
+        or ip_obj.is_reserved
+        or ip_obj.is_unspecified
+    ):
+        return {}
+
+    return _cached_whois_lookup(normalized_ip)
+
+
+@lru_cache(maxsize=256)
+def _cached_whois_lookup(remote_ip: str) -> Dict[str, str]:
+    if IPWhois is None:
+        return {}
+
+    try:
+        lookup = IPWhois(remote_ip)
+        result = lookup.lookup_whois(get_referral=True)
+    except Exception as err:  # pragma: no cover - defensive logging
+        _LOGGER.debug("WHOIS lookup failed for %s: %s", remote_ip, err)
+        return {}
+
+    nets = result.get("nets") if isinstance(result, Mapping) else None
+    extracted: Dict[str, str] = {}
+
+    if isinstance(nets, list):
+        for net in nets:
+            if not isinstance(net, Mapping):
+                continue
+
+            city = net.get("city")
+            if city and "city" not in extracted:
+                extracted["city"] = str(city).strip()
+
+            state = net.get("state") or net.get("region") or net.get("province")
+            if state and "state" not in extracted:
+                extracted["state"] = str(state).strip()
+
+            country = net.get("country")
+            if country and "country" not in extracted:
+                extracted["country"] = str(country).strip()
+
+            for key in ("description", "name", "org", "organization"):
+                value = net.get(key)
+                if value and "isp" not in extracted:
+                    extracted["isp"] = str(value).strip()
+                    break
+
+            if {"city", "country", "isp"}.issubset(extracted.keys()):
+                break
+
+    if "isp" not in extracted:
+        for key in ("asn_description", "asn", "nir"):
+            value = result.get(key) if isinstance(result, Mapping) else None
+            if value:
+                extracted["isp"] = str(value).strip()
+                break
+
+    if "country" not in extracted and isinstance(result, Mapping):
+        cc = result.get("asn_country_code")
+        if cc:
+            extracted["country"] = str(cc).strip()
+
+    return {key: value for key, value in extracted.items() if value}
+
+
+def _enrich_remote_ip_details(
+    remote_ip: str, city: str, country: str, isp: str
+) -> Tuple[str, str, str]:
+    if not remote_ip or remote_ip == "Unknown":
+        return city, country, isp
+
+    details = _lookup_remote_ip_whois(remote_ip)
+    if not details:
+        return city, country, isp
+
+    if not city or city == "Unknown":
+        candidate = details.get("city") or details.get("state")
+        if candidate:
+            city = _normalize_client_field(candidate)
+
+    if not country or country == "Unknown":
+        candidate = details.get("country")
+        if candidate:
+            country = _normalize_client_field(candidate)
+
+    if not isp or isp == "Unknown":
+        for key in ("isp", "asn_description", "asn"):
+            candidate = details.get(key)
+            if candidate:
+                isp = _normalize_client_field(candidate)
+                break
+
+    return city, country, isp
+
+
 def _extract_nested_value(
     record: Mapping[str, Any], keys: Iterable[str]
 ) -> Optional[Any]:
@@ -955,6 +1072,10 @@ def _collect_vpn_connected_clients_details(
                     "isp_provider",
                 ),
             )
+        )
+
+        city, country, isp = _enrich_remote_ip_details(
+            source_ip, city, country, isp
         )
 
         details.append(
@@ -1453,7 +1574,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
             attrs["subnet"] = subnet_value
         attrs["Connected Clients"] = list(self._connected_clients)
         if self._connected_clients_html is not None:
-            attrs["Connected Clients HTML"] = self._connected_clients_html
+            attrs["connected_clients_html"] = self._connected_clients_html
         return attrs
 
     @property
