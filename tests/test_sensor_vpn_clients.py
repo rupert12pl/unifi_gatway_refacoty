@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from custom_components.unifi_gateway_refactored.sensor import (
     _format_vpn_connected_clients,
 )
@@ -29,10 +31,17 @@ def test_format_vpn_connected_clients_extracts_values():
         ]
     }
 
-    assert _format_vpn_connected_clients(raw) == [
-        "Client A ~ 1.2.3.4 | 10.0.0.5 | Poland | Warsaw | ISP1",
-        "Client B ~ 5.6.7.8 | 10.0.0.6 | Germany | Berlin | ISP2",
-    ]
+    with patch(
+        "custom_components.unifi_gateway_refactored.sensor._lookup_remote_ip_whois",
+        side_effect=[
+            {"city": "Poznań", "country": "Poland", "isp": "ISP Name A"},
+            {"city": "Munich", "country": "Germany", "isp": "ISP Name B"},
+        ],
+    ):
+        assert _format_vpn_connected_clients(raw) == [
+            "Client A ~ 1.2.3.4 | 10.0.0.5 | Poland | Poznań | ISP Name A",
+            "Client B ~ 5.6.7.8 | 10.0.0.6 | Germany | Munich | ISP Name B",
+        ]
 
 
 def test_format_vpn_connected_clients_handles_missing_fields():
