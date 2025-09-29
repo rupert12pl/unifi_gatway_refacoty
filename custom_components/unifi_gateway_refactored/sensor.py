@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from functools import lru_cache
+from functools import lru_cache, partial
 import html
 import hashlib
 import logging
@@ -51,7 +52,6 @@ except ImportError:  # pragma: no cover - dependency is optional at runtime
 _LOGGER = logging.getLogger(__name__)
 
 
-MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=30)
 VPN_MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=10)
 
 
@@ -197,189 +197,213 @@ async def async_setup_entry(
     known_lan: set[str] = set()
     known_wlan: set[str] = set()
     known_vpn: set[str] = set()
+    discovery_lock = asyncio.Lock()
 
-    def _sync_dynamic() -> None:
-        _LOGGER.debug(
-            "Synchronizing dynamic UniFi Gateway sensors for entry %s",
-            entry.entry_id,
-        )
-        coordinator_data: Optional[UniFiGatewayData] = coordinator.data
-        if coordinator_data is None:
+    async def _async_sync_dynamic() -> None:
+        async with discovery_lock:
             _LOGGER.debug(
-                "Coordinator data unavailable during sync for entry %s", entry.entry_id
+                "Synchronizing dynamic UniFi Gateway sensors for entry %s",
+                entry.entry_id,
             )
-            return
-
-        new_entities: List[SensorEntity] = []
-
-        controller_site: Optional[str] = None
-        controller_info = getattr(coordinator_data, "controller", None)
-        if isinstance(controller_info, dict):
-            site_candidate = controller_info.get("site")
-            if isinstance(site_candidate, str) and site_candidate:
-                controller_site = site_candidate
-
-        entity_registry = er.async_get(hass)
-        pending_unique_ids: set[str] = set()
-
-        def _should_skip(unique_id: str) -> bool:
-            entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
-            if not entity_id:
-                return False
-            entry_entry = entity_registry.async_get(entity_id)
-            if entry_entry and entry_entry.config_entry_id != entry.entry_id:
-                _LOGGER.warning(
-                    "Skipping entity with unique_id %s for entry %s; already owned by %s",
-                    unique_id,
+            coordinator_data: Optional[UniFiGatewayData] = coordinator.data
+            if coordinator_data is None:
+                _LOGGER.debug(
+                    "Coordinator data unavailable during sync for entry %s",
                     entry.entry_id,
-                    entity_id,
                 )
-                return True
-            return False
+                return
 
-        for link in coordinator_data.wan_links:
-            link_key = wan_interface_key(link)
-            if link_key in known_wan:
-                continue
-            known_wan.add(link_key)
-            for cls, suffix in (
-                (UniFiGatewayWanStatusSensor, "status"),
-                (UniFiGatewayWanIpSensor, "ip"),
-                (UniFiGatewayWanIpv6Sensor, "ipv6"),
-                (UniFiGatewayWanIspSensor, "isp"),
-            ):
-                unique_id = build_wan_unique_id(entry.entry_id, link, suffix)
+            new_entities: List[SensorEntity] = []
+
+            entity_registry = er.async_get(hass)
+            pending_unique_ids: set[str] = set()
+
+            def _should_skip(unique_id: str) -> bool:
+                entity_id = entity_registry.async_get_entity_id(
+                    "sensor", DOMAIN, unique_id
+                )
+                if not entity_id:
+                    return False
+                entry_entry = entity_registry.async_get(entity_id)
+                if entry_entry and entry_entry.config_entry_id != entry.entry_id:
+                    _LOGGER.warning(
+                        "Skipping entity with unique_id %s for entry %s; already owned by %s",
+                        unique_id,
+                        entry.entry_id,
+                        entity_id,
+                    )
+                    return True
+                return False
+
+            vpn_server_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+            async def _async_lookup_vpn_servers(net_identifier: str) -> List[Dict[str, Any]]:
+                if net_identifier in vpn_server_cache:
+                    return vpn_server_cache[net_identifier]
+                try:
+                    candidates = await hass.async_add_executor_job(
+                        partial(client.get_vpn_servers, net_id=net_identifier)
+                    )
+                except (APIError, ConnectivityError) as err:
+                    _LOGGER.debug(
+                        "VPN lookup for network %s failed: %s", net_identifier, err
+                    )
+                    candidates = []
+                if not isinstance(candidates, list):
+                    candidates = []
+                vpn_server_cache[net_identifier] = candidates
+                return candidates
+
+            for link in coordinator_data.wan_links:
+                link_key = wan_interface_key(link)
+                if link_key in known_wan:
+                    continue
+                known_wan.add(link_key)
+                for cls, suffix in (
+                    (UniFiGatewayWanStatusSensor, "status"),
+                    (UniFiGatewayWanIpSensor, "ip"),
+                    (UniFiGatewayWanIpv6Sensor, "ipv6"),
+                    (UniFiGatewayWanIspSensor, "isp"),
+                ):
+                    unique_id = build_wan_unique_id(entry.entry_id, link, suffix)
+                    if unique_id in pending_unique_ids or _should_skip(unique_id):
+                        continue
+                    new_entities.append(
+                        cls(
+                            coordinator,
+                            client,
+                            entry.entry_id,
+                            link,
+                            device_name=device_name,
+                        )
+                    )
+                    pending_unique_ids.add(unique_id)
+
+            for network in coordinator_data.lan_networks:
+                key = lan_interface_key(network)
+                if key in known_lan:
+                    continue
+                known_lan.add(key)
+                unique_id = build_lan_unique_id(entry.entry_id, network)
                 if unique_id in pending_unique_ids or _should_skip(unique_id):
                     continue
                 new_entities.append(
-                    cls(
+                    UniFiGatewayLanClientsSensor(
                         coordinator,
                         client,
                         entry.entry_id,
-                        link,
+                        network,
                         device_name=device_name,
                     )
                 )
                 pending_unique_ids.add(unique_id)
 
-        for network in coordinator_data.lan_networks:
-            key = lan_interface_key(network)
-            if key in known_lan:
-                continue
-            known_lan.add(key)
-            unique_id = build_lan_unique_id(entry.entry_id, network)
-            if unique_id in pending_unique_ids or _should_skip(unique_id):
-                continue
-            new_entities.append(
-                UniFiGatewayLanClientsSensor(
-                    coordinator,
-                    client,
-                    entry.entry_id,
-                    network,
-                    device_name=device_name,
+            for wlan in coordinator_data.wlans:
+                ssid_key = wlan_interface_key(wlan)
+                if ssid_key in known_wlan:
+                    continue
+                known_wlan.add(ssid_key)
+                unique_id = build_wlan_unique_id(entry.entry_id, wlan)
+                if unique_id in pending_unique_ids or _should_skip(unique_id):
+                    continue
+                new_entities.append(
+                    UniFiGatewayWlanClientsSensor(
+                        coordinator,
+                        client,
+                        entry.entry_id,
+                        wlan,
+                        device_name=device_name,
+                    )
                 )
-            )
-            pending_unique_ids.add(unique_id)
+                pending_unique_ids.add(unique_id)
 
-        for wlan in coordinator_data.wlans:
-            ssid_key = wlan_interface_key(wlan)
-            if ssid_key in known_wlan:
-                continue
-            known_wlan.add(ssid_key)
-            unique_id = build_wlan_unique_id(entry.entry_id, wlan)
-            if unique_id in pending_unique_ids or _should_skip(unique_id):
-                continue
-            new_entities.append(
-                UniFiGatewayWlanClientsSensor(
-                    coordinator,
-                    client,
-                    entry.entry_id,
-                    wlan,
-                    device_name=device_name,
-                )
-            )
-            pending_unique_ids.add(unique_id)
+            # VPN usage sensors derived from network/VPN server associations
+            for network in coordinator_data.networks:
+                purpose = str(
+                    network.get("purpose") or network.get("role") or ""
+                ).strip().lower()
+                if purpose == "wan":
+                    continue
 
-        # VPN usage sensors derived from network/VPN server associations
-        for network in coordinator_data.networks:
-            purpose = str(network.get("purpose") or network.get("role") or "").strip().lower()
-            if purpose == "wan":
-                continue
+                vlan = network.get("vlan")
+                if isinstance(vlan, int) or (
+                    isinstance(vlan, str) and vlan.isdigit()
+                ):
+                    continue
 
-            vlan = network.get("vlan")
-            if isinstance(vlan, int) or (isinstance(vlan, str) and vlan.isdigit()):
-                continue
+                net_id = network.get("_id") or network.get("id")
+                server: Optional[Dict[str, Any]] = None
 
-            net_id = network.get("_id") or network.get("id")
-            server: Optional[Dict[str, Any]] = None
-
-            if net_id:
-                try:
-                    candidates = client.get_vpn_servers(net_id=str(net_id))
+                if net_id:
+                    candidates = await _async_lookup_vpn_servers(str(net_id))
                     if candidates:
                         server = candidates[0]
-                except APIError as err:
-                    _LOGGER.debug("VPN lookup for network %s failed: %s", net_id, err)
 
-            if server is None:
-                server = {
-                    "id": net_id,
-                    "name": network.get("name") or "VPN",
-                    "vpn_type": network.get("vpn_type") or "Unknown",
-                    "linked_network_id": net_id,
-                    "_raw": {"source": "network_only"},
-                }
+                if server is None:
+                    server = {
+                        "id": net_id,
+                        "name": network.get("name") or "VPN",
+                        "vpn_type": network.get("vpn_type") or "Unknown",
+                        "linked_network_id": net_id,
+                        "_raw": {"source": "network_only"},
+                    }
 
-            vpn_type_raw = server.get("vpn_type") or network.get("vpn_type") or ""
-            protocol_type, mode = _parse_protocol_and_mode(vpn_type_raw)
-            if (
-                vpn_type_raw.strip().lower() in {"", "unknown"}
-                and protocol_type == "unknown"
-                and mode == "unknown"
-            ):
-                continue
-
-            entity_key = build_vpn_server_unique_id(entry.entry_id, server, network)
-            key = vpn_instance_key({"id": entity_key})
-            if key in known_vpn:
-                continue
-            known_vpn.add(key)
-
-            if entity_key in pending_unique_ids or _should_skip(entity_key):
-                continue
-
-            new_entities.append(
-                UniFiGatewayVpnUsageSensor(
-                    coordinator,
-                    client,
-                    entry.entry_id,
-                    base_name,
-                    server,
-                    network,
-                    unique_id=entity_key,
+                vpn_type_raw = (
+                    server.get("vpn_type") or network.get("vpn_type") or ""
                 )
-            )
-            pending_unique_ids.add(entity_key)
+                protocol_type, mode = _parse_protocol_and_mode(vpn_type_raw)
+                if (
+                    vpn_type_raw.strip().lower() in {"", "unknown"}
+                    and protocol_type == "unknown"
+                    and mode == "unknown"
+                ):
+                    continue
 
-        if new_entities:
-            names = [
-                getattr(entity, "name", entity.__class__.__name__)
-                for entity in new_entities
-            ]
-            _LOGGER.debug(
-                "Adding %s dynamic sensors for entry %s: %s",
-                len(new_entities),
-                entry.entry_id,
-                names,
-            )
-            async_add_entities(new_entities, update_before_add=True)
-        else:
-            _LOGGER.debug(
-                "No new dynamic sensors discovered for entry %s", entry.entry_id
-            )
+                entity_key = build_vpn_server_unique_id(entry.entry_id, server, network)
+                key = vpn_instance_key({"id": entity_key})
+                if key in known_vpn:
+                    continue
+                known_vpn.add(key)
 
-    _sync_dynamic()
-    entry.async_on_unload(coordinator.async_add_listener(_sync_dynamic))
+                if entity_key in pending_unique_ids or _should_skip(entity_key):
+                    continue
+
+                new_entities.append(
+                    UniFiGatewayVpnUsageSensor(
+                        coordinator,
+                        client,
+                        entry.entry_id,
+                        base_name,
+                        server,
+                        network,
+                        unique_id=entity_key,
+                    )
+                )
+                pending_unique_ids.add(entity_key)
+
+            if new_entities:
+                names = [
+                    getattr(entity, "name", entity.__class__.__name__)
+                    for entity in new_entities
+                ]
+                _LOGGER.debug(
+                    "Adding %s dynamic sensors for entry %s: %s",
+                    len(new_entities),
+                    entry.entry_id,
+                    names,
+                )
+                async_add_entities(new_entities, update_before_add=True)
+            else:
+                _LOGGER.debug(
+                    "No new dynamic sensors discovered for entry %s",
+                    entry.entry_id,
+                )
+
+    def _handle_coordinator_update() -> None:
+        hass.async_create_task(_async_sync_dynamic())
+
+    await _async_sync_dynamic()
+    entry.async_on_unload(coordinator.async_add_listener(_handle_coordinator_update))
     await coordinator.async_request_refresh()
 
 
@@ -644,16 +668,6 @@ def build_vpn_server_unique_id(
     return build_vpn_unique_id(entry_id, pseudo, "clients")
 
 
-def _count_items(value: Any) -> int:
-    if isinstance(value, list):
-        return len(value)
-    if isinstance(value, dict):
-        return len(value)
-    if isinstance(value, (int, float)):
-        return int(value)
-    return 0
-
-
 def _is_connected(record: Any) -> bool:
     if isinstance(record, dict):
         for key in ("connected", "active", "up"):
@@ -674,41 +688,6 @@ def _is_connected(record: Any) -> bool:
     if isinstance(record, (int, float)):
         return bool(record)
     return record is True
-
-
-def _count_connected_items(value: Any) -> int:
-    if isinstance(value, list):
-        return len([item for item in value if _is_connected(item)])
-    if isinstance(value, dict):
-        return len([item for item in value.values() if _is_connected(item)])
-    if isinstance(value, (int, float)):
-        return int(value)
-    return 0
-
-
-def _first_non_empty(record: Dict[str, Any], keys: Iterable[str]) -> Optional[str]:
-    for key in keys:
-        value = record.get(key)
-        if value in (None, "", [], {}):
-            continue
-        if isinstance(value, str):
-            cleaned = value.strip()
-            if cleaned:
-                return cleaned
-            continue
-        if isinstance(value, list):
-            flattened = [
-                str(item).strip()
-                for item in value
-                if item not in (None, "", [], {})
-            ]
-            if flattened:
-                return ", ".join(flattened)
-            continue
-        return str(value)
-    return None
-
-
 def _wan_identifier_candidates(
     link_id: str, link_name: str, link: Dict[str, Any]
 ) -> set[str]:
@@ -848,7 +827,7 @@ def _extract_wan_value_with_source(
     if link:
         value = _value_from_record(link, keys)
         if value:
-            return value, "link"
+            return value, "wan_link"
     if health:
         value = _value_from_record(health, keys)
         if value:
@@ -2084,6 +2063,9 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         self._attrs["Online users"] = v2_for_net
         self._update_connected_clients(connected_records)
 
+    async def async_update(self) -> None:
+        await self.hass.async_add_executor_job(self.update)
+
     def _update_connected_clients(
         self, primary_records: Optional[Iterable[Mapping[str, Any]]] = None
     ) -> None:
@@ -2346,24 +2328,29 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        link = self._link() or {}
-        health = self._wan_health_record() or {}
+        link = self._link()
+        health = self._wan_health_record()
+        link_dict = link or {}
+        health_dict = health or {}
+        ip, ip_source = _extract_wan_value_with_source(link, health, _WAN_IPV4_KEYS)
+        ipv6, ipv6_source = _extract_wan_value_with_source(
+            link, health, _WAN_IPV6_KEYS
+        )
         attrs = {
             "name": self._link_name,
-            "type": link.get("type") or link.get("kind"),
+            "type": link_dict.get("type") or link_dict.get("kind"),
             "isp": _value_from_record(
-                link,
+                link_dict,
                 ("isp", "provider", "isp_name", "organization"),
             ),
-            "ip": _value_from_record(
-                link,
-                ("ip", "wan_ip", "ipv4", "internet_ip"),
-            ),
+            "ip": ip,
+            "ip_source": ip_source,
         }
-        attrs["ipv6"] = _extract_wan_value(link, health, _WAN_IPV6_KEYS)
+        attrs["ipv6"] = ipv6
+        attrs["ipv6_source"] = ipv6_source
         if not attrs.get("isp"):
             attrs["isp"] = _value_from_record(
-                health,
+                health_dict,
                 (
                     "isp",
                     "provider",
@@ -2374,21 +2361,21 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
             )
         if not attrs.get("ip"):
             attrs["ip"] = _value_from_record(
-                health,
+                health_dict,
                 ("wan_ip", "internet_ip", "ip", "public_ip", "external_ip"),
             )
         attrs["gateway_ip"] = _value_from_record(
-            health,
+            health_dict,
             ("gateway_ip", "wan_gateway", "gw_ip", "gateway"),
         )
         last_update_raw = _value_from_record(
-            health,
+            health_dict,
             ("datetime", "time", "last_seen", "last_update", "updated_at"),
         )
         attrs["last_update"] = _parse_datetime_24h(last_update_raw)
         attrs["last_update_raw"] = last_update_raw
         attrs["uptime"] = _value_from_record(
-            health,
+            health_dict,
             ("uptime", "uptime_status", "wan_uptime", "uptime_seconds"),
         )
         attrs["status_source"] = self._last_status_source
