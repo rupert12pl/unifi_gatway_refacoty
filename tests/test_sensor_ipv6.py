@@ -104,6 +104,30 @@ def test_wan_ipv6_sensor_reports_details():
     assert attrs["prefix"] == "2001:db8::/64"
 
 
+def test_wan_ipv6_sensor_ignores_placeholder_values():
+    link = {"id": "wan1", "name": "WAN", "wan_ipv6": "Unknown"}
+    health = {
+        "id": "wan1",
+        "wan_ipv6": "2001:db8::2",
+        "gateway_ipv6": "fe80::2",
+        "wan_ipv6_prefix": "2001:db8::/60",
+    }
+    data = _make_data(wan_links=[link], wan_health=[health])
+    coordinator = SimpleNamespace(data=data)
+    sensor = UniFiGatewayWanIpv6Sensor(
+        coordinator, _StubClient(), "entry-id", dict(link)
+    )
+
+    value = sensor.native_value
+
+    assert value == "2001:db8::2"
+    attrs = sensor.extra_state_attributes
+    assert attrs["last_ipv6"] == "2001:db8::2"
+    assert attrs["source"] == "wan_health"
+    assert attrs["gateway_ipv6"] == "fe80::2"
+    assert attrs["prefix"] == "2001:db8::/60"
+
+
 def test_wan_subsystem_sensor_includes_ipv6_attribute():
     data = _make_data(
         health_by_subsystem={"wan": {"status": "ok", "ipv6": "2001:db8::10"}},

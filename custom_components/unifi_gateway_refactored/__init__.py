@@ -6,7 +6,7 @@ import logging
 from datetime import timedelta
 from functools import partial
 from collections.abc import Mapping
-from typing import Any, Iterable, TYPE_CHECKING
+from typing import Any, Iterable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
     from homeassistant.config_entries import ConfigEntry
@@ -25,6 +25,8 @@ from .const import (
     CONF_VERIFY_SSL,
     CONF_SPEEDTEST_ENTITIES,
     CONF_SPEEDTEST_INTERVAL,
+    CONF_WIFI_GUEST,
+    CONF_WIFI_IOT,
     DATA_RUNNER,
     DATA_UNDO_TIMER,
     DEFAULT_PORT,
@@ -135,6 +137,21 @@ def _resolve_speedtest_interval_seconds(
     return max(0, speedtest_interval_seconds)
 
 
+def _normalize_wifi_option(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        cleaned = str(value).strip()
+        return cleaned or None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
+    cleaned = str(value).strip()
+    return cleaned or None
+
+
 async def async_setup(hass: "HomeAssistant", config: "ConfigType") -> bool:
     """Set up the UniFi Gateway Dashboard Analyzer component."""
     _LOGGER.debug("Setting up UniFi Gateway Dashboard Analyzer integration")
@@ -173,6 +190,13 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
     options = entry.options or {}
 
     speedtest_interval_seconds = _resolve_speedtest_interval_seconds(options, entry.data)
+
+    wifi_guest = _normalize_wifi_option(options.get(CONF_WIFI_GUEST))
+    if wifi_guest is None:
+        wifi_guest = _normalize_wifi_option(entry.data.get(CONF_WIFI_GUEST))
+    wifi_iot = _normalize_wifi_option(options.get(CONF_WIFI_IOT))
+    if wifi_iot is None:
+        wifi_iot = _normalize_wifi_option(entry.data.get(CONF_WIFI_IOT))
 
     try:
         client: UniFiOSClient = await hass.async_add_executor_job(client_factory)
@@ -217,6 +241,9 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
         "speedtest_entities": list(entity_ids),
         "speedtest_interval_minutes": interval_minutes,
         "device_name": base_name,
+        "wifi_guest": wifi_guest,
+        "wifi_iot": wifi_iot,
+        "wifi_overrides": {"guest": wifi_guest, "iot": wifi_iot},
     }
 
     async def _dispatch_result(

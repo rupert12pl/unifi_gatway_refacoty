@@ -108,6 +108,7 @@ async def async_setup_entry(
                 label,
                 icon,
                 device_name=device_name,
+                wifi_overrides=data.get("wifi_overrides"),
             )
         )
     static_entities.append(
@@ -579,6 +580,98 @@ def wlan_interface_key(wlan: Dict[str, Any]) -> str:
     ssid = wlan.get("name") or wlan.get("ssid") or wlan.get("_id") or wlan.get("id") or "wlan"
     return _sanitize_stable_key(str(ssid))
 
+
+def _normalize_wifi_name(value: Optional[Any]) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+@dataclass(slots=True)
+class _WlanClientSummary:
+    counts: Dict[str, int]
+    names: Dict[str, str]
+    total: int
+
+
+def _summarize_wlan_clients(data: Optional[UniFiGatewayData]) -> _WlanClientSummary:
+    counts: Dict[str, int] = {}
+    names: Dict[str, str] = {}
+    if not data:
+        return _WlanClientSummary(counts, names, 0)
+
+    for wlan in data.wlans:
+        if not isinstance(wlan, Mapping):
+            continue
+        key = wlan_interface_key(wlan)
+        name = (
+            wlan.get("name")
+            or wlan.get("ssid")
+            or wlan.get("_id")
+            or wlan.get("id")
+            or key
+        )
+        names[key] = str(name)
+
+    for client in data.clients:
+        if not isinstance(client, Mapping):
+            continue
+        ssid = (
+            client.get("essid")
+            or client.get("wifi_network")
+            or client.get("ap_essid")
+            or client.get("ssid")
+        )
+        if not ssid:
+            continue
+        key = _sanitize_stable_key(str(ssid))
+        counts[key] = counts.get(key, 0) + 1
+        if key not in names:
+            names[key] = str(ssid)
+
+    total = sum(counts.values())
+    return _WlanClientSummary(counts, names, total)
+
+
+def _resolve_wlan_user_count(
+    summary: _WlanClientSummary, target: Optional[str]
+) -> Tuple[int, Optional[str]]:
+    if target is None:
+        return 0, None
+
+    candidate = target.strip()
+    if not candidate:
+        return 0, None
+
+    sanitized_target = _sanitize_stable_key(candidate)
+    if sanitized_target in summary.counts:
+        return summary.counts[sanitized_target], sanitized_target
+
+    lowered = candidate.lower()
+    for key, name in summary.names.items():
+        if name.lower() == lowered:
+            return summary.counts.get(key, 0), key
+
+    sanitized_matches = [
+        key for key in summary.counts if key.startswith(sanitized_target)
+    ]
+    if len(sanitized_matches) == 1:
+        key = sanitized_matches[0]
+        return summary.counts.get(key, 0), key
+
+    prefix_matches = [
+        key for key, name in summary.names.items() if name.lower().startswith(lowered)
+    ]
+    if len(prefix_matches) == 1:
+        key = prefix_matches[0]
+        return summary.counts.get(key, 0), key
+
+    return 0, None
+
+
 def vpn_instance_key(tunnel: Dict[str, Any]) -> str:
     token = (
         tunnel.get("id")
@@ -755,6 +848,16 @@ def _find_wan_health_record(
     return fallback
 
 
+_PLACEHOLDER_STRINGS: tuple[str, ...] = (
+    "unknown",
+    "none",
+    "null",
+    "n/a",
+    "na",
+    "not available",
+)
+
+
 def _value_from_record(record: Optional[Dict[str, Any]], keys: Iterable[str]) -> Optional[Any]:
     if not record:
         return None
@@ -764,7 +867,7 @@ def _value_from_record(record: Optional[Dict[str, Any]], keys: Iterable[str]) ->
         value = record.get(key)
         if isinstance(value, str):
             cleaned = value.strip()
-            if cleaned:
+            if cleaned and cleaned.lower() not in _PLACEHOLDER_STRINGS:
                 return cleaned
         elif value not in (None, [], {}):
             return value
@@ -1620,6 +1723,7 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
         icon: str,
         *,
         device_name: Optional[str] = None,
+        wifi_overrides: Optional[Mapping[str, Optional[str]]] = None,
     ) -> None:
         unique_id = f"unifigw_{client.instance_key()}_{subsystem}"
         super().__init__(
@@ -1632,6 +1736,9 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
         self._subsystem = subsystem
         self._attr_icon = icon
         self._default_icon = icon
+        overrides = wifi_overrides or {}
+        self._wifi_guest_name = _normalize_wifi_name(overrides.get("guest"))
+        self._wifi_iot_name = _normalize_wifi_name(overrides.get("iot"))
 
     @property
     def native_value(self) -> Optional[Any]:
@@ -1694,6 +1801,18 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
             total = sum(normalized_counts.values())
             attrs["num_user_total"] = total
             attrs["user_total"] = total
+        override_counts = None
+        if self._subsystem == "wlan":
+            override_counts = self._compute_wlan_user_counts()
+        if override_counts is not None:
+            attrs["num_user"] = override_counts["num_user"]
+            attrs["user"] = override_counts["num_user"]
+            attrs["num_guest"] = override_counts["guest"]
+            attrs["user_guest"] = override_counts["guest"]
+            attrs["num_iot"] = override_counts["iot"]
+            attrs["user_iot"] = override_counts["iot"]
+            attrs["num_user_total"] = override_counts["total"]
+            attrs["user_total"] = override_counts["total"]
         if self._subsystem == "wan":
             data = self.coordinator.data
             ipv6_value: Optional[str] = None
@@ -1712,6 +1831,28 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
             attrs["ipv6"] = ipv6_value
         attrs.update(self._controller_attrs())
         return attrs
+
+    def _compute_wlan_user_counts(self) -> Optional[Dict[str, int]]:
+        if not (self._wifi_guest_name or self._wifi_iot_name):
+            return None
+
+        data = self.coordinator.data
+        if not data:
+            return None
+
+        summary = _summarize_wlan_clients(data)
+        guest_count, _guest_key = _resolve_wlan_user_count(
+            summary, self._wifi_guest_name
+        )
+        iot_count, _iot_key = _resolve_wlan_user_count(summary, self._wifi_iot_name)
+        num_user = summary.total - guest_count - iot_count
+        total = guest_count + iot_count + num_user
+        return {
+            "num_user": num_user,
+            "guest": guest_count,
+            "iot": iot_count,
+            "total": total,
+        }
 
 
 

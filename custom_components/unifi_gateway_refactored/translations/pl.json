@@ -20,7 +20,9 @@
           "use_proxy_prefix": "Użyj prefiksu /proxy/network",
           "timeout": "Limit czasu żądania HTTP (sekundy)",
           "speedtest_interval": "Interwał speedtestu (minuty)",
-          "speedtest_entities": "Identyfikatory encji speedtestu (oddzielone przecinkami)"
+          "speedtest_entities": "Identyfikatory encji speedtestu (oddzielone przecinkami)",
+          "wifi_guest": "SSID sieci WiFi dla gości",
+          "wifi_iot": "SSID sieci WiFi dla IoT"
         }
       }
     },
@@ -45,7 +47,9 @@
           "use_proxy_prefix": "Użyj prefiksu /proxy/network",
           "timeout": "Limit czasu żądania HTTP (sekundy)",
           "speedtest_interval": "Interwał speedtestu (minuty)",
-          "speedtest_entities": "Identyfikatory encji speedtestu (oddzielone przecinkami)"
+          "speedtest_entities": "Identyfikatory encji speedtestu (oddzielone przecinkami)",
+          "wifi_guest": "SSID sieci WiFi dla gości",
+          "wifi_iot": "SSID sieci WiFi dla IoT"
         }
       }
     },

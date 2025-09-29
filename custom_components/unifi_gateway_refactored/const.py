@@ -15,6 +15,8 @@ CONF_SPEEDTEST_INTERVAL = "speedtest_interval"
 # Legacy option key kept for backwards compatibility with pre-0.6.1 releases
 LEGACY_CONF_SPEEDTEST_INTERVAL_MIN = "speedtest_interval_minutes"
 CONF_SPEEDTEST_ENTITIES = "speedtest_entities"
+CONF_WIFI_GUEST = "wifi_guest"
+CONF_WIFI_IOT = "wifi_iot"
 
 DEFAULT_PORT = 443
 DEFAULT_SITE = "default"
