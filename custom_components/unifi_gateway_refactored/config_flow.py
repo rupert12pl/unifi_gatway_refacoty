@@ -225,7 +225,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         adv_schema = vol.Schema(
             {
-                vol.Optional(CONF_PORT, default=self._cached.get(CONF_PORT, DEFAULT_PORT)): int,
+                vol.Optional(
+                    CONF_PORT,
+                    default=self._cached.get(CONF_PORT, DEFAULT_PORT),
+                ): vol.All(vol.Coerce(int), vol.Clamp(min=1, max=65535)),
                 vol.Optional(
                     CONF_SITE_ID,
                     default=self._cached.get(CONF_SITE_ID, DEFAULT_SITE),
@@ -239,7 +242,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(
                     CONF_TIMEOUT,
                     default=self._cached.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
-                ): int,
+                ): vol.All(vol.Coerce(int), vol.Clamp(min=1)),
                 vol.Optional(
                     CONF_SPEEDTEST_INTERVAL,
                     default=self._seconds_to_minutes(
@@ -337,7 +340,10 @@ class OptionsFlow(config_entries.OptionsFlow):
         schema = vol.Schema(
             {
                 vol.Optional(CONF_HOST, default=current.get(CONF_HOST)): str,
-                vol.Optional(CONF_PORT, default=current.get(CONF_PORT, DEFAULT_PORT)): int,
+                vol.Optional(
+                    CONF_PORT,
+                    default=current.get(CONF_PORT, DEFAULT_PORT),
+                ): vol.All(vol.Coerce(int), vol.Clamp(min=1, max=65535)),
                 vol.Optional(CONF_USERNAME, default=current.get(CONF_USERNAME)): str,
                 vol.Optional(CONF_PASSWORD, default=current.get(CONF_PASSWORD)): str,
                 vol.Optional(CONF_SITE_ID, default=current.get(CONF_SITE_ID, DEFAULT_SITE)): str,
@@ -354,7 +360,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_TIMEOUT,
                     default=current.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
-                ): int,
+                ): vol.All(vol.Coerce(int), vol.Clamp(min=1)),
                 vol.Optional(
                     CONF_SPEEDTEST_INTERVAL,
                     default=interval_default,
