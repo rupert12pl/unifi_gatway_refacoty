@@ -358,7 +358,7 @@ async def _async_migrate_interface_unique_ids(
         identifiers = _wan_identifier_candidates(link_id, link_name, link)
         canonical = (sorted(identifiers) or [link_id])[0]
         old_key = hashlib.sha256(canonical.encode()).hexdigest()[:12]
-        for suffix in ("status", "ip", "isp"):
+        for suffix in ("status", "ip", "ipv6", "isp"):
             old_uid = f"{instance_prefix}_wan_{old_key}_{suffix}"
             new_uid = build_wan_unique_id(entry.entry_id, link, suffix)
             mapping[old_uid] = new_uid

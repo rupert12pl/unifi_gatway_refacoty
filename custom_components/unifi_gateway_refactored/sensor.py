@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from functools import lru_cache
+from functools import lru_cache, partial
 import html
 import hashlib
 import logging
@@ -197,187 +198,197 @@ async def async_setup_entry(
     known_lan: set[str] = set()
     known_wlan: set[str] = set()
     known_vpn: set[str] = set()
+    sync_lock = asyncio.Lock()
 
-    def _sync_dynamic() -> None:
-        _LOGGER.debug(
-            "Synchronizing dynamic UniFi Gateway sensors for entry %s",
-            entry.entry_id,
-        )
-        coordinator_data: Optional[UniFiGatewayData] = coordinator.data
-        if coordinator_data is None:
+    async def _async_sync_dynamic() -> None:
+        async with sync_lock:
             _LOGGER.debug(
-                "Coordinator data unavailable during sync for entry %s", entry.entry_id
+                "Synchronizing dynamic UniFi Gateway sensors for entry %s",
+                entry.entry_id,
             )
-            return
-
-        new_entities: List[SensorEntity] = []
-
-        controller_site: Optional[str] = None
-        controller_info = getattr(coordinator_data, "controller", None)
-        if isinstance(controller_info, dict):
-            site_candidate = controller_info.get("site")
-            if isinstance(site_candidate, str) and site_candidate:
-                controller_site = site_candidate
-
-        entity_registry = er.async_get(hass)
-        pending_unique_ids: set[str] = set()
-
-        def _should_skip(unique_id: str) -> bool:
-            entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
-            if not entity_id:
-                return False
-            entry_entry = entity_registry.async_get(entity_id)
-            if entry_entry and entry_entry.config_entry_id != entry.entry_id:
-                _LOGGER.warning(
-                    "Skipping entity with unique_id %s for entry %s; already owned by %s",
-                    unique_id,
+            coordinator_data: Optional[UniFiGatewayData] = coordinator.data
+            if coordinator_data is None:
+                _LOGGER.debug(
+                    "Coordinator data unavailable during sync for entry %s",
                     entry.entry_id,
-                    entity_id,
                 )
-                return True
-            return False
+                return
 
-        for link in coordinator_data.wan_links:
-            link_key = wan_interface_key(link)
-            if link_key in known_wan:
-                continue
-            known_wan.add(link_key)
-            for cls, suffix in (
-                (UniFiGatewayWanStatusSensor, "status"),
-                (UniFiGatewayWanIpSensor, "ip"),
-                (UniFiGatewayWanIspSensor, "isp"),
-            ):
-                unique_id = build_wan_unique_id(entry.entry_id, link, suffix)
+            new_entities: List[SensorEntity] = []
+
+            entity_registry = er.async_get(hass)
+            pending_unique_ids: set[str] = set()
+
+            def _should_skip(unique_id: str) -> bool:
+                entity_id = entity_registry.async_get_entity_id(
+                    "sensor", DOMAIN, unique_id
+                )
+                if not entity_id:
+                    return False
+                entry_entry = entity_registry.async_get(entity_id)
+                if entry_entry and entry_entry.config_entry_id != entry.entry_id:
+                    _LOGGER.warning(
+                        "Skipping entity with unique_id %s for entry %s; already owned by %s",
+                        unique_id,
+                        entry.entry_id,
+                        entity_id,
+                    )
+                    return True
+                return False
+
+            for link in coordinator_data.wan_links:
+                link_key = wan_interface_key(link)
+                if link_key in known_wan:
+                    continue
+                known_wan.add(link_key)
+                for cls, suffix in (
+                    (UniFiGatewayWanStatusSensor, "status"),
+                    (UniFiGatewayWanIpSensor, "ip"),
+                    (UniFiGatewayWanIpv6Sensor, "ipv6"),
+                    (UniFiGatewayWanIspSensor, "isp"),
+                ):
+                    unique_id = build_wan_unique_id(entry.entry_id, link, suffix)
+                    if unique_id in pending_unique_ids or _should_skip(unique_id):
+                        continue
+                    new_entities.append(
+                        cls(
+                            coordinator,
+                            client,
+                            entry.entry_id,
+                            link,
+                            device_name=device_name,
+                        )
+                    )
+                    pending_unique_ids.add(unique_id)
+
+            for network in coordinator_data.lan_networks:
+                key = lan_interface_key(network)
+                if key in known_lan:
+                    continue
+                known_lan.add(key)
+                unique_id = build_lan_unique_id(entry.entry_id, network)
                 if unique_id in pending_unique_ids or _should_skip(unique_id):
                     continue
                 new_entities.append(
-                    cls(
+                    UniFiGatewayLanClientsSensor(
                         coordinator,
                         client,
                         entry.entry_id,
-                        link,
+                        network,
                         device_name=device_name,
                     )
                 )
                 pending_unique_ids.add(unique_id)
 
-        for network in coordinator_data.lan_networks:
-            key = lan_interface_key(network)
-            if key in known_lan:
-                continue
-            known_lan.add(key)
-            unique_id = build_lan_unique_id(entry.entry_id, network)
-            if unique_id in pending_unique_ids or _should_skip(unique_id):
-                continue
-            new_entities.append(
-                UniFiGatewayLanClientsSensor(
-                    coordinator,
-                    client,
-                    entry.entry_id,
-                    network,
-                    device_name=device_name,
+            for wlan in coordinator_data.wlans:
+                ssid_key = wlan_interface_key(wlan)
+                if ssid_key in known_wlan:
+                    continue
+                known_wlan.add(ssid_key)
+                unique_id = build_wlan_unique_id(entry.entry_id, wlan)
+                if unique_id in pending_unique_ids or _should_skip(unique_id):
+                    continue
+                new_entities.append(
+                    UniFiGatewayWlanClientsSensor(
+                        coordinator,
+                        client,
+                        entry.entry_id,
+                        wlan,
+                        device_name=device_name,
+                    )
                 )
-            )
-            pending_unique_ids.add(unique_id)
+                pending_unique_ids.add(unique_id)
 
-        for wlan in coordinator_data.wlans:
-            ssid_key = wlan_interface_key(wlan)
-            if ssid_key in known_wlan:
-                continue
-            known_wlan.add(ssid_key)
-            unique_id = build_wlan_unique_id(entry.entry_id, wlan)
-            if unique_id in pending_unique_ids or _should_skip(unique_id):
-                continue
-            new_entities.append(
-                UniFiGatewayWlanClientsSensor(
-                    coordinator,
-                    client,
-                    entry.entry_id,
-                    wlan,
-                    device_name=device_name,
+            # VPN usage sensors derived from network/VPN server associations
+            for network in coordinator_data.networks:
+                purpose = (
+                    str(network.get("purpose") or network.get("role") or "")
+                    .strip()
+                    .lower()
                 )
-            )
-            pending_unique_ids.add(unique_id)
+                if purpose == "wan":
+                    continue
 
-        # VPN usage sensors derived from network/VPN server associations
-        for network in coordinator_data.networks:
-            purpose = str(network.get("purpose") or network.get("role") or "").strip().lower()
-            if purpose == "wan":
-                continue
+                vlan = network.get("vlan")
+                if isinstance(vlan, int) or (isinstance(vlan, str) and vlan.isdigit()):
+                    continue
 
-            vlan = network.get("vlan")
-            if isinstance(vlan, int) or (isinstance(vlan, str) and vlan.isdigit()):
-                continue
+                net_id = network.get("_id") or network.get("id")
+                server: Optional[Dict[str, Any]] = None
 
-            net_id = network.get("_id") or network.get("id")
-            server: Optional[Dict[str, Any]] = None
+                if net_id:
+                    try:
+                        candidates = await hass.async_add_executor_job(
+                            partial(client.get_vpn_servers, net_id=str(net_id))
+                        )
+                        if candidates:
+                            server = candidates[0]
+                    except APIError as err:
+                        _LOGGER.debug(
+                            "VPN lookup for network %s failed: %s", net_id, err
+                        )
 
-            if net_id:
-                try:
-                    candidates = client.get_vpn_servers(net_id=str(net_id))
-                    if candidates:
-                        server = candidates[0]
-                except APIError as err:
-                    _LOGGER.debug("VPN lookup for network %s failed: %s", net_id, err)
+                if server is None:
+                    server = {
+                        "id": net_id,
+                        "name": network.get("name") or "VPN",
+                        "vpn_type": network.get("vpn_type") or "Unknown",
+                        "linked_network_id": net_id,
+                        "_raw": {"source": "network_only"},
+                    }
 
-            if server is None:
-                server = {
-                    "id": net_id,
-                    "name": network.get("name") or "VPN",
-                    "vpn_type": network.get("vpn_type") or "Unknown",
-                    "linked_network_id": net_id,
-                    "_raw": {"source": "network_only"},
-                }
+                vpn_type_raw = server.get("vpn_type") or network.get("vpn_type") or ""
+                protocol_type, mode = _parse_protocol_and_mode(vpn_type_raw)
+                if (
+                    vpn_type_raw.strip().lower() in {"", "unknown"}
+                    and protocol_type == "unknown"
+                    and mode == "unknown"
+                ):
+                    continue
 
-            vpn_type_raw = server.get("vpn_type") or network.get("vpn_type") or ""
-            protocol_type, mode = _parse_protocol_and_mode(vpn_type_raw)
-            if (
-                vpn_type_raw.strip().lower() in {"", "unknown"}
-                and protocol_type == "unknown"
-                and mode == "unknown"
-            ):
-                continue
+                entity_key = build_vpn_server_unique_id(entry.entry_id, server, network)
+                key = vpn_instance_key({"id": entity_key})
+                if key in known_vpn:
+                    continue
+                known_vpn.add(key)
 
-            entity_key = build_vpn_server_unique_id(entry.entry_id, server, network)
-            key = vpn_instance_key({"id": entity_key})
-            if key in known_vpn:
-                continue
-            known_vpn.add(key)
+                if entity_key in pending_unique_ids or _should_skip(entity_key):
+                    continue
 
-            if entity_key in pending_unique_ids or _should_skip(entity_key):
-                continue
-
-            new_entities.append(
-                UniFiGatewayVpnUsageSensor(
-                    coordinator,
-                    client,
-                    entry.entry_id,
-                    base_name,
-                    server,
-                    network,
-                    unique_id=entity_key,
+                new_entities.append(
+                    UniFiGatewayVpnUsageSensor(
+                        coordinator,
+                        client,
+                        entry.entry_id,
+                        base_name,
+                        server,
+                        network,
+                        unique_id=entity_key,
+                    )
                 )
-            )
-            pending_unique_ids.add(entity_key)
+                pending_unique_ids.add(entity_key)
 
-        if new_entities:
-            names = [
-                getattr(entity, "name", entity.__class__.__name__)
-                for entity in new_entities
-            ]
-            _LOGGER.debug(
-                "Adding %s dynamic sensors for entry %s: %s",
-                len(new_entities),
-                entry.entry_id,
-                names,
-            )
-            async_add_entities(new_entities, update_before_add=True)
-        else:
-            _LOGGER.debug(
-                "No new dynamic sensors discovered for entry %s", entry.entry_id
-            )
+            if new_entities:
+                names = [
+                    getattr(entity, "name", entity.__class__.__name__)
+                    for entity in new_entities
+                ]
+                _LOGGER.debug(
+                    "Adding %s dynamic sensors for entry %s: %s",
+                    len(new_entities),
+                    entry.entry_id,
+                    names,
+                )
+                async_add_entities(new_entities, update_before_add=True)
+            else:
+                _LOGGER.debug(
+                    "No new dynamic sensors discovered for entry %s", entry.entry_id
+                )
 
-    _sync_dynamic()
+    def _sync_dynamic() -> None:
+        hass.async_create_task(_async_sync_dynamic())
+
+    await _async_sync_dynamic()
     entry.async_on_unload(coordinator.async_add_listener(_sync_dynamic))
     await coordinator.async_request_refresh()
 
@@ -789,6 +800,79 @@ def _value_from_record(record: Optional[Dict[str, Any]], keys: Iterable[str]) ->
         elif value not in (None, [], {}):
             return value
     return None
+
+
+_WAN_IPV4_KEYS: tuple[str, ...] = (
+    "ip",
+    "wan_ip",
+    "ipv4",
+    "internet_ip",
+    "public_ip",
+    "external_ip",
+)
+
+
+_WAN_IPV6_KEYS: tuple[str, ...] = (
+    "ipv6",
+    "wan_ipv6",
+    "internet_ipv6",
+    "public_ipv6",
+    "external_ipv6",
+    "ip6",
+    "ip_v6",
+    "wan_ip6",
+    "wan_ipv6_address",
+    "wan_ipv6_ip",
+)
+
+
+_WAN_GATEWAY_IPV6_KEYS: tuple[str, ...] = (
+    "gateway_ipv6",
+    "wan_gateway_ipv6",
+    "gw_ipv6",
+    "gateway_v6",
+    "wan_gateway_ip6",
+    "wan_ipv6_gateway",
+)
+
+
+_WAN_IPV6_PREFIX_KEYS: tuple[str, ...] = (
+    "wan_ipv6_prefix",
+    "ipv6_prefix",
+    "prefix_ipv6",
+    "wan_ipv6_subnet",
+    "subnet_ipv6",
+    "wan_prefix_ipv6",
+    "ipv6_network",
+    "ipv6_cidr",
+    "wan_ipv6_cidr",
+    "wan_ipv6_network",
+)
+
+
+def _extract_wan_value_with_source(
+    link: Optional[Dict[str, Any]],
+    health: Optional[Dict[str, Any]],
+    keys: Iterable[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    if link:
+        value = _value_from_record(link, keys)
+        if value:
+            return value, "link"
+    if health:
+        value = _value_from_record(health, keys)
+        if value:
+            return value, "wan_health"
+    return None, None
+
+
+def _extract_wan_value(
+    link: Optional[Dict[str, Any]],
+    health: Optional[Dict[str, Any]],
+    keys: Iterable[str],
+) -> Optional[str]:
+    value, _ = _extract_wan_value_with_source(link, health, keys)
+    return value
 
 
 def _coerce_int(value: Any) -> Optional[int]:
@@ -1641,6 +1725,22 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
             total = sum(normalized_counts.values())
             attrs["num_user_total"] = total
             attrs["user_total"] = total
+        if self._subsystem == "wan":
+            data = self.coordinator.data
+            ipv6_value: Optional[str] = None
+            if record:
+                ipv6_value = _value_from_record(record, _WAN_IPV6_KEYS)
+            if not ipv6_value and data:
+                for link in data.wan_links:
+                    ipv6_value = _value_from_record(link, _WAN_IPV6_KEYS)
+                    if ipv6_value:
+                        break
+                if not ipv6_value:
+                    for health_record in data.wan_health:
+                        ipv6_value = _value_from_record(health_record, _WAN_IPV6_KEYS)
+                        if ipv6_value:
+                            break
+            attrs["ipv6"] = ipv6_value
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -1882,6 +1982,12 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
             "manufacturer": "Ubiquiti Networks",
             "name": self._base_name,
         }
+
+    async def async_update(self) -> None:
+        hass = self.hass
+        if hass is None:
+            return
+        await hass.async_add_executor_job(self.update)
 
     @Throttle(VPN_MIN_TIME_BETWEEN_UPDATES)
     def update(self) -> None:
@@ -2270,6 +2376,7 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
                 ("ip", "wan_ip", "ipv4", "internet_ip"),
             ),
         }
+        attrs["ipv6"] = _extract_wan_value(link, health, _WAN_IPV6_KEYS)
         if not attrs.get("isp"):
             attrs["isp"] = _value_from_record(
                 health,
@@ -2335,24 +2442,9 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
 
     @property
     def native_value(self) -> Optional[str]:
-        ip = None
-        source: Optional[str] = None
         link = self._link()
-        if link:
-            ip = _value_from_record(
-                link,
-                ("ip", "wan_ip", "ipv4", "internet_ip", "public_ip", "external_ip"),
-            )
-            if ip:
-                source = "link"
-        if not ip:
-            health = self._wan_health_record()
-            ip = _value_from_record(
-                health,
-                ("wan_ip", "internet_ip", "ip", "public_ip", "external_ip"),
-            )
-            if ip:
-                source = "wan_health"
+        health = self._wan_health_record()
+        ip, source = _extract_wan_value_with_source(link, health, _WAN_IPV4_KEYS)
         if ip:
             self._last_ip = ip
             self._last_source = source or "unknown"
@@ -2365,6 +2457,7 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
+        link = self._link()
         health = self._wan_health_record() or {}
         attrs = {
             "last_ip": self._last_ip,
@@ -2382,6 +2475,63 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
                     "tunnel_network",
                 ),
             ),
+            "ipv6": _extract_wan_value(link, health, _WAN_IPV6_KEYS),
+        }
+        attrs.update(self._controller_attrs())
+        return attrs
+
+
+class UniFiGatewayWanIpv6Sensor(UniFiGatewayWanSensorBase):
+    _attr_icon = "mdi:ip-network"
+
+    def __init__(
+        self,
+        coordinator: UniFiGatewayDataUpdateCoordinator,
+        client: UniFiOSClient,
+        entry_id: str,
+        link: Dict[str, Any],
+        *,
+        device_name: Optional[str] = None,
+    ) -> None:
+        super().__init__(
+            coordinator,
+            client,
+            entry_id,
+            link,
+            "ipv6",
+            " IPv6",
+            device_name=device_name,
+        )
+        self._last_ipv6: Optional[str] = None
+        self._last_source: Optional[str] = None
+
+    def _wan_health_record(self) -> Optional[Dict[str, Any]]:
+        return _find_wan_health_record(self.coordinator.data, self._identifiers)
+
+    @property
+    def native_value(self) -> Optional[str]:
+        link = self._link()
+        health = self._wan_health_record()
+        ipv6, source = _extract_wan_value_with_source(link, health, _WAN_IPV6_KEYS)
+        if ipv6:
+            self._last_ipv6 = ipv6
+            self._last_source = source or "unknown"
+            return ipv6
+        if self._last_ipv6:
+            if not self._last_source:
+                self._last_source = "cached"
+            return self._last_ipv6
+        return None
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        link = self._link()
+        health = self._wan_health_record() or {}
+        attrs = {
+            "last_ipv6": self._last_ipv6,
+            "source": self._last_source or ("cached" if self._last_ipv6 else None),
+            "gateway_ipv6": _extract_wan_value(link, health, _WAN_GATEWAY_IPV6_KEYS),
+            "prefix": _extract_wan_value(link, health, _WAN_IPV6_PREFIX_KEYS),
         }
         attrs.update(self._controller_attrs())
         return attrs
@@ -2578,9 +2728,16 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
             or self._subnet
         )
         vlan_id = network.get("vlan") if network else None
-        ip_address = _extract_network_ip_address(network)
+        ip_address = _extract_network_ip_address(network, version=4)
+        if not ip_address:
+            ip_address = _extract_network_ip_address(network)
+        if not ip_address:
+            ip_address = _extract_ip_from_value(subnet, version=4)
         if not ip_address:
             ip_address = _extract_ip_from_value(subnet)
+        ipv6_address = _extract_network_ip_address(network, version=6)
+        if not ipv6_address:
+            ipv6_address = _extract_ip_from_value(subnet, version=6)
         if vlan_id is None:
             vlan_id = self._network.get("vlan")
         attrs = {
@@ -2588,6 +2745,7 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
             "subnet": subnet,
             "vlan_id": vlan_id,
             "ip_address": ip_address,
+            "ipv6_address": ipv6_address,
             "client_count": self._last_client_count,
             "ip_leases": leases,
         }
@@ -2651,6 +2809,24 @@ class UniFiGatewayWlanClientsSensor(UniFiGatewaySensorBase):
             or self._wlan.get("wpa_mode"),
             "enabled": self._wlan.get("enabled", True),
         }
+        ipv6_address = None
+        if network:
+            ipv6_address = _extract_network_ip_address(network, version=6)
+        if not ipv6_address:
+            for key in (
+                "ipv6_address",
+                "ipv6_interface",
+                "ipv6",
+                "ip6",
+                "inet6",
+                "wan_ipv6",
+            ):
+                ipv6_address = _extract_ip_from_value(
+                    self._wlan.get(key), version=6
+                )
+                if ipv6_address:
+                    break
+        attrs["ipv6_address"] = ipv6_address
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -2833,7 +3009,7 @@ def _to_ip_network(value: Optional[str]):
         return None
 
 
-def _extract_ip_from_value(value: Any) -> Optional[str]:
+def _extract_ip_from_value(value: Any, *, version: Optional[int] = None) -> Optional[str]:
     if value in (None, ""):
         return None
     if isinstance(value, str):
@@ -2843,34 +3019,44 @@ def _extract_ip_from_value(value: Any) -> Optional[str]:
         if "/" in candidate:
             try:
                 interface = ipaddress.ip_interface(candidate)
+                if version and interface.ip.version != version:
+                    return None
                 return str(interface.ip)
             except ValueError:
                 pass
             prefix, _, _ = candidate.partition("/")
             try:
-                return str(ipaddress.ip_address(prefix.strip()))
+                parsed = ipaddress.ip_address(prefix.strip())
+                if version and parsed.version != version:
+                    return None
+                return str(parsed)
             except ValueError:
                 return None
         try:
-            return str(ipaddress.ip_address(candidate))
+            parsed = ipaddress.ip_address(candidate)
+            if version and parsed.version != version:
+                return None
+            return str(parsed)
         except ValueError:
             return None
     if isinstance(value, (list, tuple)):
         for item in value:
-            result = _extract_ip_from_value(item)
+            result = _extract_ip_from_value(item, version=version)
             if result:
                 return result
         return None
     if isinstance(value, dict):
         for key in ("ip", "address", "gateway", "value"):
-            result = _extract_ip_from_value(value.get(key))
+            result = _extract_ip_from_value(value.get(key), version=version)
             if result:
                 return result
         return None
     return None
 
 
-def _extract_network_ip_address(network: Dict[str, Any]) -> Optional[str]:
+def _extract_network_ip_address(
+    network: Dict[str, Any], *, version: Optional[int] = None
+) -> Optional[str]:
     if not isinstance(network, dict):
         return None
     for key in (
@@ -2883,11 +3069,11 @@ def _extract_network_ip_address(network: Dict[str, Any]) -> Optional[str]:
         "wan_ip",
         "wan_gateway",
     ):
-        result = _extract_ip_from_value(network.get(key))
+        result = _extract_ip_from_value(network.get(key), version=version)
         if result:
             return result
     for key in ("subnet", "ip_subnet", "cidr"):
-        result = _extract_ip_from_value(network.get(key))
+        result = _extract_ip_from_value(network.get(key), version=version)
         if result:
             return result
     return None
