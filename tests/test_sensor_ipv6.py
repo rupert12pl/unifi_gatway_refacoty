@@ -4,6 +4,7 @@ from custom_components.unifi_gateway_refactored.sensor import (
     _extract_ip_from_value,
     UniFiGatewayLanClientsSensor,
     UniFiGatewaySubsystemSensor,
+    UniFiGatewayWanStatusSensor,
     UniFiGatewayWanIpv6Sensor,
     UniFiGatewayWlanClientsSensor,
 )
@@ -15,6 +16,9 @@ class _StubClient:
 
     def get_site(self) -> str:
         return "Site"
+
+    def get_controller_url(self):
+        return None
 
 
 def _make_data(**overrides):
@@ -95,7 +99,7 @@ def test_wan_ipv6_sensor_reports_details():
     assert value == "2001:db8::1"
     attrs = sensor.extra_state_attributes
     assert attrs["last_ipv6"] == "2001:db8::1"
-    assert attrs["source"] == "link"
+    assert attrs["source"] == "wan_link"
     assert attrs["gateway_ipv6"] == "fe80::1"
     assert attrs["prefix"] == "2001:db8::/64"
 
@@ -113,3 +117,30 @@ def test_wan_subsystem_sensor_includes_ipv6_attribute():
     attrs = sensor.extra_state_attributes
 
     assert attrs["ipv6"] == "2001:db8::10"
+
+
+def test_wan_status_sensor_reports_ip_sources():
+    link = {
+        "id": "wan1",
+        "name": "WAN",
+        "status": "up",
+        "wan_ip": "198.51.100.2",
+    }
+    health = {
+        "id": "wan1",
+        "wan_ipv6": "2001:db8::10",
+        "wan_ip": "198.51.100.10",
+    }
+    data = _make_data(wan_links=[link], wan_health=[health])
+    coordinator = SimpleNamespace(data=data)
+    sensor = UniFiGatewayWanStatusSensor(
+        coordinator, _StubClient(), "entry-id", dict(link)
+    )
+
+    assert sensor.native_value == "UP"
+    attrs = sensor.extra_state_attributes
+
+    assert attrs["ip"] == "198.51.100.2"
+    assert attrs["ip_source"] == "wan_link"
+    assert attrs["ipv6"] == "2001:db8::10"
+    assert attrs["ipv6_source"] == "wan_health"
