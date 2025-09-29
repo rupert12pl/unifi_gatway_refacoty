@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
+from time import monotonic
 import uuid
 from typing import Any, Awaitable, Callable, Sequence
 
@@ -158,40 +158,49 @@ class SpeedtestRunner:
         max_wait_s: int = DEFAULT_MAX_WAIT_S,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
     ) -> dict[str, Any]:
-        deadline = time.monotonic() + max_wait_s
         last_status: str | None = None
         attempt = 0
 
-        while time.monotonic() < deadline:
-            attempt += 1
+        async def _poll() -> dict[str, Any]:
+            nonlocal attempt, last_status
+            while True:
+                attempt += 1
 
-            record = await self._async_get_last_speedtest(cache_sec=0)
-            record_status = self._status_text(record)
-            if self._status_indicates_failure(record_status):
-                raise RuntimeError(f"Speedtest completed with failure status: {record_status}")
+                record = await self._async_get_last_speedtest(cache_sec=0)
+                record_status = self._status_text(record)
+                if self._status_indicates_failure(record_status):
+                    raise RuntimeError(
+                        f"Speedtest completed with failure status: {record_status}"
+                    )
 
-            marker = self._record_marker(record)
-            if record and (previous_marker is None or marker != previous_marker):
-                return record
+                marker = self._record_marker(record)
+                if record and (previous_marker is None or marker != previous_marker):
+                    return record
 
-            status_payload = await self._async_get_speedtest_status()
-            status_text = self._status_text(status_payload)
-            if status_text and status_text != last_status:
-                _LOGGER.debug(
-                    "[%s] Speedtest status update -> %s (attempt %d)",
-                    trace_id,
-                    status_text,
-                    attempt,
-                )
-                last_status = status_text
-            if self._status_indicates_failure(status_text):
-                raise RuntimeError(f"Speedtest reported failure status: {status_text}")
+                status_payload = await self._async_get_speedtest_status()
+                status_text = self._status_text(status_payload)
+                if status_text and status_text != last_status:
+                    _LOGGER.debug(
+                        "[%s] Speedtest status update -> %s (attempt %d)",
+                        trace_id,
+                        status_text,
+                        attempt,
+                    )
+                    last_status = status_text
+                if self._status_indicates_failure(status_text):
+                    raise RuntimeError(
+                        f"Speedtest reported failure status: {status_text}"
+                    )
 
-            await asyncio.sleep(poll_interval)
+                await asyncio.sleep(poll_interval)
 
-        raise TimeoutError(
-            f"Speedtest result not available within {max_wait_s}s (trace={trace_id})"
-        )
+        try:
+            async with asyncio.timeout(max_wait_s):
+                return await _poll()
+        except asyncio.TimeoutError as err:
+            raise TimeoutError(
+                f"Speedtest result not available within {max_wait_s}s (trace={trace_id})"
+            ) from err
 
     async def _async_refresh_entities(self) -> None:
         try:
@@ -220,7 +229,7 @@ class SpeedtestRunner:
 
         async with self._lock:
             trace_id = str(uuid.uuid4())
-            start = time.monotonic()
+            start = monotonic()
             error: str | None = None
 
             self.hass.bus.async_fire(
@@ -253,7 +262,7 @@ class SpeedtestRunner:
                     )
                     await self._async_refresh_entities()
 
-                duration_ms = int((time.monotonic() - start) * 1000)
+                duration_ms = int((monotonic() - start) * 1000)
                 self.hass.bus.async_fire(
                     EVT_RUN_END,
                     {
@@ -270,7 +279,7 @@ class SpeedtestRunner:
                     trace_id=trace_id,
                 )
             except Exception as err:
-                duration_ms = int((time.monotonic() - start) * 1000)
+                duration_ms = int((monotonic() - start) * 1000)
                 error = f"{type(err).__name__}: {err}"
                 _LOGGER.error(
                     "Speedtest failed after %dms: %s (trace=%s)",
