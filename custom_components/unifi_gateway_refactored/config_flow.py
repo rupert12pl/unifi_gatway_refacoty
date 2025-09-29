@@ -24,6 +24,8 @@ from .const import (
     CONF_TIMEOUT,
     CONF_SPEEDTEST_INTERVAL,
     CONF_SPEEDTEST_ENTITIES,
+    CONF_WIFI_GUEST,
+    CONF_WIFI_IOT,
     DEFAULT_PORT,
     DEFAULT_SITE,
     DEFAULT_VERIFY_SSL,
@@ -124,6 +126,21 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return DEFAULT_SPEEDTEST_INTERVAL
 
+    @staticmethod
+    def _normalize_optional_text(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            cleaned = str(value).strip()
+            return cleaned or None
+        if isinstance(value, str):
+            cleaned = value.strip()
+            return cleaned or None
+        cleaned = str(value).strip()
+        return cleaned or None
+
     async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         if user_input is not None:
@@ -167,6 +184,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
             self._cached.update(sanitized)
             data = dict(self._cached)
+            for key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
+                if key in data:
+                    normalized = self._normalize_optional_text(data[key])
+                    if normalized is None:
+                        data.pop(key, None)
+                        self._cached.pop(key, None)
+                    else:
+                        data[key] = normalized
+                        self._cached[key] = normalized
             try:
                 await _validate(self.hass, data)
                 await self.async_set_unique_id(f"{data[CONF_HOST]}:{data.get(CONF_PORT, DEFAULT_PORT)}")
@@ -225,6 +251,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_SPEEDTEST_ENTITIES,
                     default=entities_default,
                 ): str,
+                vol.Optional(
+                    CONF_WIFI_GUEST,
+                    default=self._cached.get(CONF_WIFI_GUEST, ""),
+                ): str,
+                vol.Optional(
+                    CONF_WIFI_IOT,
+                    default=self._cached.get(CONF_WIFI_IOT, ""),
+                ): str,
             }
         )
         return self.async_show_form(step_id="advanced", data_schema=adv_schema, errors=errors)
@@ -266,6 +300,9 @@ class OptionsFlow(config_entries.OptionsFlow):
                     cleaned[CONF_SPEEDTEST_ENTITIES] = (
                         collapsed or DEFAULT_SPEEDTEST_ENTITIES
                     )
+            for key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
+                if key in cleaned:
+                    cleaned[key] = ConfigFlow._normalize_optional_text(cleaned[key])
             merged = {**self._entry.data, **self._entry.options, **cleaned}
             if not ConfigFlow._has_auth(merged):
                 errors["base"] = "missing_auth"
@@ -326,6 +363,14 @@ class OptionsFlow(config_entries.OptionsFlow):
                     CONF_SPEEDTEST_ENTITIES,
                     default=entities_default,
                 ): str,
+                vol.Optional(
+                    CONF_WIFI_GUEST,
+                    default=current.get(CONF_WIFI_GUEST),
+                ): vol.Any(str, None),
+                vol.Optional(
+                    CONF_WIFI_IOT,
+                    default=current.get(CONF_WIFI_IOT),
+                ): vol.Any(str, None),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
