@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from datetime import datetime
+import threading
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -135,7 +135,8 @@ def test_concurrent_runs(hass: HomeAssistant, mock_client, mock_coordinator, moc
 
     # Symuluj długo trwający test
     def slow_status():
-        time.sleep(0.1)
+        # Simulate a blocking controller poll without using time.sleep.
+        threading.Event().wait(0.1)
         return {"status": "running"}
 
     mock_client.get_speedtest_status.side_effect = slow_status
