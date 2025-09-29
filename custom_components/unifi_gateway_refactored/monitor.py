@@ -29,7 +29,6 @@ ResultCallback = Callable[[bool, int, str | None, str], Awaitable[None]]
 
 DEFAULT_MAX_WAIT_S = 600
 DEFAULT_POLL_INTERVAL = 5.0
-RETRY_DELAY_S = 5
 
 
 class SpeedtestRunner:
@@ -302,5 +301,4 @@ __all__ = [
     "ResultCallback",
     "DEFAULT_MAX_WAIT_S",
     "DEFAULT_POLL_INTERVAL",
-    "RETRY_DELAY_S",
 ]
