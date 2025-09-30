@@ -213,46 +213,6 @@ class DummySession:
         return DummyResponse(status, payload)
 
 
-class DummyCookie:
-    def __init__(self, value: str) -> None:
-        self.value = value
-
-
-class DummyCookieJar:
-    def __init__(self, cookies: dict[str, DummyCookie]) -> None:
-        self._cookies = cookies
-
-    def filter_cookies(self, url: str) -> dict[str, DummyCookie]:  # pragma: no cover - simple
-        return self._cookies
-
-
-class DummyLoginResponse:
-    def __init__(self, status: int = 200, headers: dict[str, str] | None = None) -> None:
-        self.status = status
-        self.headers = headers or {}
-
-    async def __aenter__(self) -> "DummyLoginResponse":
-        return self
-
-    async def __aexit__(self, *exc: Any) -> None:
-        return None
-
-
-class DummyLoginSession:
-    def __init__(
-        self,
-        response: DummyLoginResponse,
-        cookies: dict[str, DummyCookie] | None = None,
-    ) -> None:
-        self._response = response
-        self.post_calls = 0
-        self.cookie_jar = DummyCookieJar(cookies or {})
-
-    async def post(self, *args: Any, **kwargs: Any) -> DummyLoginResponse:
-        self.post_calls += 1
-        return self._response
-
-
 def test_api_retries_on_server_error(
     monkeypatch: pytest.MonkeyPatch,
     hass,
@@ -270,56 +230,10 @@ def test_api_retries_on_server_error(
         return_value=session,
     ):
         client = UniFiGatewayApiClient(hass, config_entry)
-        client._logged_in = True
         result = event_loop.run_until_complete(client._request_json("GET", "/test"))
 
     assert session.calls == 2
     assert result == {"data": []}
-
-
-def test_login_uses_csrf_header(
-    monkeypatch: pytest.MonkeyPatch,
-    hass,
-    config_entry: ConfigEntry,
-    event_loop,
-) -> None:
-    """Login flow stores CSRF token from response headers."""
-
-    response = DummyLoginResponse(headers={"x-csrf-token": "abc123"})
-    session = DummyLoginSession(response)
-
-    with patch(
-        "custom_components.unifi_gateway_refactory.coordinator.aiohttp_client.async_get_clientsession",
-        return_value=session,
-    ):
-        client = UniFiGatewayApiClient(hass, config_entry)
-        event_loop.run_until_complete(client._ensure_authenticated())
-
-    assert client._csrf_token == "abc123"
-    assert session.post_calls == 1
-
-
-def test_login_falls_back_to_cookie(
-    monkeypatch: pytest.MonkeyPatch,
-    hass,
-    config_entry: ConfigEntry,
-    event_loop,
-) -> None:
-    """Login fallback extracts CSRF token from cookies when header missing."""
-
-    response = DummyLoginResponse()
-    cookies = {"csrf_token": DummyCookie("cookie-token")}
-    session = DummyLoginSession(response, cookies)
-
-    with patch(
-        "custom_components.unifi_gateway_refactory.coordinator.aiohttp_client.async_get_clientsession",
-        return_value=session,
-    ):
-        client = UniFiGatewayApiClient(hass, config_entry)
-        event_loop.run_until_complete(client._ensure_authenticated())
-
-    assert client._csrf_token == "cookie-token"
-    assert session.post_calls == 1
 
 
 def _setup_coordinator(
