@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.unifi_gateway_refactory.coordinator import (
     UniFiGatewayApi,
+    UniFiGatewayApiError,
     UniFiGatewayAuthError,
     UniFiGatewayInvalidResponse,
 )
@@ -49,13 +50,16 @@ class DummyResponse:
 class DummySession:
     """Minimal async session returning queued responses."""
 
-    def __init__(self, responses: Iterable[DummyResponse]) -> None:
+    def __init__(self, responses: Iterable[DummyResponse | Exception]) -> None:
         self._responses = list(responses)
 
     def request(self, method: str, url: str, **kwargs: Any) -> DummyResponse:
         if not self._responses:
             raise AssertionError("No responses queued")
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 @pytest.fixture(autouse=True)
@@ -151,4 +155,31 @@ async def test_api_invalid_json(hass: HomeAssistant) -> None:
     )
 
     with pytest.raises(UniFiGatewayInvalidResponse):
+        await api.async_fetch_data()
+
+
+async def test_api_timeout_is_wrapped(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "custom_components.unifi_gateway_refactory.coordinator.MAX_RETRIES", 1
+    )
+    session = cast(
+        ClientSession,
+        DummySession(
+            [
+                asyncio.TimeoutError(),
+            ]
+        ),
+    )
+    api = UniFiGatewayApi(
+        session=session,
+        host="https://gateway.local",
+        username="user",
+        password="pass",
+        site="default",
+        verify_ssl=True,
+    )
+
+    with pytest.raises(UniFiGatewayApiError):
         await api.async_fetch_data()
