@@ -1,11 +1,11 @@
-"""Constants for the UniFi Gateway Refactory integration."""
+"""Constants for the UniFi Gateway Refactored integration."""
 from __future__ import annotations
 
 from datetime import timedelta
 
 from homeassistant.const import Platform
 
-DOMAIN = "unifi_gateway_refactory"
+DOMAIN = "unifi_gateway_refactored"
 
 CONF_SITE = "site"
 CONF_VERIFY_SSL = "verify_ssl"

@@ -86,14 +86,14 @@ HACS expects the following files in a custom integration repository:
 - `custom_components/<domain>/manifest.json` inside the integration directory.
 
 This repository already follows that layout with the integration stored in
-`custom_components/unifi_gateway_refactory/`.
+`custom_components/unifi_gateway_refactored/`.
 
 ## Setup and configuration
 
-1. Install the integration through HACS or copy `custom_components/unifi_gateway_refactory`
+1. Install the integration through HACS or copy `custom_components/unifi_gateway_refactored`
    into your Home Assistant `custom_components` directory.
 2. Restart Home Assistant and navigate to **Settings → Devices & Services → Add
-   Integration**. Search for **UniFi Gateway Refactory** and provide the controller
+   Integration**. Search for **UniFi Gateway Refactored** and provide the controller
    URL, credentials and target site.
 3. Optional: disable SSL verification if you use a self-signed certificate (the
    integration will log a one-time warning when disabled).
@@ -123,7 +123,7 @@ integration can run reliably.
 HACS requires release tags that follow the `MAJOR.MINOR.PATCH` semantic version
 pattern. The workflow is:
 
-1. Update `custom_components/unifi_gateway_refactory/manifest.json` with the new
+1. Update `custom_components/unifi_gateway_refactored/manifest.json` with the new
    version number and any code changes for the release.
 2. Commit the change and push it to the `main` branch.
 3. GitHub Actions (`.github/workflows/release.yml`) validates the semantic version
@@ -143,9 +143,9 @@ To collect detailed diagnostics, add the following snippet to your Home Assistan
 logger:
   default: warning
   logs:
-    custom_components.unifi_gateway_refactory: debug
-    custom_components.unifi_gateway_refactory.unifi_client: debug
-    custom_components.unifi_gateway_refactory.coordinator: debug
+    custom_components.unifi_gateway_refactored: debug
+    custom_components.unifi_gateway_refactored.unifi_client: debug
+    custom_components.unifi_gateway_refactored.coordinator: debug
 ```
 
 When debug logging is enabled the integration records each UniFi Network HTTP request

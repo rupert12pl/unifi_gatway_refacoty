@@ -5,11 +5,11 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import cast
 
-from custom_components.unifi_gateway_refactory.coordinator import (
+from custom_components.unifi_gateway_refactored.coordinator import (
     UniFiGatewayCoordinator,
     UniFiGatewayData,
 )
-from custom_components.unifi_gateway_refactory.sensor import (
+from custom_components.unifi_gateway_refactored.sensor import (
     SENSOR_DESCRIPTIONS,
     UniFiGatewaySensor,
 )
