@@ -148,24 +148,38 @@ class UniFiGatewayApiClient:
             "username": self._auth.login,
             "password": self._auth.password,
         }
-        login_paths: tuple[tuple[str, dict[str, Any]], ...] = (
-            ("/api/login", {"strict": True}),
-            ("/api/auth/login", {"rememberMe": False}),
+        login_attempts: tuple[tuple[str, dict[str, Any], bool], ...] = (
+            ("/api/auth/login", {"rememberMe": True}, True),
+            ("/api/login", {"remember": True}, True),
+            ("/login", {}, False),
         )
         self._csrf_token = None
         self._logged_in = False
+        cookie_jar = getattr(self._session, "cookie_jar", None)
+        if cookie_jar is not None and hasattr(cookie_jar, "clear"):
+            cookie_jar.clear()
+        default_headers = {
+            "Referer": self.base_url,
+            "Accept": "application/json",
+        }
         last_error: Exception | None = None
         last_status: int | None = None
         last_text: str | None = None
-        for path, extra_payload in login_paths:
+        for path, extra_payload, use_json in login_attempts:
             payload = {**base_payload, **extra_payload}
             url = urljoin(self.base_url + "/", path.lstrip("/"))
+            request_kwargs: dict[str, Any] = {
+                "url": url,
+                "timeout": aiohttp.ClientTimeout(total=API_REQUEST_TIMEOUT),
+                "headers": default_headers,
+                "allow_redirects": False,
+            }
+            if use_json:
+                request_kwargs["json"] = payload
+            else:
+                request_kwargs["data"] = payload
             try:
-                response = await self._session.post(
-                    url,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=API_REQUEST_TIMEOUT),
-                )
+                response = await self._session.post(**request_kwargs)
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
                 last_error = err
                 _LOGGER.debug("Login request failed via %s: %s", path, err)
@@ -174,7 +188,20 @@ class UniFiGatewayApiClient:
             async with response:
                 last_status = response.status
                 last_text = await response.text()
-                if response.status != 200:
+                if response.status in (401, 403):
+                    _LOGGER.debug(
+                        "Login via %s returned %s; trying next endpoint",
+                        path,
+                        response.status,
+                    )
+                    last_error = AuthFailedError(
+                        last_text or "Invalid UniFi controller credentials"
+                    )
+                    continue
+                if response.status == 404:
+                    _LOGGER.debug("Login endpoint %s not found", path)
+                    continue
+                if response.status >= 400:
                     _LOGGER.debug(
                         "Login to %s failed with status %s: %s",
                         path,
@@ -182,28 +209,73 @@ class UniFiGatewayApiClient:
                         last_text,
                     )
                     continue
-
-                token = response.headers.get("x-csrf-token")
-                if not token:
-                    cookies = self._session.cookie_jar.filter_cookies(url)
-                    csrf_cookie = cookies.get("csrf_token")
-                    if csrf_cookie is not None:
-                        token = csrf_cookie.value
-                if not token:
-                    _LOGGER.debug(
-                        "Login via %s returned 200 but no CSRF token; retrying",
-                        path,
-                    )
-                    continue
-                self._csrf_token = token
-                self._logged_in = True
-                return
+                self._update_csrf_token_from_response(response, url)
+                if not self._csrf_token:
+                    await self._refresh_csrf_token()
+                if self._csrf_token:
+                    self._logged_in = True
+                    return
+                _LOGGER.debug("Login via %s succeeded but no CSRF token found", path)
 
         if last_status is not None:
             raise AuthFailedError(last_text or f"Login failed with status {last_status}")
         if last_error is not None:
             raise GatewayApiError(str(last_error)) from last_error
         raise GatewayApiError("Unable to authenticate with UniFi Gateway")
+
+    def _update_csrf_token_from_response(
+        self, response: aiohttp.ClientResponse, url: str | None = None
+    ) -> None:
+        """Extract CSRF token from headers or cookies and store it."""
+
+        headers = getattr(response, "headers", {}) or {}
+        if isinstance(headers, Mapping):
+            token = headers.get("x-csrf-token") or headers.get("X-CSRF-Token")
+        else:
+            token = None
+        if not token and url:
+            cookie_jar = getattr(self._session, "cookie_jar", None)
+            cookies = None
+            if cookie_jar is not None and hasattr(cookie_jar, "filter_cookies"):
+                cookies = cookie_jar.filter_cookies(url)
+            if cookies:
+                for name in ("TOKEN", "csrf_token", "X-CSRF-Token"):
+                    cookie = cookies.get(name)
+                    if cookie and getattr(cookie, "value", None):
+                        token = cookie.value
+                        break
+        if token and token != self._csrf_token:
+            self._csrf_token = token
+
+    async def _refresh_csrf_token(self) -> None:
+        """Attempt to fetch a fresh CSRF token from the controller."""
+
+        if not hasattr(self._session, "get"):
+            return
+
+        for path in ("/api/auth/csrf", "/api/csrf"):
+            url = urljoin(self.base_url + "/", path.lstrip("/"))
+            try:
+                response = await self._session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=API_REQUEST_TIMEOUT),
+                    allow_redirects=False,
+                )
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                _LOGGER.debug("Fetching CSRF token from %s failed: %s", path, err)
+                continue
+            async with response:
+                if response.status >= 400:
+                    _LOGGER.debug(
+                        "CSRF probe %s returned HTTP %s",
+                        url,
+                        response.status,
+                    )
+                    continue
+                self._update_csrf_token_from_response(response, url)
+                if self._csrf_token:
+                    _LOGGER.debug("CSRF token refreshed via %s", url)
+                    return
 
     async def fetch_metrics(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Fetch health and wlan configuration payloads."""
@@ -243,14 +315,18 @@ class UniFiGatewayApiClient:
             use_basic_auth = not self._logged_in and not attempted_login
             async with self._semaphore:
                 try:
-                    headers = {}
-                    if self._csrf_token and not use_basic_auth:
+                    headers = {
+                        "Referer": self.base_url,
+                        "Accept": "application/json",
+                    }
+                    if self._csrf_token:
                         headers["x-csrf-token"] = self._csrf_token
                     request_kwargs = {
                         "method": method,
                         "url": url,
                         "headers": headers,
                         "timeout": aiohttp.ClientTimeout(total=API_REQUEST_TIMEOUT),
+                        "allow_redirects": False,
                     }
                     if use_basic_auth:
                         request_kwargs["auth"] = self._auth
@@ -272,6 +348,7 @@ class UniFiGatewayApiClient:
                                 await self._login()
                             continue
                         if status == 204:
+                            self._update_csrf_token_from_response(response, url)
                             return {}
                         if status >= 400:
                             body = await response.text()
@@ -284,6 +361,7 @@ class UniFiGatewayApiClient:
                                     f"Unexpected response {status}: {body[:256]}"
                                 )
                         else:
+                            self._update_csrf_token_from_response(response, url)
                             try:
                                 return await response.json()
                             except aiohttp.ContentTypeError as err:
