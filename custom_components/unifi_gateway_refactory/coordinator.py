@@ -97,10 +97,8 @@ class UniFiGatewayApiClient:
         self._base_host, self._port = self._normalize_host(data.get(CONF_HOST, ""))
         self._port = self._port or int(data.get(CONF_PORT, DEFAULT_PORT))
         self._site = data.get(CONF_SITE, DEFAULT_SITE)
-        self._auth = aiohttp.BasicAuth(
-            data.get(CONF_USERNAME, ""),
-            data.get(CONF_PASSWORD, ""),
-        )
+        self._username = data.get(CONF_USERNAME, "")
+        self._password = data.get(CONF_PASSWORD, "")
         limit = int(
             opts.get(
                 CONF_RATE_LIMIT,
@@ -108,6 +106,9 @@ class UniFiGatewayApiClient:
             )
         )
         self._semaphore = semaphore or asyncio.Semaphore(max(1, limit))
+        self._login_lock = asyncio.Lock()
+        self._logged_in = False
+        self._csrf_token: str | None = None
 
     @staticmethod
     def _normalize_host(host: str) -> tuple[str, int | None]:
@@ -130,6 +131,65 @@ class UniFiGatewayApiClient:
         if self._port is None:
             return self._base_host
         return f"{self._base_host}:{self._port}"
+
+    async def _ensure_authenticated(self) -> None:
+        """Ensure we have a valid authenticated session."""
+
+        async with self._login_lock:
+            if self._logged_in:
+                return
+            await self._login()
+            self._logged_in = True
+
+    async def _login(self) -> None:
+        """Perform UniFi OS login exchanging credentials for a session."""
+
+        payload = {"username": self._username, "password": self._password}
+        last_error: Exception | None = None
+        for path in ("/api/auth/login", "/api/login"):
+            url = urljoin(self.base_url + "/", path.lstrip("/"))
+            try:
+                response = await self._session.post(
+                    url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=API_REQUEST_TIMEOUT),
+                )
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                last_error = err
+                _LOGGER.debug("Login request failed via %s: %s", path, err)
+                continue
+
+            async with response:
+                if response.status in (400, 401, 403):
+                    raise AuthFailedError("Invalid credentials provided")
+                if response.status >= 500:
+                    last_error = GatewayApiError(
+                        f"Login failed with status {response.status}"
+                    )
+                    continue
+                if response.status >= 400:
+                    last_error = GatewayApiError(
+                        f"Unexpected response {response.status} during login"
+                    )
+                    continue
+
+                token = response.headers.get("x-csrf-token")
+                if not token:
+                    cookies = self._session.cookie_jar.filter_cookies(url)
+                    csrf_cookie = cookies.get("csrf_token")
+                    if csrf_cookie is not None:
+                        token = csrf_cookie.value
+                self._csrf_token = token
+                return
+
+        self._logged_in = False
+        if isinstance(last_error, AuthFailedError):
+            raise last_error
+        if isinstance(last_error, GatewayApiError):
+            raise last_error
+        if last_error is not None:
+            raise GatewayApiError(str(last_error)) from last_error
+        raise GatewayApiError("Unable to authenticate with UniFi Gateway")
 
     async def fetch_metrics(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Fetch health and wlan configuration payloads."""
@@ -165,12 +225,17 @@ class UniFiGatewayApiClient:
         url = urljoin(self.base_url + "/", path.lstrip("/"))
         last_error: Exception | None = None
         for attempt in range(1, API_MAX_ATTEMPTS + 1):
+            if not self._logged_in:
+                await self._ensure_authenticated()
             async with self._semaphore:
                 try:
+                    headers = {}
+                    if self._csrf_token:
+                        headers["x-csrf-token"] = self._csrf_token
                     response = await self._session.request(
                         method,
                         url,
-                        auth=self._auth,
+                        headers=headers,
                         timeout=aiohttp.ClientTimeout(total=API_REQUEST_TIMEOUT),
                     )
                 except (aiohttp.ClientError, asyncio.TimeoutError) as err:
@@ -180,7 +245,10 @@ class UniFiGatewayApiClient:
                     async with response:
                         status = response.status
                         if status in (401, 403):
-                            raise AuthFailedError("Invalid credentials provided")
+                            self._logged_in = False
+                            if attempt == API_MAX_ATTEMPTS:
+                                raise AuthFailedError("Invalid credentials provided")
+                            continue
                         if status == 204:
                             return {}
                         if status >= 400:
