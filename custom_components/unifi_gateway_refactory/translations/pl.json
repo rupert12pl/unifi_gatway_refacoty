@@ -1,0 +1,84 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Połącz z UniFi Gateway",
+        "description": "Podaj dane dostępu do kontrolera.",
+        "data": {
+          "host": "Adres kontrolera",
+          "username": "Nazwa użytkownika",
+          "password": "Hasło",
+          "site": "Witryna",
+          "verify_ssl": "Weryfikuj certyfikaty SSL"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Ponowna autoryzacja UniFi Gateway",
+        "description": "Dane logowania są nieprawidłowe. Zaktualizuj je poniżej.",
+        "data": {
+          "username": "Nazwa użytkownika",
+          "password": "Hasło"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Brak połączenia z kontrolerem.",
+      "invalid_auth": "Niepoprawna nazwa użytkownika lub hasło.",
+      "scan_interval_out_of_range": "Interwał odpytywania musi mieć od 30 do 300 sekund.",
+      "reauth_failed": "Ponowna autoryzacja nie powiodła się."
+    },
+    "abort": {
+      "already_configured": "Ten kontroler jest już skonfigurowany.",
+      "reauth_successful": "Ponowna autoryzacja zakończona sukcesem.",
+      "reauth_failed": "Ponowna autoryzacja nie powiodła się."
+    }
+  },
+  "options": {
+    "step": {
+      "user": {
+        "title": "Opcje UniFi Gateway",
+        "data": {
+          "scan_interval": "Interwał odświeżania (sekundy)",
+          "verify_ssl": "Weryfikuj certyfikaty SSL"
+        }
+      }
+    }
+  },
+  "issues": {
+    "legacy_conflict": {
+      "title": "Usuń starą integrację UniFi Gateway",
+      "description": "Wykryto integrację `unifigateway`. Usuń ją, aby uniknąć duplikatów sensorów.",
+      "severity": "warning"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "wan_status": {
+        "name": "Stan WAN"
+      },
+      "wan_latency": {
+        "name": "Opóźnienie WAN"
+      },
+      "wan_uptime": {
+        "name": "Czas pracy WAN"
+      },
+      "wan_tx": {
+        "name": "Wysyłanie WAN"
+      },
+      "wan_rx": {
+        "name": "Pobieranie WAN"
+      },
+      "clients_total": {
+        "name": "Łącznie klientów"
+      },
+      "vpn_clients": {
+        "name": "Klienci VPN"
+      }
+    },
+    "binary_sensor": {
+      "wan_online": {
+        "name": "WAN online"
+      }
+    }
+  }
+}
