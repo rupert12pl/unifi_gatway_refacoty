@@ -178,6 +178,7 @@ class UniFiGatewayCoordinator(DataUpdateCoordinator[UniFiGatewayData]):
         )
         self.api = api
         self._update_interval_seconds = update_interval_seconds
+        self.update_interval: timedelta | None
         self.update_interval = self._resolve_interval()
 
     async def _async_update_data(self) -> UniFiGatewayData:

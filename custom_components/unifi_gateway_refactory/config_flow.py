@@ -76,7 +76,9 @@ class ConfigFlow(config_entries.ConfigFlow):
                     CONF_VERIFY_SSL: user_input.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
                     CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
                 }
-                return self.async_create_entry(title=info["title"], data=data, options=options)
+                return self.async_create_entry(
+                    title=info["title"], data=dict(data), options=dict(options)
+                )
 
         data_schema = vol.Schema(
             {
@@ -172,7 +174,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if scan_interval < MIN_SCAN_INTERVAL or scan_interval > MAX_SCAN_INTERVAL:
                 errors["base"] = "scan_interval_out_of_range"
             else:
-                return self.async_create_entry(title="", data=user_input)
+                return self.async_create_entry(title="", data=dict(user_input))
 
         current_scan = self.config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         current_verify = self.config_entry.options.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL)

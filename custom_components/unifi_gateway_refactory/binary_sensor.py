@@ -33,7 +33,7 @@ async def async_setup_entry(
 
 
 class UniFiGatewayWanOnlineBinarySensor(
-    CoordinatorEntity[UniFiGatewayCoordinator], BinarySensorEntity
+    CoordinatorEntity[UniFiGatewayData], BinarySensorEntity
 ):
     """Binary sensor indicating WAN availability."""
 

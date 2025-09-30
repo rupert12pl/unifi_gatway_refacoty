@@ -13,7 +13,10 @@ for path in (STUBS, PROJECT_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+from typing import Any  # noqa: E402
+
 import pytest  # noqa: E402
+from _pytest.python import Function  # noqa: E402
 from homeassistant.core import HomeAssistant  # noqa: E402
 
 
@@ -30,14 +33,14 @@ def hass() -> HomeAssistant:
     return hass
 
 
-def pytest_pyfunc_call(pyfuncitem):  # type: ignore[override]
+def pytest_pyfunc_call(pyfuncitem: Function) -> bool | None:
     """Execute async tests without requiring external plugins."""
 
     if asyncio.iscoroutinefunction(pyfuncitem.obj):
         loop = asyncio.new_event_loop()
         try:
             signature = inspect.signature(pyfuncitem.obj)
-            kwargs = {
+            kwargs: dict[str, Any] = {
                 name: pyfuncitem.funcargs[name]
                 for name in signature.parameters
                 if name in pyfuncitem.funcargs

@@ -165,7 +165,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class UniFiGatewaySensor(CoordinatorEntity[UniFiGatewayCoordinator], SensorEntity):
+class UniFiGatewaySensor(CoordinatorEntity[UniFiGatewayData], SensorEntity):
     """Representation of a UniFi Gateway sensor."""
 
     _attr_has_entity_name = True
@@ -184,13 +184,19 @@ class UniFiGatewaySensor(CoordinatorEntity[UniFiGatewayCoordinator], SensorEntit
     def native_value(self) -> Any:
         if not self.coordinator.data:
             return None
-        return self.entity_description.value_fn(self.coordinator.data)
+        description = self.entity_description
+        if not isinstance(description, UniFiGatewaySensorEntityDescription):
+            return None
+        return description.value_fn(self.coordinator.data)
 
     @property
-    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+    def extra_state_attributes(self) -> dict[str, Any] | None:
         if not self.coordinator.data:
             return None
-        if self.entity_description.attr_fn is None:
+        description = self.entity_description
+        if not isinstance(description, UniFiGatewaySensorEntityDescription):
             return None
-        attrs = self.entity_description.attr_fn(self.coordinator.data)
+        if description.attr_fn is None:
+            return None
+        attrs = description.attr_fn(self.coordinator.data)
         return dict(attrs)

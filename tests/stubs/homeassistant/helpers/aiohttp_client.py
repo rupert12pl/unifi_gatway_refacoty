@@ -1,7 +1,7 @@
 """aiohttp client helpers."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 from aiohttp import ClientSession
@@ -12,4 +12,4 @@ def async_get_clientsession(_hass: Any, *, verify_ssl: bool = True) -> ClientSes
 
     session = MagicMock(spec=ClientSession)
     session.verify_ssl = verify_ssl
-    return session  # type: ignore[return-value]
+    return cast(ClientSession, session)

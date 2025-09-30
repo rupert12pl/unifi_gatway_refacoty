@@ -66,7 +66,11 @@ def test_sensor_values() -> None:
         UniFiGatewaySensor(coordinator, description, "entry")
         for description in SENSOR_DESCRIPTIONS
     ]
-    values = {sensor.entity_description.key: sensor.native_value for sensor in sensors}
+    values: dict[str, object] = {}
+    for sensor in sensors:
+        description = sensor.entity_description
+        assert description is not None
+        values[description.key] = sensor.native_value
 
     assert values["wan_status"] == "Connected"
     assert values["wan_latency_ms"] == 12.5
@@ -79,7 +83,8 @@ def test_sensor_values() -> None:
     vpn_sensor = next(
         sensor
         for sensor in sensors
-        if sensor.entity_description.key == "vpn_clients"
+        if sensor.entity_description is not None
+        and sensor.entity_description.key == "vpn_clients"
     )
     attrs = vpn_sensor.extra_state_attributes
     assert attrs is not None

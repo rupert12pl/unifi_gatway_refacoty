@@ -1,6 +1,7 @@
 """Simplified DataUpdateCoordinator implementation for tests."""
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
@@ -19,7 +20,7 @@ class DataUpdateCoordinator(Generic[T]):
         logger: Any,
         *,
         name: str,
-        update_interval: float | None,
+        update_interval: timedelta | None,
     ) -> None:
         self.hass = hass
         self.logger = logger

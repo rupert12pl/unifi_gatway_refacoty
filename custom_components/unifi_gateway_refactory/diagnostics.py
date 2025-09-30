@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 
 from . import IntegrationRuntime
@@ -23,9 +24,13 @@ async def async_get_config_entry_diagnostics(
     if not data:
         return {"detail": "no_data"}
 
+    entry_title = getattr(entry, "title", None) or entry.data.get("title")
+    if entry_title is None:
+        entry_title = entry.data.get(CONF_HOST, "UniFi Gateway")
+
     return {
         "entry": {
-            "title": entry.title,
+            "title": entry_title,
             "site": entry.data.get("site"),
         },
         "last_fetch": data.last_fetch.isoformat(),
