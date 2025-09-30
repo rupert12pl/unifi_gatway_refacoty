@@ -1,8 +1,9 @@
 """Stub voluptuous API used in tests."""
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,15 @@ def Range(*, min: int | float | None = None, max: int | float | None = None) -> 
             raise ValueError("value below minimum")
         if max is not None and value > max:
             raise ValueError("value above maximum")
+        return value
+
+    return _validator
+
+
+def In(container: Iterable[Any]) -> Callable[[Any], Any]:
+    def _validator(value: Any) -> Any:
+        if value not in container:
+            raise ValueError("value not allowed")
         return value
 
     return _validator
