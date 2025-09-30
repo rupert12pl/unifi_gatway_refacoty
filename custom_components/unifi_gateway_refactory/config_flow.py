@@ -27,13 +27,7 @@ from .coordinator import AuthFailedError, GatewayApiError, UniFiGatewayApiClient
 async def _async_validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
     """Validate the provided configuration data."""
 
-    dummy_entry = config_entries.ConfigEntry(
-        entry_id="validation",
-        data=data,
-        title=data.get(CONF_HOST, "UniFi Gateway"),
-        options={},
-    )
-    client = UniFiGatewayApiClient(hass, dummy_entry)
+    client = UniFiGatewayApiClient(hass, data)
     await client.fetch_metrics()
     return {"title": data[CONF_HOST]}
 
