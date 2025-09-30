@@ -7,7 +7,7 @@ import random
 from dataclasses import dataclass
 from datetime import datetime
 from ipaddress import ip_address, ip_network
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
@@ -71,32 +71,40 @@ class UniFiGatewayApiClient:
     def __init__(
         self,
         hass: HomeAssistant,
-        entry: ConfigEntry,
+        entry: ConfigEntry | Mapping[str, Any],
         *,
+        options: Mapping[str, Any] | None = None,
         semaphore: asyncio.Semaphore | None = None,
     ) -> None:
         self._hass = hass
-        self._entry = entry
+
+        if isinstance(entry, ConfigEntry):
+            data = entry.data
+            opts: Mapping[str, Any] = entry.options
+        else:
+            data = dict(entry)
+            opts = options or {}
+
         self._session = aiohttp_client.async_get_clientsession(
             hass,
             verify_ssl=bool(
-                entry.options.get(
+                opts.get(
                     CONF_VERIFY_SSL,
-                    entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
+                    data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
                 )
             ),
         )
-        self._base_host, self._port = self._normalize_host(entry.data.get(CONF_HOST, ""))
-        self._port = self._port or int(entry.data.get(CONF_PORT, DEFAULT_PORT))
-        self._site = entry.data.get(CONF_SITE, DEFAULT_SITE)
+        self._base_host, self._port = self._normalize_host(data.get(CONF_HOST, ""))
+        self._port = self._port or int(data.get(CONF_PORT, DEFAULT_PORT))
+        self._site = data.get(CONF_SITE, DEFAULT_SITE)
         self._auth = aiohttp.BasicAuth(
-            entry.data.get(CONF_USERNAME, ""),
-            entry.data.get(CONF_PASSWORD, ""),
+            data.get(CONF_USERNAME, ""),
+            data.get(CONF_PASSWORD, ""),
         )
         limit = int(
-            entry.options.get(
+            opts.get(
                 CONF_RATE_LIMIT,
-                entry.data.get(CONF_RATE_LIMIT, DEFAULT_RATE_LIMIT),
+                data.get(CONF_RATE_LIMIT, DEFAULT_RATE_LIMIT),
             )
         )
         self._semaphore = semaphore or asyncio.Semaphore(max(1, limit))
