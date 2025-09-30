@@ -1,5 +1,4 @@
-"""Minimal stubs for Home Assistant sensor entities."""
-from __future__ import annotations
+"""Minimal stubs for Home Assistant sensor module."""
 
 
 class SensorEntity:
@@ -11,7 +10,14 @@ class SensorEntity:
         self._attr_name = kwargs.get("name")
 
 
+class SensorDeviceClass:
+    """Stub of Home Assistant sensor device classes."""
+
+    TIMESTAMP = "timestamp"
+    DURATION = "duration"
+
+
 class SensorStateClass:
-    """Subset of state classes."""
+    """Stub of Home Assistant sensor state classes."""
 
     MEASUREMENT = "measurement"

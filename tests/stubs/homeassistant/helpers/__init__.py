@@ -1,1 +1,1 @@
-"""Stub helpers package."""
+"""Stub package for homeassistant.helpers."""

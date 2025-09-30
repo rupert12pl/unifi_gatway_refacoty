@@ -1,0 +1,63 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Połącz z UniFi Gateway Dashboard Analyzer",
+        "description": "Wprowadź dane lokalnego administratora aplikacji UniFi Network. Podczas zapisu sprawdzimy zdrowie kontrolera i listę witryn.",
+        "data": {
+          "host": "Adres kontrolera (UDM IP)",
+          "username": "Nazwa użytkownika (lokalny administrator)",
+          "password": "Hasło",
+          "verify_ssl": "Weryfikuj SSL (wartość logiczna lub ścieżka do CA)"
+        }
+      },
+      "advanced": {
+        "title": "Zaawansowane opcje kontrolera",
+        "description": "Skonfiguruj dodatkowe ustawienia kontrolera przed zakończeniem konfiguracji.",
+        "data": {
+          "port": "Port",
+          "site_id": "Identyfikator witryny (site ID)",
+          "use_proxy_prefix": "Użyj prefiksu /proxy/network",
+          "timeout": "Limit czasu żądania HTTP (sekundy)",
+          "speedtest_interval": "Interwał speedtestu (minuty)",
+          "speedtest_entities": "Identyfikatory encji speedtestu (oddzielone przecinkami)",
+          "wifi_guest": "SSID sieci WiFi dla gości",
+          "wifi_iot": "SSID sieci WiFi dla IoT"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Nieprawidłowa nazwa użytkownika lub hasło.",
+      "cannot_connect": "Nie można połączyć się z kontrolerem UniFi.",
+      "unknown": "Nieznany błąd."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opcje UniFi Gateway Dashboard Analyzer",
+        "description": "Zaktualizuj szczegóły połączenia lub ustawienia zaawansowane kontrolera.",
+        "data": {
+          "host": "Adres kontrolera (UDM IP)",
+          "port": "Port",
+          "username": "Nazwa użytkownika (lokalny administrator)",
+          "password": "Hasło",
+          "site_id": "Identyfikator witryny (site ID)",
+          "verify_ssl": "Weryfikuj SSL (wartość logiczna lub ścieżka do CA)",
+          "use_proxy_prefix": "Użyj prefiksu /proxy/network",
+          "timeout": "Limit czasu żądania HTTP (sekundy)",
+          "speedtest_interval": "Interwał speedtestu (minuty)",
+          "speedtest_entities": "Identyfikatory encji speedtestu (oddzielone przecinkami)",
+          "wifi_guest": "SSID sieci WiFi dla gości",
+          "wifi_iot": "SSID sieci WiFi dla IoT"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Nieprawidłowa nazwa użytkownika lub hasło.",
+      "cannot_connect": "Nie można połączyć się z kontrolerem UniFi.",
+      "unknown": "Nieznany błąd."
+    }
+  },
+  "title": "UniFi Gateway Dashboard Analyzer"
+}

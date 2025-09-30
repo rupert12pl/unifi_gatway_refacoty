@@ -1,0 +1,65 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to UniFi Gateway Dashboard Analyzer",
+        "description": "Enter local admin credentials for the UniFi Network Application. We'll validate by fetching health and sites.",
+        "data": {
+          "host": "Host (UDM IP)",
+          "username": "Username (local admin)",
+          "password": "Password",
+          "verify_ssl": "Verify SSL (bool or CA path)"
+        }
+      },
+      "advanced": {
+        "title": "Advanced controller options",
+        "description": "Configure optional controller settings before finishing setup.",
+        "data": {
+          "port": "Port",
+          "site_id": "Site ID",
+          "use_proxy_prefix": "Use /proxy/network prefix",
+          "timeout": "HTTP timeout (seconds)",
+          "speedtest_interval": "Speedtest interval (minutes)",
+          "speedtest_entities": "Speedtest entity IDs (comma separated)",
+          "wifi_guest": "Guest WiFi SSID",
+          "wifi_iot": "IoT WiFi SSID"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid credentials.",
+      "cannot_connect": "Cannot connect to UniFi host.",
+      "missing_auth": "Provide a username and password.",
+      "unknown": "Unknown error."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "UniFi Gateway Dashboard Analyzer Options",
+        "description": "Update the connection details or advanced controller settings.",
+        "data": {
+          "host": "Host (UDM IP)",
+          "port": "Port",
+          "username": "Username (local admin)",
+          "password": "Password",
+          "site_id": "Site ID",
+          "verify_ssl": "Verify SSL (bool or CA path)",
+          "use_proxy_prefix": "Use /proxy/network prefix",
+          "timeout": "HTTP timeout (seconds)",
+          "speedtest_interval": "Speedtest interval (minutes)",
+          "speedtest_entities": "Speedtest entity IDs (comma separated)",
+          "wifi_guest": "Guest WiFi SSID",
+          "wifi_iot": "IoT WiFi SSID"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid credentials.",
+      "cannot_connect": "Cannot connect to UniFi host.",
+      "missing_auth": "Provide a username and password.",
+      "unknown": "Unknown error."
+    }
+  },
+  "title": "UniFi Gateway Dashboard Analyzer"
+}

@@ -8,18 +8,6 @@ fully UI-driven configuration flow.
 
 ### What this integration does for you
 
-- Uses a fully asynchronous data coordinator to poll UniFi OS health and WLAN
-  endpoints without blocking Home Assistant.
-- Provides a complete Config Flow and Options Flow that let you adjust
-  connection settings directly from the UI.
-- Protects the controller with automatic retry logic, exponential backoff with
-  jitter and a semaphore-based rate limiter so bursts never overload the UniFi
-  Gateway.
-- Surfaces WAN, VPN and client metrics as dedicated sensors and binary sensors
-  with defensive parsing so malformed payloads do not break the integration.
-- Generates anonymised diagnostics that can be safely shared with support.
-- Detects legacy `unifigateway` installations and raises a Repair issue with
-  instructions for migration.
 - Presents WAN, LAN, WLAN and internet health metrics from your UniFi Gateway so
   you can monitor uptime, throughput and alerts from the Home Assistant
   dashboard.
@@ -44,9 +32,6 @@ fully UI-driven configuration flow.
 
 ### Daily use tips
 
-- The integration applies a small semaphore-based rate limit to outbound API
-  calls. When multiple refreshes are queued they are serialized automatically
-  to protect the controller.
 - Pin the WAN/LAN/WLAN sensors to a dashboard card to keep latency and alert
   status in view.
 - Use the VPN server sensor state to trigger automations (for example notify
@@ -55,10 +40,6 @@ fully UI-driven configuration flow.
   name, public IP origin and geolocation details for every active tunnel.
 - Download **Diagnostics** from the integration's menu whenever you need a
   snapshot of controller data for troubleshooting.
-- On UniFi Dream Machine models that obtain IPv6 connectivity via DHCPv6 Prefix
-  Delegation, the WAN interface may not expose a global IPv6 address. The WAN
-  IPv6 sensor therefore reports the delegated prefix so you still know which
-  network is routable from the internet.
 
 ## Przewodnik integracji (Polski)
 
@@ -87,8 +68,6 @@ fully UI-driven configuration flow.
 
 ### Wskazówki do codziennego użycia
 
-- Integracja wykorzystuje limitowanie żądań oparte na semaforze, dzięki czemu
-  kontroler UniFi nie jest przeciążany nawet przy częstych odświeżeniach.
 - Dodaj sensory WAN/LAN/WLAN na dashboard, aby mieć stale podgląd opóźnień i
   stanu alarmów.
 - Wykorzystaj stan sensora serwera VPN w automatyzacjach (np. wyślij powiadomienie,
@@ -97,9 +76,6 @@ fully UI-driven configuration flow.
   urządzenia, adres publiczny oraz geolokalizację każdego tunelu.
 - W menu integracji wybierz **Pobierz diagnostykę**, aby zebrać migawkę danych do
   rozwiązywania problemów.
-- Na urządzeniach UniFi Dream Machine korzystających z DHCPv6 PD interfejs WAN
-  może nie mieć publicznego adresu IPv6. Sensor WAN IPv6 wyświetla wówczas
-  delegowany prefiks, aby łatwo sprawdzić sieć dostępną z internetu.
 
 ## Repository layout required by HACS
 
@@ -110,14 +86,14 @@ HACS expects the following files in a custom integration repository:
 - `custom_components/<domain>/manifest.json` inside the integration directory.
 
 This repository already follows that layout with the integration stored in
-`custom_components/unifi_gateway_refactory/`.
+`custom_components/unifi_gateway_refactored/`.
 
 ## Publishing releases for HACS
 
 HACS requires release tags that follow the `MAJOR.MINOR.PATCH` semantic version
 pattern. The workflow is:
 
-1. Update `custom_components/unifi_gateway_refactory/manifest.json` with the new
+1. Update `custom_components/unifi_gateway_refactored/manifest.json` with the new
    version number and any code changes for the release.
 2. Commit the change and push it to the `main` branch.
 3. GitHub Actions (`.github/workflows/release.yml`) validates the semantic version
@@ -137,8 +113,9 @@ To collect detailed diagnostics, add the following snippet to your Home Assistan
 logger:
   default: warning
   logs:
-    custom_components.unifi_gateway_refactory: debug
-    custom_components.unifi_gateway_refactory.coordinator: debug
+    custom_components.unifi_gateway_refactored: debug
+    custom_components.unifi_gateway_refactored.unifi_client: debug
+    custom_components.unifi_gateway_refactored.coordinator: debug
 ```
 
 When debug logging is enabled the integration records each UniFi Network HTTP request
