@@ -2,12 +2,19 @@
 
 
 class HomeAssistantError(Exception):
-    """Base class for Home Assistant errors."""
+    """Exception raised for Home Assistant specific errors."""
 
 
 class ConfigEntryAuthFailed(HomeAssistantError):
-    """Raised when authentication fails for a config entry."""
+    """Raised when authentication for a config entry fails."""
 
 
 class ConfigEntryNotReady(HomeAssistantError):
-    """Raised when a config entry cannot be set up yet."""
+    """Raised when a config entry is not ready to be set up."""
+
+
+__all__ = [
+    "HomeAssistantError",
+    "ConfigEntryAuthFailed",
+    "ConfigEntryNotReady",
+]
