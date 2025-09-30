@@ -10,7 +10,7 @@ import pytest
 from aiohttp import ClientSession
 from homeassistant.core import HomeAssistant
 
-from custom_components.unifi_gateway_refactory.coordinator import (
+from custom_components.unifi_gateway_refactored.coordinator import (
     UniFiGatewayApi,
     UniFiGatewayApiError,
     UniFiGatewayAuthError,
@@ -162,7 +162,7 @@ async def test_api_timeout_is_wrapped(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "custom_components.unifi_gateway_refactory.coordinator.MAX_RETRIES", 1
+        "custom_components.unifi_gateway_refactored.coordinator.MAX_RETRIES", 1
     )
     session = cast(
         ClientSession,

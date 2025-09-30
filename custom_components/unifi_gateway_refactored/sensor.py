@@ -1,4 +1,4 @@
-"""Sensor entities for UniFi Gateway Refactory."""
+"""Sensor entities for UniFi Gateway Refactored."""
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping

@@ -1,4 +1,4 @@
-"""Config flow for UniFi Gateway Refactory."""
+"""Config flow for UniFi Gateway Refactored."""
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -44,7 +44,7 @@ async def async_validate_input(hass: HomeAssistant, data: Mapping[str, Any]) -> 
 
 @config_entries.HANDLERS.register(DOMAIN)
 class ConfigFlow(config_entries.ConfigFlow):
-    """Handle the UniFi Gateway Refactory config flow."""
+    """Handle the UniFi Gateway Refactored config flow."""
 
     VERSION = 1
 
