@@ -228,9 +228,15 @@ class DummyCookieJar:
 
 
 class DummyLoginResponse:
-    def __init__(self, status: int = 200, headers: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+        text: str = "",
+    ) -> None:
         self.status = status
         self.headers = headers or {}
+        self._text = text
 
     async def __aenter__(self) -> "DummyLoginResponse":
         return self
@@ -239,7 +245,7 @@ class DummyLoginResponse:
         return None
 
     async def text(self) -> str:
-        return ""
+        return self._text
 
 
 class AuthRetrySession:
@@ -267,16 +273,24 @@ class AuthRetrySession:
 class DummyLoginSession:
     def __init__(
         self,
-        response: DummyLoginResponse,
+        responses: DummyLoginResponse | list[DummyLoginResponse],
         cookies: dict[str, DummyCookie] | None = None,
     ) -> None:
-        self._response = response
+        if isinstance(responses, list):
+            self._responses = responses
+        else:
+            self._responses = [responses]
         self.post_calls = 0
         self.cookie_jar = DummyCookieJar(cookies or {})
+        self.calls: list[dict[str, Any]] = []
 
     async def post(self, *args: Any, **kwargs: Any) -> DummyLoginResponse:
         self.post_calls += 1
-        return self._response
+        url = args[0] if args else kwargs.get("url", "")
+        payload = kwargs.get("json")
+        self.calls.append({"url": url, "payload": payload})
+        index = min(self.post_calls - 1, len(self._responses) - 1)
+        return self._responses[index]
 
 
 def test_api_retries_on_server_error(
@@ -323,6 +337,8 @@ def test_login_uses_csrf_header(
 
     assert client._csrf_token == "abc123"
     assert session.post_calls == 1
+    assert session.calls[0]["payload"]["strict"] is True
+    assert "/api/login" in session.calls[0]["url"]
 
 
 def test_login_falls_back_to_cookie(
@@ -346,6 +362,66 @@ def test_login_falls_back_to_cookie(
 
     assert client._csrf_token == "cookie-token"
     assert session.post_calls == 1
+    assert session.calls[0]["payload"]["strict"] is True
+    assert "/api/login" in session.calls[0]["url"]
+
+
+def test_login_retries_with_unifi_os_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    hass,
+    config_entry: ConfigEntry,
+    event_loop,
+) -> None:
+    """Login retries include UniFi OS rememberMe flag for local users."""
+
+    responses = [
+        DummyLoginResponse(status=401, text="invalid"),
+        DummyLoginResponse(headers={"x-csrf-token": "csrf456"}),
+    ]
+    session = DummyLoginSession(responses)
+
+    with patch(
+        "custom_components.unifi_gateway_refactory.coordinator.aiohttp_client.async_get_clientsession",
+        return_value=session,
+    ):
+        client = UniFiGatewayApiClient(hass, config_entry)
+        event_loop.run_until_complete(client._ensure_authenticated())
+
+    assert session.post_calls == 2
+    assert "/api/login" in session.calls[0]["url"]
+    assert session.calls[0]["payload"]["strict"] is True
+    assert "/api/auth/login" in session.calls[1]["url"]
+    assert session.calls[1]["payload"]["rememberMe"] is False
+    assert client._csrf_token == "csrf456"
+
+
+def test_login_retries_when_csrf_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    hass,
+    config_entry: ConfigEntry,
+    event_loop,
+) -> None:
+    """Login ignores 200 responses that do not include a CSRF token."""
+
+    responses = [
+        DummyLoginResponse(),
+        DummyLoginResponse(headers={"x-csrf-token": "csrf789"}),
+    ]
+    session = DummyLoginSession(responses)
+
+    with patch(
+        "custom_components.unifi_gateway_refactory.coordinator.aiohttp_client.async_get_clientsession",
+        return_value=session,
+    ):
+        client = UniFiGatewayApiClient(hass, config_entry)
+        event_loop.run_until_complete(client._ensure_authenticated())
+
+    assert session.post_calls == 2
+    assert "/api/login" in session.calls[0]["url"]
+    assert session.calls[0]["payload"]["strict"] is True
+    assert "/api/auth/login" in session.calls[1]["url"]
+    assert session.calls[1]["payload"]["rememberMe"] is False
+    assert client._csrf_token == "csrf789"
 
 
 def test_request_reauth_on_unauthorized(
