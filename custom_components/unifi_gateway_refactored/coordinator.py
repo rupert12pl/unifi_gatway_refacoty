@@ -1,4 +1,4 @@
-"""Data coordinator and API client for the UniFi Gateway Refactory integration."""
+"""Data coordinator and API client for the UniFi Gateway Refactored integration."""
 from __future__ import annotations
 
 import asyncio
@@ -186,7 +186,7 @@ class UniFiGatewayCoordinator(DataUpdateCoordinator[UniFiGatewayData]):
         super().__init__(
             hass,
             _LOGGER,
-            name="UniFi Gateway Refactory",
+            name="UniFi Gateway Refactored",
             update_interval=None,
         )
         self.api = api
