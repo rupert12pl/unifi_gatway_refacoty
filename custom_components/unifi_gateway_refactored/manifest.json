@@ -1,7 +1,7 @@
 {
   "domain": "unifi_gateway_refactored",
   "name": "UniFi Gateway Refactored",
-  "version": "0.6.0",
+  "version": "0.1.0",
   "documentation": "https://github.com/example/unifi_gateway_refactored",
   "requirements": [],
   "codeowners": ["@example"],
