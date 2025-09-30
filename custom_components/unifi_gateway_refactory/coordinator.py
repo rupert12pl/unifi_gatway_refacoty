@@ -150,12 +150,17 @@ class UniFiGatewayApi:
                                 raise UniFiGatewayInvalidResponse(
                                     "Invalid JSON received from controller"
                                 ) from err
+                except asyncio.CancelledError:
+                    raise
                 except ClientConnectorError as err:
                     last_error = err
                     _LOGGER.debug("Connection error to %s: %s", url, err)
                 except ClientError as err:
                     last_error = err
                     _LOGGER.debug("HTTP error calling %s: %s", url, err)
+                except asyncio.TimeoutError as err:
+                    last_error = err
+                    _LOGGER.debug("Request timed out for %s: %s", url, err)
 
             if attempt == MAX_RETRIES:
                 break
