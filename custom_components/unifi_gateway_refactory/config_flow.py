@@ -28,7 +28,12 @@ async def _async_validate_input(hass: HomeAssistant, data: dict[str, Any]) -> di
     """Validate the provided configuration data."""
 
     client = UniFiGatewayApiClient(hass, data)
-    await client.fetch_metrics()
+    try:
+        await client.fetch_metrics()
+    except GatewayApiError:
+        raise
+    except Exception as err:  # pragma: no cover - defensive
+        raise GatewayApiError("Unexpected error during validation") from err
     return {"title": data[CONF_HOST]}
 
 
