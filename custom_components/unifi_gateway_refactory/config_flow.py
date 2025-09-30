@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from collections.abc import Awaitable
 from typing import Any, cast
 
@@ -29,6 +30,8 @@ from .const import (
     MIN_SCAN_INTERVAL,
 )
 from .coordinator import AuthFailedError, GatewayApiError, UniFiGatewayApiClient
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def _resolve_flow_result(
@@ -69,6 +72,9 @@ class UniFiGatewayConfigFlow(  # type: ignore[misc, call-arg]
             except AuthFailedError:
                 errors["base"] = "invalid_auth"
             except GatewayApiError:
+                errors["base"] = "cannot_connect"
+            except Exception:  # pragma: no cover - defensive logging
+                _LOGGER.exception("Unexpected error during UniFi Gateway config flow")
                 errors["base"] = "cannot_connect"
             else:
                 await self.async_set_unique_id(user_input[CONF_HOST])

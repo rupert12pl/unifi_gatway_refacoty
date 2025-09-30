@@ -8,6 +8,8 @@ fully UI-driven configuration flow.
 
 ### What this integration does for you
 
+- Uses session-based authentication with UniFi OS so controllers requiring
+  `api/login` cookies continue to work without 401/403 errors.
 - Uses a fully asynchronous data coordinator to poll UniFi OS health and WLAN
   endpoints without blocking Home Assistant.
 - Provides a complete Config Flow and Options Flow that let you adjust
@@ -37,8 +39,9 @@ fully UI-driven configuration flow.
 
 1. In Home Assistant navigate to **Settings → Devices & Services → Add
    Integration** and search for **UniFi Gateway Dashboard Analyzer**.
-2. Enter the controller address, site and credentials (local UniFi OS username
-   and password). The form validates everything before saving.
+2. Enter the controller address (make sure to include the correct port, usually
+   `443` or `8443`), site and credentials (local UniFi OS username and password).
+   The form validates everything before saving.
 3. After the initial setup you can revisit the entry and use **Configure** to
    adjust connection details without deleting the integration.
 
@@ -64,6 +67,8 @@ fully UI-driven configuration flow.
 
 ### Co daje ta integracja
 
+- Korzysta z logowania sesyjnego UniFi OS, więc kontrolery wymagające
+  endpointu `api/login` działają poprawnie bez błędów 401/403.
 - Udostępnia w Home Assistant wskaźniki WAN, LAN, WLAN i stanu internetu z
   bramy UniFi, aby łatwo kontrolować dostępność łącza, przepustowość i alarmy.
 - Śledzi wersje oprogramowania urządzeń UniFi i wskazuje dostępne aktualizacje
@@ -80,8 +85,9 @@ fully UI-driven configuration flow.
 
 1. W Home Assistant przejdź do **Ustawienia → Urządzenia i usługi → Dodaj
    integrację** i wyszukaj **UniFi Gateway Dashboard Analyzer**.
-2. Podaj adres kontrolera, witrynę oraz dane logowania (lokalny użytkownik i
-   hasło UniFi OS). Formularz sprawdza poprawność przed zapisaniem.
+2. Podaj adres kontrolera (pamiętaj o właściwym porcie – zazwyczaj `443` lub
+   `8443`), witrynę oraz dane logowania (lokalny użytkownik i hasło UniFi OS).
+   Formularz sprawdza poprawność przed zapisaniem.
 3. Po instalacji możesz wybrać **Konfiguruj** przy wpisie integracji, aby w
    każdej chwili zmienić parametry połączenia.
 
