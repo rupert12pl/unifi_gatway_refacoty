@@ -1,4 +1,4 @@
-"""Diagnostics support for UniFi Gateway Refactory."""
+"""Diagnostics support for UniFi Gateway Refactored."""
 from __future__ import annotations
 
 from typing import Any, cast

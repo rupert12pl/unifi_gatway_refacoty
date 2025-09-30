@@ -7,11 +7,11 @@ import pytest
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from custom_components.unifi_gateway_refactory import (
+from custom_components.unifi_gateway_refactored import (
     IntegrationRuntime,
     async_update_options,
 )
-from custom_components.unifi_gateway_refactory.const import (
+from custom_components.unifi_gateway_refactored.const import (
     CONF_SCAN_INTERVAL,
     CONF_SITE,
     CONF_VERIFY_SSL,
@@ -19,7 +19,7 @@ from custom_components.unifi_gateway_refactory.const import (
     DEFAULT_SITE,
     DOMAIN,
 )
-from custom_components.unifi_gateway_refactory.coordinator import (
+from custom_components.unifi_gateway_refactored.coordinator import (
     UniFiGatewayApi,
     UniFiGatewayCoordinator,
 )
@@ -76,7 +76,7 @@ async def test_async_update_options_replaces_session_when_verify_ssl_changes(
         return new_session
 
     monkeypatch.setattr(
-        "custom_components.unifi_gateway_refactory.async_get_clientsession",
+        "custom_components.unifi_gateway_refactored.async_get_clientsession",
         fake_get_clientsession,
     )
 
@@ -98,7 +98,7 @@ async def test_async_update_options_replaces_session_when_verify_ssl_changes(
         spy_update,
     )
     monkeypatch.setattr(
-        "custom_components.unifi_gateway_refactory._log_ssl_warning_once",
+        "custom_components.unifi_gateway_refactored._log_ssl_warning_once",
         fake_log_ssl_warning,
     )
 
@@ -160,7 +160,7 @@ async def test_async_update_options_no_change_does_not_replace_session(
         pytest.fail("async_get_clientsession should not be called when SSL unchanged")
 
     monkeypatch.setattr(
-        "custom_components.unifi_gateway_refactory.async_get_clientsession",
+        "custom_components.unifi_gateway_refactored.async_get_clientsession",
         fail_get_clientsession,
     )
 

@@ -1,4 +1,4 @@
-"""Binary sensors for UniFi Gateway Refactory."""
+"""Binary sensors for UniFi Gateway Refactored."""
 from __future__ import annotations
 
 from typing import Any, cast

@@ -86,14 +86,14 @@ HACS expects the following files in a custom integration repository:
 - `custom_components/<domain>/manifest.json` inside the integration directory.
 
 This repository already follows that layout with the integration stored in
-`custom_components/unifi_gateway_refactory/`.
+`custom_components/unifi_gateway_refactored/`.
 
 ## Setup and configuration
 
-1. Install the integration through HACS or copy `custom_components/unifi_gateway_refactory`
+1. Install the integration through HACS or copy `custom_components/unifi_gateway_refactored`
    into your Home Assistant `custom_components` directory.
 2. Restart Home Assistant and navigate to **Settings → Devices & Services → Add
-   Integration**. Search for **UniFi Gateway Refactory** and provide the controller
+   Integration**. Search for **UniFi Gateway Refactored** and provide the controller
    URL, credentials and target site.
 3. Optional: disable SSL verification if you use a self-signed certificate (the
    integration will log a one-time warning when disabled).

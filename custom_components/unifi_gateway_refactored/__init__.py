@@ -1,4 +1,4 @@
-"""Home Assistant setup for the UniFi Gateway Refactory integration."""
+"""Home Assistant setup for the UniFi Gateway Refactored integration."""
 from __future__ import annotations
 
 import logging
@@ -38,7 +38,7 @@ async def async_setup(hass: HomeAssistant, _config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up UniFi Gateway Refactory from a config entry."""
+    """Set up UniFi Gateway Refactored from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
     options = {
@@ -144,7 +144,7 @@ def _log_ssl_warning_once(hass: HomeAssistant) -> None:
         return
     domain_data[DATA_SSL_WARNING_EMITTED] = True
     _LOGGER.warning(
-        "SSL verification for UniFi Gateway Refactory has been disabled. This "
+        "SSL verification for UniFi Gateway Refactored has been disabled. This "
         "reduces connection security."
     )
 
