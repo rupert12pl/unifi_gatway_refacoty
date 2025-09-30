@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - custom_components/unifi_gateway_refactored/manifest.json
+      - custom_components/unifi_gateway_refactory/manifest.json
   workflow_dispatch:
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
           import json
           from pathlib import Path
 
-          manifest = json.loads(Path("custom_components/unifi_gateway_refactored/manifest.json").read_text())
+          manifest = json.loads(Path("custom_components/unifi_gateway_refactory/manifest.json").read_text())
           print(manifest["version"])
           PY
           )
