@@ -144,21 +144,13 @@ class UniFiGatewayApiClient:
     async def _login(self) -> None:
         """Perform UniFi OS login exchanging credentials for a session."""
 
-        base_payload = {
-            "username": self._auth.login,
-            "password": self._auth.password,
-        }
-        login_paths: tuple[tuple[str, dict[str, Any]], ...] = (
-            ("/api/login", {"strict": True}),
-            ("/api/auth/login", {"rememberMe": False}),
-        )
+        payload = {"username": self._auth.login, "password": self._auth.password}
         self._csrf_token = None
         self._logged_in = False
         last_error: Exception | None = None
         last_status: int | None = None
         last_text: str | None = None
-        for path, extra_payload in login_paths:
-            payload = {**base_payload, **extra_payload}
+        for path in ("/api/login", "/api/auth/login"):
             url = urljoin(self.base_url + "/", path.lstrip("/"))
             try:
                 response = await self._session.post(
@@ -189,12 +181,6 @@ class UniFiGatewayApiClient:
                     csrf_cookie = cookies.get("csrf_token")
                     if csrf_cookie is not None:
                         token = csrf_cookie.value
-                if not token:
-                    _LOGGER.debug(
-                        "Login via %s returned 200 but no CSRF token; retrying",
-                        path,
-                    )
-                    continue
                 self._csrf_token = token
                 self._logged_in = True
                 return
