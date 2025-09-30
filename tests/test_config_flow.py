@@ -8,13 +8,13 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 
-from custom_components.unifi_gateway_refactored.config_flow import ConfigFlow
-from custom_components.unifi_gateway_refactored.const import (
+from custom_components.unifi_gateway_refactory.config_flow import ConfigFlow
+from custom_components.unifi_gateway_refactory.const import (
     CONF_SCAN_INTERVAL,
     CONF_VERIFY_SSL,
     DEFAULT_SCAN_INTERVAL,
 )
-from custom_components.unifi_gateway_refactored.coordinator import (
+from custom_components.unifi_gateway_refactory.coordinator import (
     UniFiGatewayAuthError,
     UniFiGatewayError,
 )
@@ -27,7 +27,7 @@ async def test_user_flow_success(hass: HomeAssistant, verify_ssl: bool) -> None:
     flow.context = {}
 
     with patch(
-        "custom_components.unifi_gateway_refactored.config_flow.async_validate_input",
+        "custom_components.unifi_gateway_refactory.config_flow.async_validate_input",
         return_value={"title": "Gateway"},
     ) as mock_validate:
         result: FlowResult = await flow.async_step_user()
@@ -56,7 +56,7 @@ async def test_user_flow_invalid_auth(hass: HomeAssistant) -> None:
     flow.context = {}
 
     with patch(
-        "custom_components.unifi_gateway_refactored.config_flow.async_validate_input",
+        "custom_components.unifi_gateway_refactory.config_flow.async_validate_input",
         side_effect=UniFiGatewayAuthError,
     ):
         user_input: dict[str, Any] = {
@@ -76,7 +76,7 @@ async def test_user_flow_cannot_connect(hass: HomeAssistant) -> None:
     flow.context = {}
 
     with patch(
-        "custom_components.unifi_gateway_refactored.config_flow.async_validate_input",
+        "custom_components.unifi_gateway_refactory.config_flow.async_validate_input",
         side_effect=UniFiGatewayError,
     ):
         user_input: dict[str, Any] = {
