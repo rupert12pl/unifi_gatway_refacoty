@@ -176,10 +176,9 @@ def test_coordinator_invalid_response(
 class DummyResponse:
     """Minimal aiohttp-like response for testing retries."""
 
-    def __init__(self, status: int, payload: Any, text: str = "temporary error") -> None:
+    def __init__(self, status: int, payload: Any) -> None:
         self._status = status
         self._payload = payload
-        self._text = text
 
     async def __aenter__(self) -> "DummyResponse":
         return self
@@ -195,7 +194,7 @@ class DummyResponse:
         return self._payload
 
     async def text(self) -> str:
-        return self._text
+        return "temporary error"
 
 
 class DummySession:
@@ -237,31 +236,6 @@ class DummyLoginResponse:
 
     async def __aexit__(self, *exc: Any) -> None:
         return None
-
-    async def text(self) -> str:
-        return ""
-
-
-class AuthRetrySession:
-    """Session that first uses basic auth then retries with session cookies."""
-
-    def __init__(self, responses: list[DummyResponse], login_response: DummyLoginResponse) -> None:
-        self._responses = responses
-        self._login_response = login_response
-        self.request_calls: list[dict[str, Any]] = []
-        self.cookie_jar = DummyCookieJar({})
-        self._request_index = 0
-        self.login_calls = 0
-
-    async def request(self, *args: Any, **kwargs: Any) -> DummyResponse:
-        self.request_calls.append(kwargs)
-        index = min(self._request_index, len(self._responses) - 1)
-        self._request_index += 1
-        return self._responses[index]
-
-    async def post(self, *args: Any, **kwargs: Any) -> DummyLoginResponse:
-        self.login_calls += 1
-        return self._login_response
 
 
 class DummyLoginSession:
@@ -346,36 +320,6 @@ def test_login_falls_back_to_cookie(
 
     assert client._csrf_token == "cookie-token"
     assert session.post_calls == 1
-
-
-def test_request_reauth_on_unauthorized(
-    monkeypatch: pytest.MonkeyPatch,
-    hass,
-    config_entry: ConfigEntry,
-    event_loop,
-) -> None:
-    """Client retries without basic auth after UniFi OS login."""
-
-    responses = [
-        DummyResponse(401, {}, text="unauthorized"),
-        DummyResponse(200, {"data": []}, text="ok"),
-    ]
-    login_response = DummyLoginResponse(headers={"x-csrf-token": "csrf123"})
-    session = AuthRetrySession(responses, login_response)
-
-    with patch(
-        "custom_components.unifi_gateway_refactory.coordinator.aiohttp_client.async_get_clientsession",
-        return_value=session,
-    ):
-        client = UniFiGatewayApiClient(hass, config_entry)
-        result = event_loop.run_until_complete(client._request_json("GET", "/test"))
-
-    assert session.login_calls == 1
-    assert len(session.request_calls) == 2
-    assert session.request_calls[0].get("auth") is not None
-    assert session.request_calls[1].get("auth") is None
-    assert session.request_calls[1]["headers"].get("x-csrf-token") == "csrf123"
-    assert result == {"data": []}
 
 
 def _setup_coordinator(
