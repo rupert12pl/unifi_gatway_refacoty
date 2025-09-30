@@ -1,24 +1,29 @@
-"""Home Assistant constants used in tests."""
+"""Constants required by the integration tests."""
 from __future__ import annotations
 
 from enum import Enum
 
-
-class UnitOfTime(Enum):
-    """Minimal UnitOfTime enum stub."""
-
-    MILLISECONDS = "milliseconds"
-
-
-TIME_MILLISECONDS = UnitOfTime.MILLISECONDS
+CONF_HOST = "host"
+CONF_USERNAME = "username"
+CONF_PASSWORD = "password"  # noqa: S105
+CONF_VERIFY_SSL = "verify_ssl"
+CONF_SCAN_INTERVAL = "scan_interval"
 
 
 class Platform(str, Enum):
-    """Subset of Home Assistant platforms referenced by the integration."""
+    """Platforms supported by Home Assistant."""
 
-    BINARY_SENSOR = "binary_sensor"
-    BUTTON = "button"
     SENSOR = "sensor"
+    BINARY_SENSOR = "binary_sensor"
 
 
-__all__ = ["Platform", "UnitOfTime", "TIME_MILLISECONDS"]
+class UnitOfDataRate:
+    """Minimal representation of data rate units."""
+
+    MEGABITS_PER_SECOND = "Mbit/s"
+
+
+class UnitOfTime:
+    """Minimal representation of time units."""
+
+    SECONDS = "s"
