@@ -337,8 +337,8 @@ def test_login_uses_csrf_header(
 
     assert client._csrf_token == "abc123"
     assert session.post_calls == 1
-    assert session.calls[0]["payload"]["strict"] is True
-    assert "/api/login" in session.calls[0]["url"]
+    assert session.calls[0]["payload"]["rememberMe"] is True
+    assert "/api/auth/login" in session.calls[0]["url"]
 
 
 def test_login_falls_back_to_cookie(
@@ -362,8 +362,8 @@ def test_login_falls_back_to_cookie(
 
     assert client._csrf_token == "cookie-token"
     assert session.post_calls == 1
-    assert session.calls[0]["payload"]["strict"] is True
-    assert "/api/login" in session.calls[0]["url"]
+    assert session.calls[0]["payload"]["rememberMe"] is True
+    assert "/api/auth/login" in session.calls[0]["url"]
 
 
 def test_login_retries_with_unifi_os_payload(
@@ -388,10 +388,10 @@ def test_login_retries_with_unifi_os_payload(
         event_loop.run_until_complete(client._ensure_authenticated())
 
     assert session.post_calls == 2
-    assert "/api/login" in session.calls[0]["url"]
-    assert session.calls[0]["payload"]["strict"] is True
-    assert "/api/auth/login" in session.calls[1]["url"]
-    assert session.calls[1]["payload"]["rememberMe"] is False
+    assert "/api/auth/login" in session.calls[0]["url"]
+    assert session.calls[0]["payload"]["rememberMe"] is True
+    assert "/api/login" in session.calls[1]["url"]
+    assert session.calls[1]["payload"]["remember"] is True
     assert client._csrf_token == "csrf456"
 
 
@@ -417,10 +417,10 @@ def test_login_retries_when_csrf_missing(
         event_loop.run_until_complete(client._ensure_authenticated())
 
     assert session.post_calls == 2
-    assert "/api/login" in session.calls[0]["url"]
-    assert session.calls[0]["payload"]["strict"] is True
-    assert "/api/auth/login" in session.calls[1]["url"]
-    assert session.calls[1]["payload"]["rememberMe"] is False
+    assert "/api/auth/login" in session.calls[0]["url"]
+    assert session.calls[0]["payload"]["rememberMe"] is True
+    assert "/api/login" in session.calls[1]["url"]
+    assert session.calls[1]["payload"]["remember"] is True
     assert client._csrf_token == "csrf789"
 
 
