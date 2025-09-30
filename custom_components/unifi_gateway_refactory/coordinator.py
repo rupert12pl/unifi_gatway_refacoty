@@ -87,6 +87,14 @@ class UniFiGatewayApi:
         self._timeout = ClientTimeout(total=REQUEST_TIMEOUT)
         self._semaphore = asyncio.Semaphore(RATE_LIMIT)
 
+    def update_client_session(
+        self, session: ClientSession, *, verify_ssl: bool
+    ) -> None:
+        """Replace the aiohttp session used for controller calls."""
+
+        self._session = session
+        self.verify_ssl = verify_ssl
+
     async def async_fetch_data(self) -> UniFiGatewayData:
         """Fetch controller data for sensors."""
         health, wlans = await asyncio.gather(

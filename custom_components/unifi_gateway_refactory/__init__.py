@@ -112,9 +112,11 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
     runtime.coordinator.update_interval_seconds = options[CONF_SCAN_INTERVAL]
 
-    if runtime.api.verify_ssl != options[CONF_VERIFY_SSL]:
-        runtime.api.verify_ssl = options[CONF_VERIFY_SSL]
-        if not runtime.api.verify_ssl:
+    verify_ssl = options[CONF_VERIFY_SSL]
+    if runtime.api.verify_ssl != verify_ssl:
+        session = async_get_clientsession(hass, verify_ssl=verify_ssl)
+        runtime.api.update_client_session(session, verify_ssl=verify_ssl)
+        if not verify_ssl:
             _log_ssl_warning_once(hass)
 
 
