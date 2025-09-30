@@ -1,11 +1,18 @@
 """Config flow for the UniFi Gateway Refactory integration."""
 from __future__ import annotations
 
-from typing import Any
+import inspect
+from collections.abc import Awaitable
+from typing import Any, cast
 
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
+
+try:
+    from homeassistant.data_entry_flow import FlowResult
+except ImportError:  # pragma: no cover - fallback for tests without Home Assistant
+    FlowResult = dict[str, Any]  # type: ignore[assignment]
 
 from .const import (
     CONF_HOST,
@@ -22,6 +29,16 @@ from .const import (
     MIN_SCAN_INTERVAL,
 )
 from .coordinator import AuthFailedError, GatewayApiError, UniFiGatewayApiClient
+
+
+async def _resolve_flow_result(
+    result: FlowResult | Awaitable[FlowResult],
+) -> FlowResult:
+    """Return a flow result regardless of sync/async implementation."""
+
+    if inspect.isawaitable(result):
+        return cast(FlowResult, await cast(Awaitable[FlowResult], result))
+    return cast(FlowResult, result)
 
 
 async def _async_validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
@@ -44,7 +61,7 @@ class UniFiGatewayConfigFlow(  # type: ignore[misc, call-arg]
 
     VERSION = 1
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
@@ -67,9 +84,11 @@ class UniFiGatewayConfigFlow(  # type: ignore[misc, call-arg]
                 vol.Optional(CONF_VERIFY_SSL, default=DEFAULT_VERIFY_SSL): bool,
             }
         )
-        return await self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)
+        return await _resolve_flow_result(
+            self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)
+        )
 
-    async def async_step_reauth(self, user_input: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def async_step_reauth(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is None:
             user_input = {}
         combined = {**self.context.get("entry_data", {}), **user_input}
@@ -88,10 +107,12 @@ class UniFiGatewayConfigFlow(  # type: ignore[misc, call-arg]
                     self.hass.config_entries.async_update_entry(existing, data=updated)
                 return self.async_abort(reason="reauth_successful")
 
-        return await self.async_show_form(
-            step_id="reauth",
-            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
-            errors=errors,
+        return await _resolve_flow_result(
+            self.async_show_form(
+                step_id="reauth",
+                data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+                errors=errors,
+            )
         )
 
     @staticmethod
@@ -107,7 +128,7 @@ class UniFiGatewayOptionsFlow(config_entries.OptionsFlow):
     def __init__(self, entry: config_entries.ConfigEntry) -> None:
         self.config_entry = entry
 
-    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             interval = int(user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
@@ -133,8 +154,10 @@ class UniFiGatewayOptionsFlow(config_entries.OptionsFlow):
                 ): bool,
             }
         )
-        return await self.async_show_form(
-            step_id="init",
-            data_schema=options_schema,
-            errors=errors,
+        return await _resolve_flow_result(
+            self.async_show_form(
+                step_id="init",
+                data_schema=options_schema,
+                errors=errors,
+            )
         )
