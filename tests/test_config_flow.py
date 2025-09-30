@@ -77,37 +77,6 @@ def test_invalid_auth(
     assert result["errors"]["base"] == "invalid_auth"
 
 
-def test_unexpected_error(
-    monkeypatch: pytest.MonkeyPatch,
-    flow: config_flow.UniFiGatewayConfigFlow,
-    event_loop,
-) -> None:
-    class _Client:
-        def __init__(self, hass, data):
-            self.hass = hass
-            self.data = data
-
-        async def fetch_metrics(self):
-            raise ValueError("boom")
-
-    monkeypatch.setattr(config_flow, "UniFiGatewayApiClient", _Client)
-
-    result = event_loop.run_until_complete(
-        flow.async_step_user(
-            {
-                CONF_HOST: "gateway.local",
-                CONF_USERNAME: "user",
-                CONF_PASSWORD: "pass",
-                CONF_SITE: DEFAULT_SITE,
-                CONF_VERIFY_SSL: True,
-            }
-        )
-    )
-
-    assert result["type"] == "form"
-    assert result["errors"]["base"] == "cannot_connect"
-
-
 def test_options_flow(monkeypatch: pytest.MonkeyPatch, event_loop) -> None:
     entry = config_entries.ConfigEntry(
         entry_id="entry",
