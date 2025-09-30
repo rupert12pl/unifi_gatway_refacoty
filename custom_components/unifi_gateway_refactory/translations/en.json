@@ -1,0 +1,49 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to UniFi Gateway",
+        "description": "Enter credentials for your UniFi OS controller.",
+        "data": {
+          "host": "Controller Host",
+          "username": "Username",
+          "password": "Password",
+          "site": "Site ID",
+          "verify_ssl": "Verify SSL certificates"
+        }
+      },
+      "reauth": {
+        "title": "Reauthenticate UniFi Gateway",
+        "description": "Password is required to reauthenticate.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the controller.",
+      "invalid_auth": "Invalid username or password."
+    },
+    "abort": {
+      "reauth_successful": "Reauthentication successful"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "UniFi Gateway options",
+        "description": "Adjust update interval and SSL verification.",
+        "data": {
+          "scan_interval": "Update interval (seconds)",
+          "verify_ssl": "Verify SSL certificates"
+        }
+      }
+    }
+  },
+  "issues": {
+    "legacy_conflict": {
+      "title": "Remove legacy UniFi Gateway integration",
+      "description": "The legacy integration {domain} is installed. Remove it to avoid duplicated entities."
+    }
+  }
+}

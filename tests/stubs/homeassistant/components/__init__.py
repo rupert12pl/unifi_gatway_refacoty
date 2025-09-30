@@ -1,1 +1,1 @@
-"""Minimal stub for homeassistant.components."""
+"""Stub module for homeassistant.components."""

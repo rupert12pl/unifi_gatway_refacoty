@@ -1,24 +1,14 @@
-"""Home Assistant constants used in tests."""
+"""Home Assistant constant stubs used in tests."""
 from __future__ import annotations
 
 from enum import Enum
 
 
-class UnitOfTime(Enum):
-    """Minimal UnitOfTime enum stub."""
-
-    MILLISECONDS = "milliseconds"
-
-
-TIME_MILLISECONDS = UnitOfTime.MILLISECONDS
-
-
 class Platform(str, Enum):
-    """Subset of Home Assistant platforms referenced by the integration."""
+    """Platforms referenced by the integration."""
 
-    BINARY_SENSOR = "binary_sensor"
-    BUTTON = "button"
     SENSOR = "sensor"
+    BINARY_SENSOR = "binary_sensor"
 
 
-__all__ = ["Platform", "UnitOfTime", "TIME_MILLISECONDS"]
+__all__ = ["Platform"]
