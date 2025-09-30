@@ -1,0 +1,84 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to UniFi Gateway",
+        "description": "Provide controller access details.",
+        "data": {
+          "host": "Controller URL",
+          "username": "Username",
+          "password": "Password",
+          "site": "Site",
+          "verify_ssl": "Verify SSL certificates"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate UniFi Gateway",
+        "description": "Credentials are no longer valid. Update them below.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to reach the controller.",
+      "invalid_auth": "Invalid username or password.",
+      "scan_interval_out_of_range": "Scan interval must be between 30 and 300 seconds.",
+      "reauth_failed": "Re-authentication failed."
+    },
+    "abort": {
+      "already_configured": "This controller is already configured.",
+      "reauth_successful": "Re-authentication successful.",
+      "reauth_failed": "Re-authentication failed."
+    }
+  },
+  "options": {
+    "step": {
+      "user": {
+        "title": "UniFi Gateway options",
+        "data": {
+          "scan_interval": "Update interval (seconds)",
+          "verify_ssl": "Verify SSL certificates"
+        }
+      }
+    }
+  },
+  "issues": {
+    "legacy_conflict": {
+      "title": "Remove legacy UniFi Gateway integration",
+      "description": "The legacy `unifigateway` integration is also loaded. Remove it to avoid duplicate sensors.",
+      "severity": "warning"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "wan_status": {
+        "name": "WAN status"
+      },
+      "wan_latency": {
+        "name": "WAN latency"
+      },
+      "wan_uptime": {
+        "name": "WAN uptime"
+      },
+      "wan_tx": {
+        "name": "WAN upload throughput"
+      },
+      "wan_rx": {
+        "name": "WAN download throughput"
+      },
+      "clients_total": {
+        "name": "Total clients"
+      },
+      "vpn_clients": {
+        "name": "VPN clients"
+      }
+    },
+    "binary_sensor": {
+      "wan_online": {
+        "name": "WAN online"
+      }
+    }
+  }
+}
