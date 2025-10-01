@@ -1,11 +1,5 @@
-"""Stub for homeassistant.helpers.entity_platform."""
+from __future__ import annotations
 
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable
 
-AddEntitiesCallback = Callable[[Sequence], None]
-
-
-def async_add_entities_callback(entities: Iterable, update_before_add: bool = False) -> None:
-    """Simple helper mirroring Home Assistant signature."""
-    for _ in entities:
-        pass
+AddEntitiesCallback = Callable[[Iterable[object]], None]

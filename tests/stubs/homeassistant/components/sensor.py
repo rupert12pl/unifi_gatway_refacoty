@@ -1,23 +1,31 @@
-"""Minimal stubs for Home Assistant sensor module."""
+from __future__ import annotations
+
+from enum import Enum
+
+
+class SensorDeviceClass(str, Enum):
+    NONE = "none"
+
+
+class SensorStateClass(str, Enum):
+    MEASUREMENT = "measurement"
 
 
 class SensorEntity:
-    """Basic sensor entity stub."""
+    def __init__(self) -> None:
+        self._attr_name: object = None
+        self._attr_icon: object = None
+        self._attr_device_class: object = None
+        self._attr_state_class: object = None
+        self._attr_device_info: object = None
 
-    _attr_should_poll = False
+    @property
+    def available(self) -> bool:
+        return True
 
-    def __init__(self, *args, **kwargs) -> None:
-        self._attr_name = kwargs.get("name")
+    @property
+    def native_value(self):
+        return None
 
-
-class SensorDeviceClass:
-    """Stub of Home Assistant sensor device classes."""
-
-    TIMESTAMP = "timestamp"
-    DURATION = "duration"
-
-
-class SensorStateClass:
-    """Stub of Home Assistant sensor state classes."""
-
-    MEASUREMENT = "measurement"
+    def async_write_ha_state(self) -> None:
+        return None
