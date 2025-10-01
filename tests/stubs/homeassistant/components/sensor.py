@@ -1,33 +1,23 @@
-"""Sensor platform stubs."""
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Any
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class SensorEntityDescription:
-    """Description of a sensor entity."""
-
-    key: str
-    translation_key: str | None = None
-    native_unit_of_measurement: str | None = None
-    suggested_display_precision: int | None = None
+"""Minimal stubs for Home Assistant sensor module."""
 
 
 class SensorEntity:
-    """Minimal sensor entity."""
+    """Basic sensor entity stub."""
 
-    _attr_has_entity_name = False
+    _attr_should_poll = False
 
-    def __init__(self) -> None:
-        self.entity_description: SensorEntityDescription | None = None
-        self._attr_unique_id: str | None = None
+    def __init__(self, *args, **kwargs) -> None:
+        self._attr_name = kwargs.get("name")
 
-    @property
-    def native_value(self) -> Any:
-        return None
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any] | None:
-        return None
+class SensorDeviceClass:
+    """Stub of Home Assistant sensor device classes."""
+
+    TIMESTAMP = "timestamp"
+    DURATION = "duration"
+
+
+class SensorStateClass:
+    """Stub of Home Assistant sensor state classes."""
+
+    MEASUREMENT = "measurement"

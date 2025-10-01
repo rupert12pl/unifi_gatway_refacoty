@@ -1,61 +1,72 @@
-"""Diagnostics support for UniFi Gateway Refactored."""
+
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Dict
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 
-from . import IntegrationRuntime
-from .const import DOMAIN
-from .coordinator import UniFiGatewayCoordinator
+from .const import (
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_PORT,
+    CONF_SITE_ID,
+    CONF_TIMEOUT,
+    CONF_USE_PROXY_PREFIX,
+    CONF_USERNAME,
+    CONF_VERIFY_SSL,
+    DEFAULT_PORT,
+    DEFAULT_SITE,
+    DEFAULT_TIMEOUT,
+    DEFAULT_USE_PROXY_PREFIX,
+    DEFAULT_VERIFY_SSL,
+    DOMAIN,
+)
+from .unifi_client import UniFiOSClient
 
 
 async def async_get_config_entry_diagnostics(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-) -> dict[str, Any]:
-    """Return diagnostics for a config entry."""
-    runtime = cast(IntegrationRuntime, hass.data[DOMAIN][entry.entry_id])
-    coordinator: UniFiGatewayCoordinator = runtime.coordinator
-    data = coordinator.data
+    hass: HomeAssistant, entry: ConfigEntry
+) -> Dict[str, Any]:
+    stored = hass.data.get(DOMAIN, {}).get(entry.entry_id)
 
-    if not data:
-        return {"detail": "no_data"}
+    if stored and isinstance(stored.get("client"), UniFiOSClient):
+        client: UniFiOSClient = stored["client"]
 
-    entry_title = getattr(entry, "title", None) or entry.data.get("title")
-    if entry_title is None:
-        entry_title = entry.data.get(CONF_HOST, "UniFi Gateway")
+        def _collect_existing() -> Dict[str, Any]:
+            health = client.get_healthinfo()
+            sites = client.list_sites()
+            return {
+                "controller_ui": client.get_controller_url(),
+                "controller_api": client.get_controller_api_url(),
+                "site": client.get_site(),
+                "health": health,
+                "sites": sites,
+            }
 
-    return {
-        "entry": {
-            "title": entry_title,
-            "site": entry.data.get("site"),
-        },
-        "last_fetch": data.last_fetch.isoformat(),
-        "health": [_sanitize_health(item) for item in data.health],
-        "wlans": [_sanitize_wlan(item) for item in data.wlans],
-    }
+        return await hass.async_add_executor_job(_collect_existing)
 
+    def _collect_fresh() -> Dict[str, Any]:
+        client = UniFiOSClient(
+            host=entry.data[CONF_HOST],
+            username=entry.data.get(CONF_USERNAME),
+            password=entry.data.get(CONF_PASSWORD),
+            port=entry.data.get(CONF_PORT, DEFAULT_PORT),
+            site_id=entry.data.get(CONF_SITE_ID, DEFAULT_SITE),
+            ssl_verify=entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
+            use_proxy_prefix=entry.data.get(
+                CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX
+            ),
+            timeout=entry.data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
+        )
+        health = client.get_healthinfo()
+        sites = client.list_sites()
+        return {
+            "controller_ui": client.get_controller_url(),
+            "controller_api": client.get_controller_api_url(),
+            "site": client.get_site(),
+            "health": health,
+            "sites": sites,
+        }
 
-def _sanitize_health(item: Any) -> Any:
-    if not isinstance(item, dict):
-        return item
-    sanitized = dict(item)
-    if "name" in sanitized:
-        sanitized["name"] = "redacted"
-    if "ip" in sanitized:
-        sanitized["ip"] = "redacted"
-    return sanitized
-
-
-def _sanitize_wlan(item: Any) -> Any:
-    if not isinstance(item, dict):
-        return item
-    sanitized = dict(item)
-    if "name" in sanitized:
-        sanitized["name"] = "redacted"
-    if "x_password" in sanitized:
-        sanitized["x_password"] = "redacted"  # noqa: S105 - sanitized placeholder
-    return sanitized
+    return await hass.async_add_executor_job(_collect_fresh)

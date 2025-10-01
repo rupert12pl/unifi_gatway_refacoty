@@ -88,36 +88,6 @@ HACS expects the following files in a custom integration repository:
 This repository already follows that layout with the integration stored in
 `custom_components/unifi_gateway_refactored/`.
 
-## Setup and configuration
-
-1. Install the integration through HACS or copy `custom_components/unifi_gateway_refactored`
-   into your Home Assistant `custom_components` directory.
-2. Restart Home Assistant and navigate to **Settings → Devices & Services → Add
-   Integration**. Search for **UniFi Gateway Refactored** and provide the controller
-   URL, credentials and target site.
-3. Optional: disable SSL verification if you use a self-signed certificate (the
-   integration will log a one-time warning when disabled).
-
-### Runtime options
-
-- **Update interval** – Controls how often the controller is polled (30–300
-  seconds). This setting is available from the integration's **Configure** menu.
-- **Verify SSL certificates** – Toggle SSL validation when communicating with
-  the UniFi controller.
-
-### Rate limiting and error handling
-
-- The integration uses Home Assistant's shared aiohttp client with an
-  `asyncio.Semaphore` to limit the number of concurrent controller requests.
-- Transient API failures (HTTP 429 or 5xx) are retried with exponential backoff
-  and jitter. Authentication errors (401/403) immediately surface to the user.
-
-### Conflict detection
-
-If the legacy `unifigateway` integration is detected, a repair issue is created
-in Home Assistant instructing you to remove the duplicate entry before the new
-integration can run reliably.
-
 ## Publishing releases for HACS
 
 HACS requires release tags that follow the `MAJOR.MINOR.PATCH` semantic version

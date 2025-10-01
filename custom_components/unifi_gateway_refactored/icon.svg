@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title>UniFi Gateway Dashboard Analyzer Icon</title>
+  <defs>
+    <linearGradient id="icon-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1f9dd1"/>
+      <stop offset="100%" stop-color="#0f4c81"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="24" fill="url(#icon-grad)"/>
+  <g fill="none" stroke="#ffffff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M64 26c-20 0-36 16-36 36s16 36 36 36 36-16 36-36" opacity="0.4"/>
+    <path d="M64 42c-12 0-22 10-22 22s10 22 22 22 22-10 22-22"/>
+  </g>
+  <circle cx="64" cy="64" r="10" fill="#ffffff"/>
+</svg>
