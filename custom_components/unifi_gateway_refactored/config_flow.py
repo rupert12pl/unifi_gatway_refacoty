@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from homeassistant import config_entries
+from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.core import HomeAssistant
 
 if TYPE_CHECKING:
@@ -52,8 +53,11 @@ async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]
             use_proxy_prefix=data.get(CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX),
             timeout=data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
         )
-        ping = client.ping()
-        sites = client.list_sites()
+        try:
+            ping = client.ping()
+            sites = client.list_sites()
+        finally:
+            client.close()
         return {"ping": ping, "sites": sites}
     return await hass.async_add_executor_job(_sync)
 
@@ -218,6 +222,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     err,
                 )
                 errors["base"] = "cannot_connect" if not err.expected else "unknown"
+            except AbortFlow:
+                raise
             except Exception as err:  # pragma: no cover - defensive guard
                 _LOGGER.exception(
                     "Unexpected error while validating UniFi controller %s:%s",

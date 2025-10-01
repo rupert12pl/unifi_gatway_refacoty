@@ -137,6 +137,13 @@ class UniFiOSClient:
         self._clients_v2_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
         self._vpn_servers_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
         self._vpn_sessions_cache: Optional[Tuple[float, Dict[str, Dict[str, int]]]] = None
+
+    def close(self) -> None:
+        """Close the underlying HTTP session."""
+
+        session = getattr(self, "_session", None)
+        if session is not None:
+            session.close()
     def _net_base(self) -> str:
         """Return the normalized base URL for UniFi Network requests."""
 
