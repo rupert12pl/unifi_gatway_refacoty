@@ -1,23 +1,31 @@
-"""Pytest configuration and shared fixtures."""
+"""Test configuration for the UniFi Gateway Dashboard Analyzer integration."""
+
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+STUBS_ROOT = Path(__file__).parent / "stubs"
 
-STUBS_PATH = Path(__file__).parent / "stubs"
-if str(STUBS_PATH) not in sys.path:
-    sys.path.insert(0, str(STUBS_PATH))
+for path in (PROJECT_ROOT, STUBS_ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
-from homeassistant.core import HomeAssistant
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
 
 
 @pytest.fixture
-def hass() -> HomeAssistant:
-    """Provide a stubbed HomeAssistant instance for tests."""
-    return HomeAssistant()
+def hass() -> "HomeAssistant":
+    """Provide a HomeAssistant instance for coordinator tests."""
+
+    from homeassistant.core import HomeAssistant
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    return HomeAssistant(loop)
