@@ -1,4 +1,9 @@
 """Minimal Home Assistant stubs for unit tests."""
-from __future__ import annotations
+from .core import HomeAssistant, EventBus  # noqa: F401
+from .exceptions import HomeAssistantError  # noqa: F401
 
-__all__ = ["core", "config_entries", "const", "data_entry_flow"]
+__all__ = [
+    "HomeAssistant",
+    "EventBus",
+    "HomeAssistantError",
+]

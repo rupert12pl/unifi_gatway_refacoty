@@ -1,50 +1,57 @@
-"""Simplified DataUpdateCoordinator implementation for tests."""
+"""Stub implementations of Home Assistant's update coordinator utilities."""
 from __future__ import annotations
 
-from datetime import timedelta
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Optional, TypeVar
+
 
 T = TypeVar("T")
 
 
 class UpdateFailed(Exception):
-    """Error raised when an update fails."""
+    """Exception raised when an update cannot be completed."""
 
 
 class DataUpdateCoordinator(Generic[T]):
-    """Minimal subset of Home Assistant's coordinator."""
+    """Very small subset of Home Assistant's DataUpdateCoordinator for tests."""
 
     def __init__(
         self,
         hass: Any,
-        logger: Any,
         *,
+        logger: Any,
         name: str,
-        update_interval: timedelta | None,
+        update_interval: Optional[Any] = None,
     ) -> None:
         self.hass = hass
         self.logger = logger
         self.name = name
         self.update_interval = update_interval
-        self.data: T | None = None
-        self.last_update_success = False
+        self.data: Optional[T] = None
 
     async def async_config_entry_first_refresh(self) -> None:
+        """Simulate the first refresh by calling the async update method."""
         self.data = await self._async_update_data()
-        self.last_update_success = True
 
-    async def _async_update_data(self) -> T:
+    async def async_request_refresh(self) -> None:
+        """Trigger a refresh using the async update method."""
+        self.data = await self._async_update_data()
+
+    async def _async_update_data(self) -> T:  # pragma: no cover - to be overridden
         raise NotImplementedError
+
+    def async_set_updated_data(self, data: T) -> None:
+        """Directly set the stored data."""
+        self.data = data
 
 
 class CoordinatorEntity(Generic[T]):
-    """Entity subscribed to a DataUpdateCoordinator."""
+    """Minimal CoordinatorEntity stub."""
 
     def __init__(self, coordinator: DataUpdateCoordinator[T]) -> None:
         self.coordinator = coordinator
 
-    async def async_added_to_hass(self) -> None:
+    async def async_added_to_hass(self) -> None:  # pragma: no cover - compatibility
         return None
 
-    def async_write_ha_state(self) -> None:
-        return None
+
+__all__ = ["DataUpdateCoordinator", "UpdateFailed", "CoordinatorEntity"]

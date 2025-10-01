@@ -1,0 +1,12 @@
+{
+  "items": [
+    {
+      "id": "peer-1",
+      "name": "HQ",
+      "state": "CONNECTED",
+      "rx_bytes": 512,
+      "tx_bytes": 256,
+      "peer_addr": "203.0.113.1"
+    }
+  ]
+}

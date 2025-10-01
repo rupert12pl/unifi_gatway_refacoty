@@ -1,36 +1,45 @@
-"""Constants for the UniFi Gateway Refactored integration."""
-from __future__ import annotations
-
-from datetime import timedelta
-
 from homeassistant.const import Platform
 
 DOMAIN = "unifi_gateway_refactored"
+PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
 
-CONF_SITE = "site"
+CONF_USERNAME = "username"
+CONF_PASSWORD = "password"
+CONF_HOST = "host"
+CONF_PORT = "port"
+CONF_SITE_ID = "site_id"
 CONF_VERIFY_SSL = "verify_ssl"
-CONF_SCAN_INTERVAL = "scan_interval"
+CONF_USE_PROXY_PREFIX = "use_proxy_prefix"
+CONF_TIMEOUT = "timeout"
+CONF_SPEEDTEST_INTERVAL = "speedtest_interval"
+# Legacy option key kept for backwards compatibility with pre-0.6.1 releases
+LEGACY_CONF_SPEEDTEST_INTERVAL_MIN = "speedtest_interval_minutes"
+CONF_SPEEDTEST_ENTITIES = "speedtest_entities"
+CONF_WIFI_GUEST = "wifi_guest"
+CONF_WIFI_IOT = "wifi_iot"
 
+DEFAULT_PORT = 443
 DEFAULT_SITE = "default"
-DEFAULT_VERIFY_SSL = True
-DEFAULT_SCAN_INTERVAL = 30
-MIN_SCAN_INTERVAL = 30
-MAX_SCAN_INTERVAL = 300
+DEFAULT_VERIFY_SSL = False
+DEFAULT_USE_PROXY_PREFIX = True
+DEFAULT_TIMEOUT = 10
+DEFAULT_SPEEDTEST_INTERVAL = 3600  # seconds
+DEFAULT_SPEEDTEST_INTERVAL_MINUTES = 60
+DEFAULT_SPEEDTEST_ENTITIES = (
+    "sensor.speedtest_download,sensor.speedtest_upload,sensor.speedtest_ping"
+)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
+# Monitoring keys
+DATA_RUNNER = "runner"
+DATA_UNDO_TIMER = "undo_timer"
 
-LEGACY_DOMAIN = "unifigateway"
+EVT_RUN_START = f"{DOMAIN}.speedtest.start"
+EVT_RUN_END = f"{DOMAIN}.speedtest.end"
+EVT_RUN_ERROR = f"{DOMAIN}.speedtest.error"
 
-REQUEST_TIMEOUT = 30
-MAX_RETRIES = 4
-BACKOFF_BASE = 2
-INITIAL_BACKOFF = 1.0
-MAX_BACKOFF = 30.0
-RATE_LIMIT = 3
+ATTR_TRACE_ID = "trace_id"
+ATTR_REASON = "reason"
+ATTR_ENTITY_IDS = "entity_ids"
+ATTR_DURATION_MS = "duration_ms"
+ATTR_ERROR = "error"
 
-DATA_COORDINATOR = "coordinator"
-DATA_API = "api"
-DATA_OPTIONS = "options"
-DATA_SSL_WARNING_EMITTED = "ssl_warning_emitted"
-
-UPDATE_INTERVAL = timedelta(seconds=DEFAULT_SCAN_INTERVAL)
