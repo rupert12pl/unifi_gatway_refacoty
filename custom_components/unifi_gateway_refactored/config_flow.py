@@ -195,16 +195,35 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self._cached[key] = normalized
             try:
                 await _validate(self.hass, data)
-                await self.async_set_unique_id(f"{data[CONF_HOST]}:{data.get(CONF_PORT, DEFAULT_PORT)}")
+                await self.async_set_unique_id(
+                    f"{data[CONF_HOST]}:{data.get(CONF_PORT, DEFAULT_PORT)}"
+                )
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(title=f"UniFi {data[CONF_HOST]}", data=data)
             except AuthError:
                 errors["base"] = "invalid_auth"
-            except ConnectivityError:
+            except ConnectivityError as err:
+                _LOGGER.error(
+                    "Connectivity issue while validating UniFi controller %s:%s: %s",
+                    data.get(CONF_HOST),
+                    data.get(CONF_PORT, DEFAULT_PORT),
+                    err,
+                )
                 errors["base"] = "cannot_connect"
-            except APIError:
-                errors["base"] = "unknown"
-            except Exception:
+            except APIError as err:
+                _LOGGER.error(
+                    "UniFi API error while validating controller %s:%s: %s",
+                    data.get(CONF_HOST),
+                    data.get(CONF_PORT, DEFAULT_PORT),
+                    err,
+                )
+                errors["base"] = "cannot_connect" if not err.expected else "unknown"
+            except Exception as err:  # pragma: no cover - defensive guard
+                _LOGGER.exception(
+                    "Unexpected error while validating UniFi controller %s:%s",
+                    data.get(CONF_HOST),
+                    data.get(CONF_PORT, DEFAULT_PORT),
+                )
                 errors["base"] = "unknown"
 
         interval_default = self._seconds_to_minutes(
@@ -315,11 +334,28 @@ class OptionsFlow(config_entries.OptionsFlow):
                     return self.async_create_entry(title="", data=cleaned)
                 except AuthError:
                     errors["base"] = "invalid_auth"
-                except ConnectivityError:
+                except ConnectivityError as err:
+                    _LOGGER.error(
+                        "Connectivity issue while validating UniFi controller %s:%s during options flow: %s",
+                        merged.get(CONF_HOST),
+                        merged.get(CONF_PORT, DEFAULT_PORT),
+                        err,
+                    )
                     errors["base"] = "cannot_connect"
-                except APIError:
-                    errors["base"] = "unknown"
-                except Exception:
+                except APIError as err:
+                    _LOGGER.error(
+                        "UniFi API error while validating controller %s:%s during options flow: %s",
+                        merged.get(CONF_HOST),
+                        merged.get(CONF_PORT, DEFAULT_PORT),
+                        err,
+                    )
+                    errors["base"] = "cannot_connect" if not err.expected else "unknown"
+                except Exception as err:  # pragma: no cover - defensive guard
+                    _LOGGER.exception(
+                        "Unexpected error while validating UniFi controller %s:%s during options flow",
+                        merged.get(CONF_HOST),
+                        merged.get(CONF_PORT, DEFAULT_PORT),
+                    )
                     errors["base"] = "unknown"
 
         current = {**self._entry.data, **self._entry.options}
