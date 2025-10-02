@@ -10,6 +10,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DATA_RUNNER, DOMAIN
 from .unifi_client import UniFiOSClient
+from .mixins import UniFiDeviceInfoMixin
 from .utils import (
     build_reset_button_unique_id,
     build_speedtest_button_unique_id,
@@ -36,7 +37,7 @@ async def async_setup_entry(
         True,
     )
 
-class SpeedtestRunButton(ButtonEntity):
+class SpeedtestRunButton(ButtonEntity, UniFiDeviceInfoMixin):
     _attr_name = "Run Speedtest"
     _attr_icon = "mdi:speedometer"
 
@@ -47,11 +48,10 @@ class SpeedtestRunButton(ButtonEntity):
         client: UniFiOSClient,
         device_name: str,
     ) -> None:
+        UniFiDeviceInfoMixin.__init__(self, client, device_name)
         self.hass = hass
         self._entry = entry
         self._entry_id = entry.entry_id
-        self._client = client
-        self._device_name = device_name
         self._attr_unique_id = build_speedtest_button_unique_id(self._entry_id)
 
     async def async_press(self) -> None:
@@ -79,7 +79,7 @@ class SpeedtestRunButton(ButtonEntity):
         }
 
 
-class GatewayResetButton(ButtonEntity):
+class GatewayResetButton(ButtonEntity, UniFiDeviceInfoMixin):
     _attr_name = "Reset Gateway"
     _attr_icon = "mdi:restart"
     _attr_entity_category = EntityCategory.CONFIG
@@ -91,11 +91,10 @@ class GatewayResetButton(ButtonEntity):
         client: UniFiOSClient,
         device_name: str,
     ) -> None:
+        UniFiDeviceInfoMixin.__init__(self, client, device_name)
         self.hass = hass
         self._entry = entry
         self._entry_id = entry.entry_id
-        self._client = client
-        self._device_name = device_name
         self._attr_unique_id = build_reset_button_unique_id(self._entry_id)
 
     async def async_press(self) -> None:
