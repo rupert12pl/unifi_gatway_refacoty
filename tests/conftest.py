@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
+from homeassistant.core import HomeAssistant
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -14,17 +16,15 @@ STUBS_PATH = Path(__file__).parent / "stubs"
 if str(STUBS_PATH) not in sys.path:
     sys.path.insert(0, str(STUBS_PATH))
 
-from unittest.mock import MagicMock, patch
-from homeassistant.core import HomeAssistant  # noqa: E402
-
 
 @pytest.fixture
 async def hass() -> HomeAssistant:
     """Provide a stubbed HomeAssistant instance for tests."""
     instance = HomeAssistant(str(PROJECT_ROOT / "config"))
-    from homeassistant import config_entries, loader
     import json
-    import custom_components.unifi_gateway_refactored
+
+    from homeassistant import config_entries, loader
+
 
     # Initialize the integration loader cache
     instance.data[loader.DATA_INTEGRATIONS] = {}
@@ -34,7 +34,9 @@ async def hass() -> HomeAssistant:
     instance.data[loader.DATA_MISSING_PLATFORMS] = set()
 
     # Load the manifest from the JSON file
-    manifest_path = PROJECT_ROOT / "custom_components" / "unifi_gateway_refactored" / "manifest.json"
+    manifest_path = (
+        PROJECT_ROOT / "custom_components" / "unifi_gateway_refactored" / "manifest.json"
+    )
     with open(manifest_path) as f:
         manifest = json.load(f)
 

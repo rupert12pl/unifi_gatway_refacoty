@@ -1,3 +1,5 @@
+"""Home Assistant config entries stubs for testing."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -14,6 +16,14 @@ class ConfigEntry:
     options: Dict[str, Any] = field(default_factory=dict)
 
     def async_on_unload(self, func: Callable[[], Any]) -> Callable[[], Any]:
+        """Register a function to call when config entry is unloaded.
+
+        Args:
+            func: Function to call when entry is unloaded.
+
+        Returns:
+            The function itself for convenience.
+        """
         return func
 
 

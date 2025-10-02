@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 import logging
 import time
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from homeassistant.core import HomeAssistant
@@ -12,7 +12,6 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
-
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -112,7 +111,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 ping_success = await self.hass.async_add_executor_job(self._client.ping)
                 if not ping_success:
                     raise ConnectivityError("Controller ping failed")
-                    
+
                 return await self.hass.async_add_executor_job(
                     self._fetch_data,
                 )
@@ -262,7 +261,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         if interval > 0:
             last_ts = self._speedtest_last_timestamp(speedtest)
             now_ts = time.time()
-            
+
             should_trigger = False
             if not speedtest:
                 should_trigger = True
@@ -270,7 +269,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             elif last_ts and (now_ts - last_ts) >= interval:
                 should_trigger = True
                 reason = f"stale ({int(now_ts - last_ts)}s old)"
-                
+
             if should_trigger:
                 cooldown = max(interval, 60)
                 try:
