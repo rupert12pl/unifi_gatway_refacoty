@@ -1,5 +1,9 @@
 {
   "name": "UniFi Gateway Dashboard Analyzer",
   "content_in_root": false,
-  "render_readme": true
+  "country": ["PL", "US", "GB"],
+  "domain": ["unifi_gateway_refactored"],
+  "homeassistant": "2024.2.0",
+  "render_readme": true,
+  "zip_release": true
 }
