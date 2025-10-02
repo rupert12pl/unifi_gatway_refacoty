@@ -567,8 +567,8 @@ class UniFiOSClient:
         last_error: Optional[Exception] = None
         for path, payload, use_json in attempts:
             url = f"{base}{path}"
-            endpoint = self._login_endpoint_label(url)
-            _LOGGER.debug("Attempting UniFi login via %s", endpoint)
+            # Do not log the resolved endpoint to avoid leaking credentials on misconfigured hosts
+            _LOGGER.debug("Attempting UniFi login")
             try:
                 if use_json:
                     response = self._session.post(
@@ -585,7 +585,7 @@ class UniFiOSClient:
                         allow_redirects=False,
                     )
             except requests.exceptions.RequestException as err:
-                _LOGGER.debug("Login attempt via %s failed: %s", endpoint, err)
+                _LOGGER.debug("UniFi login attempt failed: %s", err)
                 last_error = ConnectivityError(
                     f"Error connecting to {url}: {err}", url=url
                 )
@@ -603,7 +603,7 @@ class UniFiOSClient:
                     body=body_preview,
                 )
             if status == 404:
-                _LOGGER.debug("Login endpoint %s not found", endpoint)
+                _LOGGER.debug("UniFi login endpoint not found (HTTP 404)")
                 last_error = APIError(
                     f"Login endpoint {url} not found",
                     status_code=status,
@@ -613,9 +613,7 @@ class UniFiOSClient:
                 )
                 continue
             if status >= 400:
-                _LOGGER.debug(
-                    "Login attempt via %s returned HTTP %s", endpoint, status
-                )
+                _LOGGER.debug("UniFi login attempt returned HTTP %s", status)
                 last_error = APIError(
                     f"Login attempt failed with HTTP {status}",
                     status_code=status,
@@ -624,7 +622,7 @@ class UniFiOSClient:
                 )
                 continue
 
-            _LOGGER.debug("Login via %s succeeded", endpoint)
+            _LOGGER.debug("UniFi login succeeded")
             if not self._csrf:
                 self._refresh_csrf_token(base, timeout)
             return
