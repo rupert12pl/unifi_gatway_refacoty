@@ -329,7 +329,6 @@ async def _async_migrate_speedtest_button_unique_id(
     except ImportError:  # pragma: no cover - defensive guard
         return
 
-    registry = er.async_get(hass)
     old_unique_id = "unifi_gateway_refactored_run_speedtest"
     new_unique_id = build_speedtest_button_unique_id(entry.entry_id)
 
@@ -413,8 +412,6 @@ async def _async_migrate_interface_unique_ids(
     if not mapping:
         _LOGGER.debug("No interface unique ID migrations required for entry %s", entry.entry_id)
         return
-
-    registry = er.async_get(hass)
 
     async def _migrate(entity_entry: er.RegistryEntry) -> dict[str, str] | None:
         if entity_entry.config_entry_id != entry.entry_id:

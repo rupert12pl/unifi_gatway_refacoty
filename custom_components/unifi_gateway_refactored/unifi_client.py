@@ -13,8 +13,6 @@ from urllib.parse import urlsplit
 
 if TYPE_CHECKING:  # pragma: no cover - for typing only
     import requests
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
 
 from .const import DEFAULT_SITE
 
@@ -31,8 +29,7 @@ _VPN_NET_ID_KEYS = (
 )
 
 
-LOGGER = logging.getLogger(__name__)
-_LOGGER = LOGGER
+_LOGGER = logging.getLogger(__name__)
 
 
 class APIError(Exception):
@@ -200,7 +197,7 @@ class UniFiOSClient:
             try:
                 resp, text = self._request("GET", path, timeout=6)
             except Exception as err:  # pragma: no cover - defensive network guard
-                LOGGER.debug("Site-id probe %s failed: %s", path, err)
+                _LOGGER.debug("Site-id probe %s failed: %s", path, err)
                 continue
 
             if resp.status_code >= 400:
@@ -209,7 +206,7 @@ class UniFiOSClient:
             try:
                 payload = json.loads(text) if text else {}
             except json.JSONDecodeError:  # pragma: no cover - defensive
-                LOGGER.debug("Invalid JSON while probing site id from %s", path)
+                _LOGGER.debug("Invalid JSON while probing site id from %s", path)
                 continue
 
             records: List[dict[str, Any]] = []
@@ -228,12 +225,12 @@ class UniFiOSClient:
                     site_id = record.get("id") or record.get("_id") or record.get("uuid")
                     if isinstance(site_id, str) and site_id:
                         self._site_id = site_id
-                        LOGGER.debug(
+                        _LOGGER.debug(
                             "Resolved site id %s for site %s", site_id, self._site_name
                         )
                         return self._site_id
 
-        LOGGER.debug("Falling back to site name for site-id lookups: %s", self._site_name)
+        _LOGGER.debug("Falling back to site name for site-id lookups: %s", self._site_name)
         return None
 
     async def _async_ensure_site_id(self) -> Optional[str]:
@@ -243,7 +240,7 @@ class UniFiOSClient:
             return self._site_id
 
         candidates = [
-            f"/v1/sites",
+            "/v1/sites",
             f"/v2/api/site/{self._site_name}/info",
         ]
 
@@ -251,7 +248,7 @@ class UniFiOSClient:
             try:
                 resp, text = await self._request("GET", path, timeout=6)
             except Exception as err:  # pragma: no cover - network guard
-                LOGGER.debug("Site-id probe %s failed: %s", path, err)
+                _LOGGER.debug("Site-id probe %s failed: %s", path, err)
                 continue
 
             if resp.status_code >= 400:
@@ -260,7 +257,7 @@ class UniFiOSClient:
             try:
                 payload = json.loads(text) if text else {}
             except json.JSONDecodeError:  # pragma: no cover - defensive
-                LOGGER.debug("Invalid JSON while probing site id from %s", path)
+                _LOGGER.debug("Invalid JSON while probing site id from %s", path)
                 continue
 
             records: List[dict[str, Any]] = []
@@ -279,10 +276,10 @@ class UniFiOSClient:
                     site_id = record.get("id") or record.get("_id") or record.get("uuid")
                     if isinstance(site_id, str) and site_id:
                         self._site_id = site_id
-                        LOGGER.debug("Resolved site id %s for site %s", site_id, self._site_name)
+                        _LOGGER.debug("Resolved site id %s for site %s", site_id, self._site_name)
                         return self._site_id
 
-        LOGGER.debug("Falling back to site name for site-id lookups: %s", self._site_name)
+        _LOGGER.debug("Falling back to site name for site-id lookups: %s", self._site_name)
         return None
 
     def _site_path_for(self, site: Optional[str], path: str = "") -> str:
@@ -337,16 +334,16 @@ class UniFiOSClient:
             try:
                 response = self._session.get(url, timeout=timeout, allow_redirects=False)
             except requests.exceptions.RequestException as err:  # pragma: no cover - network guard
-                LOGGER.debug("Fetching CSRF token from %s failed: %s", url, err)
+                _LOGGER.debug("Fetching CSRF token from %s failed: %s", url, err)
                 continue
             if response.status_code >= 400:
-                LOGGER.debug(
+                _LOGGER.debug(
                     "CSRF probe %s returned HTTP %s", url, response.status_code
                 )
                 continue
             self._update_csrf_token(response)
             if self._csrf:
-                LOGGER.debug("CSRF token refreshed from %s", url)
+                _LOGGER.debug("CSRF token refreshed from %s", url)
                 return
 
     def _request(
@@ -368,24 +365,54 @@ class UniFiOSClient:
             kwargs["json"] = json_payload
         if data is not None:
             kwargs["data"] = data
-        LOGGER.debug("UniFi request %s %s", method, url)
+        label = self._login_endpoint_label(url)
+        _LOGGER.debug("UniFi request %s %s initiated", method, label)
         requests = self._requests_module()
 
+        start = time.perf_counter()
         try:
             response = self._session.request(method, url, **kwargs)
         except requests.exceptions.SSLError as err:
+            message = self._shorten(str(err))
+            _LOGGER.error(
+                "UniFi request %s %s failed during SSL negotiation: %s",
+                method,
+                label,
+                message,
+            )
             raise ConnectivityError(
                 f"SSL error while connecting to {url}: {err}", url=url
             ) from err
         except requests.exceptions.ConnectTimeout as err:
+            message = self._shorten(str(err))
+            _LOGGER.error(
+                "UniFi request %s %s timed out: %s",
+                method,
+                label,
+                message,
+            )
             raise ConnectivityError(
                 f"Timeout while connecting to {url}: {err}", url=url
             ) from err
         except requests.exceptions.ConnectionError as err:
+            message = self._shorten(str(err))
+            _LOGGER.error(
+                "UniFi request %s %s connection error: %s",
+                method,
+                label,
+                message,
+            )
             raise ConnectivityError(
                 f"Connection error while reaching {url}: {err}", url=url
             ) from err
         except requests.exceptions.RequestException as err:
+            message = self._shorten(str(err))
+            _LOGGER.error(
+                "UniFi request %s %s failed: %s",
+                method,
+                label,
+                message,
+            )
             raise ConnectivityError(
                 f"Request {method} {url} failed: {err}", url=url
             ) from err
@@ -394,7 +421,16 @@ class UniFiOSClient:
 
         status = response.status_code
         body_preview = self._shorten(response.text)
+        duration_ms = int((time.perf_counter() - start) * 1000)
         if status in (401, 403):
+            _LOGGER.error(
+                "UniFi request %s %s failed (status=%s, duration_ms=%d, body=%s)",
+                method,
+                label,
+                status,
+                duration_ms,
+                body_preview,
+            )
             raise AuthError(
                 "Authentication with UniFi controller failed",
                 status_code=status,
@@ -402,6 +438,14 @@ class UniFiOSClient:
                 body=body_preview,
             )
         if status >= 400:
+            _LOGGER.error(
+                "UniFi request %s %s failed (status=%s, duration_ms=%d, body=%s)",
+                method,
+                label,
+                status,
+                duration_ms,
+                body_preview,
+            )
             raise APIError(
                 f"UniFi API call {method} {url} failed with HTTP {status}",
                 status_code=status,
@@ -409,6 +453,13 @@ class UniFiOSClient:
                 expected=status == 404,
                 body=body_preview,
             )
+        _LOGGER.debug(
+            "UniFi request %s %s succeeded (status=%s, duration_ms=%d)",
+            method,
+            label,
+            status,
+            duration_ms,
+        )
         return response, response.text or ""
 
     def _process_payload(self, payload: Any, url: str) -> Any:
@@ -449,9 +500,25 @@ class UniFiOSClient:
         try:
             payload = json.loads(text)
         except json.JSONDecodeError:
-            LOGGER.debug("Non-JSON response from %s", response.url)
+            label = self._login_endpoint_label(response.url)
+            _LOGGER.debug(
+                "UniFi request %s %s returned non-JSON payload: %s",
+                method,
+                label,
+                self._shorten(text),
+            )
             return text
-        return self._process_payload(payload, response.url)
+        try:
+            return self._process_payload(payload, response.url)
+        except APIError as err:
+            label = self._login_endpoint_label(response.url)
+            _LOGGER.error(
+                "UniFi request %s %s returned controller error: %s",
+                method,
+                label,
+                err,
+            )
+            raise
 
     @staticmethod
     def _extract_list(payload: Any) -> List[Dict[str, Any]]:
@@ -472,7 +539,7 @@ class UniFiOSClient:
             payload = self._request_json("GET", path, timeout=timeout)
         except APIError as err:
             if err.expected:
-                LOGGER.debug("UniFi endpoint %s unavailable: %s", path, err)
+                _LOGGER.debug("UniFi endpoint %s unavailable: %s", path, err)
                 return []
             raise
         return self._extract_list(payload)
@@ -500,8 +567,8 @@ class UniFiOSClient:
         last_error: Optional[Exception] = None
         for path, payload, use_json in attempts:
             url = f"{base}{path}"
-            endpoint = self._login_endpoint_label(url)
-            LOGGER.debug("Attempting UniFi login via %s", endpoint)
+            # Do not log the resolved endpoint to avoid leaking credentials on misconfigured hosts
+            _LOGGER.debug("Attempting UniFi login")
             try:
                 if use_json:
                     response = self._session.post(
@@ -518,7 +585,7 @@ class UniFiOSClient:
                         allow_redirects=False,
                     )
             except requests.exceptions.RequestException as err:
-                LOGGER.debug("Login attempt via %s failed: %s", endpoint, err)
+                _LOGGER.debug("UniFi login attempt failed: %s", err)
                 last_error = ConnectivityError(
                     f"Error connecting to {url}: {err}", url=url
                 )
@@ -536,7 +603,7 @@ class UniFiOSClient:
                     body=body_preview,
                 )
             if status == 404:
-                LOGGER.debug("Login endpoint %s not found", endpoint)
+                _LOGGER.debug("UniFi login endpoint not found (HTTP 404)")
                 last_error = APIError(
                     f"Login endpoint {url} not found",
                     status_code=status,
@@ -546,9 +613,7 @@ class UniFiOSClient:
                 )
                 continue
             if status >= 400:
-                LOGGER.debug(
-                    "Login attempt via %s returned HTTP %s", endpoint, status
-                )
+                _LOGGER.debug("UniFi login attempt returned HTTP %s", status)
                 last_error = APIError(
                     f"Login attempt failed with HTTP {status}",
                     status_code=status,
@@ -557,7 +622,7 @@ class UniFiOSClient:
                 )
                 continue
 
-            LOGGER.debug("Login via %s succeeded", endpoint)
+            _LOGGER.debug("UniFi login succeeded")
             if not self._csrf:
                 self._refresh_csrf_token(base, timeout)
             return
@@ -577,7 +642,7 @@ class UniFiOSClient:
             self._path_prefix = prefix
             probe_path = self._site_path("stat/health")
             candidate_base = self._join(self._site_path())
-            LOGGER.debug(
+            _LOGGER.debug(
                 "Probing UniFi Network API base %s using %s", candidate_base, probe_path
             )
             try:
@@ -585,11 +650,11 @@ class UniFiOSClient:
             except AuthError:
                 raise
             except ConnectivityError as err:
-                LOGGER.debug("Connectivity error probing %s: %s", candidate_base, err)
+                _LOGGER.debug("Connectivity error probing %s: %s", candidate_base, err)
                 last_error = err
                 continue
             except APIError as err:
-                LOGGER.debug("API error probing %s: %s", candidate_base, err)
+                _LOGGER.debug("API error probing %s: %s", candidate_base, err)
                 if err.status_code == 404 or err.expected:
                     last_error = err
                     continue
@@ -597,7 +662,7 @@ class UniFiOSClient:
 
             if isinstance(payload, dict):
                 payload = self._process_payload(payload, candidate_base)
-            LOGGER.debug("Selected UniFi Network API base %s", candidate_base)
+            _LOGGER.debug("Selected UniFi Network API base %s", candidate_base)
             self._base = candidate_base
             return
 
@@ -691,7 +756,7 @@ class UniFiOSClient:
                     break
 
         if not clients and last_error:
-            LOGGER.debug("Active clients v2 endpoint unavailable: %s", last_error)
+            _LOGGER.debug("Active clients v2 endpoint unavailable: %s", last_error)
 
         self._clients_v2_cache = (now, clients)
         return clients
@@ -1025,7 +1090,7 @@ class UniFiOSClient:
                 links = self._get_list(self._site_path(path))
             except APIError as err:
                 if err.status_code == 400:
-                    LOGGER.debug(
+                    _LOGGER.debug(
                         "UniFi endpoint %s unavailable (HTTP 400): %s", path, err
                     )
                     continue
@@ -1051,24 +1116,6 @@ class UniFiOSClient:
 
     def get_site(self) -> str:
         return self._site_name
-
-    def get_network_map(self) -> Dict[str, Dict[str, Any]]:
-        """Map networkconf_id -> metadata for quick lookups from WLANs/clients."""
-
-        nets = self.get_networks() or []
-        out: Dict[str, Dict[str, Any]] = {}
-        for n in nets:
-            nid = n.get("_id") or n.get("id")
-            if not nid:
-                continue
-            out[str(nid)] = {
-                "id": nid,
-                "name": n.get("name"),
-                "vlan": n.get("vlan"),
-                "subnet": n.get("subnet") or n.get("ip_subnet") or n.get("cidr"),
-                "purpose": n.get("purpose") or n.get("role"),
-            }
-        return out
 
     def now(self) -> float:
         return time.time()
@@ -1117,177 +1164,6 @@ class UniFiOSClient:
             f"UniFi VPN endpoint {endpoint} unavailable",
             expected=True,
         )
-
-    @staticmethod
-    def _normalize_status_text(value: Any) -> Optional[str]:
-        if value in (None, ""):
-            return None
-        if isinstance(value, (int, float)):
-            return "UP" if float(value) > 0 else "DOWN"
-        if isinstance(value, bool):
-            return "UP" if value else "DOWN"
-        text = str(value).strip()
-        if not text:
-            return None
-        lowered = text.lower()
-        mapping = {
-            "ok": "UP",
-            "up": "UP",
-            "connected": "UP",
-            "established": "UP",
-            "active": "UP",
-            "running": "UP",
-            "down": "DOWN",
-            "disconnected": "DOWN",
-            "error": "DOWN",
-            "failed": "DOWN",
-            "inactive": "DOWN",
-        }
-        if lowered in mapping:
-            return mapping[lowered]
-        return text.upper()
-
-    @staticmethod
-    def _normalize_vpn_type(value: Any) -> str:
-        text = str(value or "").strip().lower()
-        if not text:
-            return "vpn"
-        # heuristic mapping
-        if any(k in text for k in ("client", "roadwarrior", "remote_user", "rw")):
-            return "client"
-        if any(k in text for k in ("server",)):
-            return "server"
-        if any(k in text for k in ("s2s", "site-to-site", "site_to_site", "ipsec")):
-            return "s2s"
-        return text
-
-    def _normalize_vpn_tunnel(self, rec: Dict[str, Any]) -> Dict[str, Any]:
-        out: Dict[str, Any] = {}
-        # identifiers
-        tid = (
-            rec.get("id")
-            or rec.get("_id")
-            or rec.get("uuid")
-            or rec.get("tunnel_id")
-            or rec.get("peer_id")
-            or rec.get("name")
-            or rec.get("peer")
-        )
-        if isinstance(tid, (int, float)):
-            tid = str(tid)
-        out["id"] = str(tid) if tid else None
-
-        name = (
-            rec.get("name")
-            or rec.get("label")
-            or rec.get("peer")
-            or rec.get("remote")
-            or rec.get("endpoint")
-        )
-        if not isinstance(name, str) or not name.strip():
-            name = out["id"] or "VPN"
-        out["name"] = str(name)
-
-        vtype = (
-            rec.get("type")
-            or rec.get("mode")
-            or rec.get("role")
-            or rec.get("category")
-            or rec.get("kind")
-        )
-        out["type"] = self._normalize_vpn_type(vtype)
-
-        # status heuristics
-        status_candidates = [
-            rec.get("status"),
-            rec.get("state"),
-            rec.get("connected"),
-            rec.get("is_connected"),
-            rec.get("up"),
-            rec.get("established"),
-        ]
-        status: Optional[str] = None
-        for candidate in status_candidates:
-            status = self._normalize_status_text(candidate)
-            if status:
-                break
-        out["status"] = status
-
-        # addressing / peer
-        out["remote"] = (
-            rec.get("remote")
-            or rec.get("peer")
-            or rec.get("peer_addr")
-            or rec.get("peer_ip")
-            or rec.get("endpoint")
-            or rec.get("public_ip")
-        )
-        out["local"] = (
-            rec.get("local")
-            or rec.get("local_ip")
-            or rec.get("tunnel_ip")
-            or rec.get("interface_ip")
-        )
-
-        # stats
-        rx = rec.get("rx_bytes") or rec.get("rx") or rec.get("bytes_rx")
-        tx = rec.get("tx_bytes") or rec.get("tx") or rec.get("bytes_tx")
-        if isinstance(rec.get("stats"), dict):
-            rx = rx or rec["stats"].get("rx") or rec["stats"].get("rx_bytes")
-            tx = tx or rec["stats"].get("tx") or rec["stats"].get("tx_bytes")
-        out["rx_bytes"] = rx
-        out["tx_bytes"] = tx
-
-        since = rec.get("since") or rec.get("uptime") or rec.get("connected_since")
-        out["since"] = since
-
-        return out
-
-    def get_vpn_tunnels(self) -> List[Dict[str, Any]]:
-        """Retrieve VPN tunnel instances from the controller (best-effort)."""
-
-        endpoints = (
-            "internet/vpn/status",
-            "internet/vpn/tunnels",
-            "internet/vpn",
-            "stat/vpn",
-            "stat/s2s",
-            "rest/vpn",
-            "rest/vpnconf",
-            "list/vpn",
-            "stat/ipsec",
-        )
-
-        for endpoint in endpoints:
-            try:
-                payload, _ = self._call_vpn_endpoint("GET", endpoint)
-            except Exception:
-                continue
-
-            records: List[Dict[str, Any]] = []
-            if isinstance(payload, list):
-                records = [item for item in payload if isinstance(item, dict)]
-            elif isinstance(payload, dict):
-                for key in ("tunnels", "connections", "items", "data", "records"):
-                    value = payload.get(key)
-                    if isinstance(value, list):
-                        records = [item for item in value if isinstance(item, dict)]
-                        break
-                if not records:
-                    # dict-of-dicts fallback
-                    if all(isinstance(v, dict) for v in payload.values()):
-                        records = [dict(v) for v in payload.values()]  # type: ignore[arg-type]
-
-            if not records:
-                continue
-
-            normalized = [self._normalize_vpn_tunnel(rec) for rec in records]
-            # keep only entries with at least a name or id
-            normalized = [n for n in normalized if n.get("name") or n.get("id")]
-            if normalized:
-                return normalized
-
-        return []
 
     # ---- Speedtest helpers (base-relative) ----
     def get_gateway_mac(self) -> Optional[str]:
@@ -1425,7 +1301,7 @@ class UniFiOSClient:
                 "GET", "internet/speedtest/settings"
             )
         except Exception as err:
-            LOGGER.debug("Unable to fetch speedtest settings: %s", err)
+            _LOGGER.debug("Unable to fetch speedtest settings: %s", err)
             return
 
         if not self._enable_speedtest_flags(settings_payload):
@@ -1433,9 +1309,9 @@ class UniFiOSClient:
 
         try:
             self._request_json("POST", path, json_payload=settings_payload)
-            LOGGER.debug("Enabled UniFi speedtest logging/monitoring via %s", path)
+            _LOGGER.debug("Enabled UniFi speedtest logging/monitoring via %s", path)
         except Exception as err:
-            LOGGER.debug("Failed to persist speedtest settings via %s: %s", path, err)
+            _LOGGER.debug("Failed to persist speedtest settings via %s: %s", path, err)
 
     def start_speedtest(self, mac: Optional[str] = None):
         if mac is None:
@@ -1806,7 +1682,7 @@ class UniFiOSClient:
         try:
             self.ensure_speedtest_monitoring_enabled(cache_sec=cooldown_sec)
         except Exception as err:
-            LOGGER.debug("Unable to ensure speedtest settings prior to run: %s", err)
+            _LOGGER.debug("Unable to ensure speedtest settings prior to run: %s", err)
         try:
             self.start_speedtest(self.get_gateway_mac())
             self._st_last_trigger = now

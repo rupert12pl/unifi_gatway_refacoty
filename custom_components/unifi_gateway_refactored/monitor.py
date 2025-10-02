@@ -15,7 +15,6 @@ from .const import (
     ATTR_ERROR,
     ATTR_REASON,
     ATTR_TRACE_ID,
-    DOMAIN,
     EVT_RUN_END,
     EVT_RUN_ERROR,
     EVT_RUN_START,
@@ -206,7 +205,9 @@ class SpeedtestRunner:
         try:
             await self._coordinator.async_request_refresh()
         except Exception:  # pragma: no cover - defensive logging
-            _LOGGER.exception("Failed to refresh entities after speedtest")
+            _LOGGER.exception(
+                "UniFi Gateway speedtest: failed to refresh entities after run"
+            )
 
     async def _dispatch_result(
         self, *, success: bool, duration_ms: int, error: str | None, trace_id: str
@@ -219,7 +220,10 @@ class SpeedtestRunner:
                 trace_id=trace_id,
             )
         except Exception:  # pragma: no cover - defensive logging
-            _LOGGER.exception("Result callback raised for speedtest %s", trace_id)
+            _LOGGER.exception(
+                "UniFi Gateway speedtest: result callback raised for %s",
+                trace_id,
+            )
 
     async def async_trigger(self, reason: str) -> None:
         """Trigger a speedtest update."""
@@ -231,6 +235,13 @@ class SpeedtestRunner:
             trace_id = str(uuid.uuid4())
             start = monotonic()
             error: str | None = None
+
+            _LOGGER.info(
+                "[%s] Speedtest run started (reason=%s, entities=%s)",
+                trace_id,
+                reason,
+                ", ".join(self.entity_ids),
+            )
 
             self.hass.bus.async_fire(
                 EVT_RUN_START,
@@ -255,7 +266,8 @@ class SpeedtestRunner:
 
                 if result:
                     _LOGGER.info(
-                        "Speedtest completed: %s/%s Mbps, %s ms",
+                        "[%s] Speedtest completed: %s/%s Mbps, %s ms",
+                        trace_id,
                         result.get("download_mbps"),
                         result.get("upload_mbps"),
                         result.get("latency_ms"),
@@ -282,10 +294,10 @@ class SpeedtestRunner:
                 duration_ms = int((monotonic() - start) * 1000)
                 error = f"{type(err).__name__}: {err}"
                 _LOGGER.error(
-                    "Speedtest failed after %dms: %s (trace=%s)",
+                    "[%s] Speedtest failed after %dms: %s",
+                    trace_id,
                     duration_ms,
                     error,
-                    trace_id,
                 )
                 self.hass.bus.async_fire(
                     EVT_RUN_ERROR,

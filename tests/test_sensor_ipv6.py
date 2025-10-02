@@ -99,7 +99,7 @@ def test_wan_ipv6_sensor_reports_details():
     assert value == "2001:db8::1"
     attrs = sensor.extra_state_attributes
     assert attrs["last_ipv6"] == "2001:db8::1"
-    assert attrs["source"] == "wan_link"
+    assert attrs["source"] == "link"
     assert attrs["gateway_ipv6"] == "fe80::1"
     assert attrs["prefix"] == "2001:db8::/64"
 
@@ -123,7 +123,7 @@ def test_wan_ipv6_sensor_ignores_placeholder_values():
     assert value == "2001:db8::2"
     attrs = sensor.extra_state_attributes
     assert attrs["last_ipv6"] == "2001:db8::2"
-    assert attrs["source"] == "wan_health"
+    assert attrs["source"] == "health"
     assert attrs["gateway_ipv6"] == "fe80::2"
     assert attrs["prefix"] == "2001:db8::/60"
 
