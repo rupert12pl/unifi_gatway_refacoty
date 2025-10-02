@@ -1,6 +1,9 @@
 {
   "name": "UniFi Gateway Dashboard Analyzer",
+  "domains": ["unifi_gateway_refactored"],
+  "homeassistant": "2024.2.0",
   "render_readme": true,
-  "logo": "images/logo.svg",
-  "icon": "images/icon.svg"
+  "zip_release": true,
+  "logo": "https://raw.githubusercontent.com/rupert12pl/unifi_gatway_refacoty/3a35a31dc20172703a6b467a1eea146053d0bd51/images/logo.svg",
+  "icon": "https://raw.githubusercontent.com/rupert12pl/unifi_gatway_refacoty/3a35a31dc20172703a6b467a1eea146053d0bd51/images/icon.svg"
 }
