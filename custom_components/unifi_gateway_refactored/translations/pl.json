@@ -3,11 +3,12 @@
     "step": {
       "user": {
         "title": "Połącz z UniFi Gateway Dashboard Analyzer",
-        "description": "Wprowadź dane lokalnego administratora aplikacji UniFi Network.",
+        "description": "Wprowadź dane lokalnego administratora aplikacji UniFi Network. Podczas zapisu sprawdzimy zdrowie kontrolera i listę witryn.",
         "data": {
           "host": "Adres kontrolera (UDM IP)",
           "username": "Nazwa użytkownika (lokalny administrator)",
-          "password": "Hasło"
+          "password": "Hasło",
+          "verify_ssl": "Weryfikuj SSL (wartość logiczna lub ścieżka do CA)"
         }
       },
       "advanced": {
@@ -18,7 +19,10 @@
           "site_id": "Identyfikator witryny (site ID)",
           "use_proxy_prefix": "Użyj prefiksu /proxy/network",
           "timeout": "Limit czasu żądania HTTP (sekundy)",
-          "verify_ssl": "Weryfikuj SSL (wartość logiczna)"
+          "speedtest_interval": "Interwał speedtestu (minuty)",
+          "speedtest_entities": "Identyfikatory encji speedtestu (oddzielone przecinkami)",
+          "wifi_guest": "SSID sieci WiFi dla gości",
+          "wifi_iot": "SSID sieci WiFi dla IoT"
         }
       }
     },
@@ -39,9 +43,13 @@
           "username": "Nazwa użytkownika (lokalny administrator)",
           "password": "Hasło",
           "site_id": "Identyfikator witryny (site ID)",
-          "verify_ssl": "Weryfikuj SSL (wartość logiczna)",
+          "verify_ssl": "Weryfikuj SSL (wartość logiczna lub ścieżka do CA)",
           "use_proxy_prefix": "Użyj prefiksu /proxy/network",
-          "timeout": "Limit czasu żądania HTTP (sekundy)"
+          "timeout": "Limit czasu żądania HTTP (sekundy)",
+          "speedtest_interval": "Interwał speedtestu (minuty)",
+          "speedtest_entities": "Identyfikatory encji speedtestu (oddzielone przecinkami)",
+          "wifi_guest": "SSID sieci WiFi dla gości",
+          "wifi_iot": "SSID sieci WiFi dla IoT"
         }
       }
     },
