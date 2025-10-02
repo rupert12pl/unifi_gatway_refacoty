@@ -1,8 +1,11 @@
 """Stub for homeassistant.helpers.entity_platform."""
 
-from typing import Callable, Iterable, Sequence
+from typing import Iterable, Protocol, Sequence
 
-AddEntitiesCallback = Callable[[Sequence], None]
+
+class AddEntitiesCallback(Protocol):
+    def __call__(self, entities: Sequence, update_before_add: bool = False) -> None:
+        ...
 
 
 def async_add_entities_callback(entities: Iterable, update_before_add: bool = False) -> None:

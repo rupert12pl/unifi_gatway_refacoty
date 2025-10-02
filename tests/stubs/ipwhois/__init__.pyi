@@ -1,0 +1,9 @@
+from __future__ import annotations
+
+from typing import Any, Mapping
+
+
+class IPWhois:
+    def __init__(self, address: str) -> None: ...
+    def lookup_whois(self, *args: Any, **kwargs: Any) -> Mapping[str, Any]: ...
+    def lookup_rdap(self, *args: Any, **kwargs: Any) -> Mapping[str, Any]: ...

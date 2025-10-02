@@ -1,7 +1,7 @@
 """Stub implementations of Home Assistant's update coordinator utilities."""
 from __future__ import annotations
 
-from typing import Any, Generic, Optional, TypeVar
+from typing import Any, Callable, Generic, Optional, TypeVar
 
 
 T = TypeVar("T")
@@ -42,6 +42,14 @@ class DataUpdateCoordinator(Generic[T]):
     def async_set_updated_data(self, data: T) -> None:
         """Directly set the stored data."""
         self.data = data
+
+    def async_add_listener(self, update_callback: Callable[[], None]) -> Callable[[], None]:
+        """Register an update listener and return a removal callback."""
+
+        def _remove() -> None:
+            return None
+
+        return _remove
 
 
 class CoordinatorEntity(Generic[T]):
