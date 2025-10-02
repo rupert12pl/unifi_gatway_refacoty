@@ -14,7 +14,7 @@ STUBS_PATH = Path(__file__).parent / "stubs"
 if str(STUBS_PATH) not in sys.path:
     sys.path.insert(0, str(STUBS_PATH))
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant  # noqa: E402
 
 
 @pytest.fixture

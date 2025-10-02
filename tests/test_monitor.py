@@ -4,17 +4,13 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 import threading
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+import pytest
 
-from custom_components.unifi_gateway_refactored.monitor import (
-    SpeedtestRunner,
-    DEFAULT_MAX_WAIT_S,
-    DEFAULT_POLL_INTERVAL,
-)
+from homeassistant.core import HomeAssistant
+
+from custom_components.unifi_gateway_refactored.monitor import SpeedtestRunner
 
 @pytest.fixture
 def mock_client():

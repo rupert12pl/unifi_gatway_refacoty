@@ -5,3 +5,4 @@ class EntityCategory:
     """Minimal enumeration replacement."""
 
     DIAGNOSTIC = "diagnostic"
+    CONFIG = "config"

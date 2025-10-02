@@ -44,7 +44,7 @@ from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
 try:  # pragma: no cover - optional dependency for WHOIS lookups
-    from ipwhois import IPWhois  # type: ignore[attr-defined]
+    from ipwhois import IPWhois  # type: ignore[import-not-found, attr-defined]
 except ImportError:  # pragma: no cover - dependency is optional at runtime
     IPWhois = None  # type: ignore[assignment]
 
@@ -858,7 +858,9 @@ _PLACEHOLDER_STRINGS: tuple[str, ...] = (
 )
 
 
-def _value_from_record(record: Optional[Dict[str, Any]], keys: Iterable[str]) -> Optional[Any]:
+def _value_from_record(
+    record: Optional[Mapping[str, Any]], keys: Iterable[str]
+) -> Optional[Any]:
     if not record:
         return None
     for key in keys:
@@ -895,6 +897,9 @@ _WAN_IPV6_KEYS: tuple[str, ...] = (
     "wan_ip6",
     "wan_ipv6_address",
     "wan_ipv6_ip",
+    "ipv6_address",
+    "global_ipv6",
+    "public_ip6",
 )
 
 
@@ -1600,7 +1605,7 @@ def _parse_datetime_24h(value: Any) -> Optional[str]:
 
 
 class UniFiGatewaySensorBase(
-    CoordinatorEntity[UniFiGatewayDataUpdateCoordinator], SensorEntity
+    CoordinatorEntity[UniFiGatewayData], SensorEntity
 ):
     """Base entity for UniFi Gateway sensors."""
 
@@ -2043,7 +2048,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         }
 
     @property
-    def name(self) -> str:
+    def name(self) -> Optional[str]:
         return self._attr_name
 
     @property
@@ -2205,6 +2210,8 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         self._update_connected_clients(connected_records)
 
     async def async_update(self) -> None:
+        if self.hass is None:
+            return
         await self.hass.async_add_executor_job(self.update)
 
     def _update_connected_clients(
@@ -2626,12 +2633,17 @@ class UniFiGatewayWanIpv6Sensor(UniFiGatewayWanSensorBase):
         health = self._wan_health_record()
         ipv6, source = _extract_wan_value_with_source(link, health, _WAN_IPV6_KEYS)
         if ipv6:
+            if source == "wan_link":
+                normalized_source = "link"
+            elif source == "wan_health":
+                normalized_source = "health"
+            else:
+                normalized_source = source or "unknown"
             self._last_ipv6 = ipv6
-            self._last_source = source or "unknown"
+            self._last_source = normalized_source
             return ipv6
         if self._last_ipv6:
-            if not self._last_source:
-                self._last_source = "cached"
+            self._last_source = "cached"
             return self._last_ipv6
         return None
 
@@ -2791,9 +2803,11 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
     def _matches_client(self, client: Dict[str, Any]) -> bool:
         if str(client.get("network_id")) == self._network_id:
             return True
+        network_name = client.get("network")
         if (
-            client.get("network")
-            and client.get("network").lower() == self._network_name.lower()
+            isinstance(network_name, str)
+            and isinstance(self._network_name, str)
+            and network_name.lower() == self._network_name.lower()
         ):
             return True
         if self._ip_network and client.get("ip"):
