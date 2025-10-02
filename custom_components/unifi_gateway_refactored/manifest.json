@@ -21,6 +21,6 @@
     "custom_components.unifi_gateway_refactored.monitor",
     "custom_components.unifi_gateway_refactored.unifi_client"
   ],
-  "logo": "https://github.com/rupert12pl/unifi_gatway_refacoty/blob/main/custom_components/unifi_gateway_refactored/logo.svg",
-  "icon": "https://github.com/rupert12pl/unifi_gatway_refacoty/blob/main/custom_components/unifi_gateway_refactored/icon.svg"
+  "logo": "https://raw.githubusercontent.com/rupert12pl/unifi_gatway_refacoty/main/custom_components/unifi_gateway_refactored/logo.svg",
+  "icon": "https://raw.githubusercontent.com/rupert12pl/unifi_gatway_refacoty/main/custom_components/unifi_gateway_refactored/icon.svg"
 }
