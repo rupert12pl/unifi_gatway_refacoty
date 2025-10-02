@@ -7,7 +7,6 @@ from functools import lru_cache, partial
 import html
 import hashlib
 import logging
-import time
 import ipaddress
 from typing import (
     Any,
@@ -53,10 +52,10 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
-from homeassistant.util import Throttle
 from .const import CONF_HOST, DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
+from .mixins import UniFiDeviceInfoMixin
 
 class _IPWhoisProtocol(Protocol):
     def __init__(self, address: str) -> None:
@@ -170,6 +169,7 @@ async def async_setup_entry(
             device_identifier,
             device_name,
             controller_url,
+            client,
         ),
         SpeedtestLastErrorSensor(
             entry.entry_id,
@@ -177,6 +177,7 @@ async def async_setup_entry(
             device_identifier,
             device_name,
             controller_url,
+            client,
         ),
         SpeedtestDurationSensor(
             entry.entry_id,
@@ -184,6 +185,7 @@ async def async_setup_entry(
             device_identifier,
             device_name,
             controller_url,
+            client,
         ),
         SpeedtestLastRunSensor(
             entry.entry_id,
@@ -191,6 +193,7 @@ async def async_setup_entry(
             device_identifier,
             device_name,
             controller_url,
+            client,
         ),
     ]
     static_entities.extend(monitor_entities)
@@ -435,7 +438,7 @@ async def async_setup_entry(
     await coordinator.async_request_refresh()
 
 
-class SpeedtestMonitorEntity(SensorEntity):
+class SpeedtestMonitorEntity(SensorEntity, UniFiDeviceInfoMixin):
     """Base class providing device binding for speedtest monitor sensors."""
 
     _attr_should_poll = False
@@ -448,24 +451,13 @@ class SpeedtestMonitorEntity(SensorEntity):
         device_identifier: tuple[str, str],
         device_name: str,
         controller_url: Optional[str],
+        client: UniFiOSClient,
     ) -> None:
+        UniFiDeviceInfoMixin.__init__(self, client, device_name)
         self._state = state
         self._device_identifier = device_identifier
-        self._device_name = device_name
-        self._controller_url = controller_url
         self._entry_id = entry_id
         self._last_signature: Any | None = None
-
-    @property
-    def device_info(self) -> Dict[str, Any]:
-        info: Dict[str, Any] = {
-            "identifiers": {self._device_identifier},
-            "manufacturer": "Ubiquiti Networks",
-            "name": self._device_name,
-        }
-        if self._controller_url:
-            info["configuration_url"] = self._controller_url
-        return info
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -502,8 +494,9 @@ class SpeedtestLastRunSensor(SpeedtestMonitorEntity):
         device_identifier: tuple[str, str],
         device_name: str,
         controller_url: Optional[str],
+        client: UniFiOSClient,
     ) -> None:
-        super().__init__(entry_id, state, device_identifier, device_name, controller_url)
+        super().__init__(entry_id, state, device_identifier, device_name, controller_url, client)
         self._attr_unique_id = f"{entry_id}_speedtest_last_run"
 
     @property
@@ -523,8 +516,9 @@ class SpeedtestDurationSensor(SpeedtestMonitorEntity):
         device_identifier: tuple[str, str],
         device_name: str,
         controller_url: Optional[str],
+        client: UniFiOSClient,
     ) -> None:
-        super().__init__(entry_id, state, device_identifier, device_name, controller_url)
+        super().__init__(entry_id, state, device_identifier, device_name, controller_url, client)
         self._attr_unique_id = f"{entry_id}_speedtest_last_duration"
 
     @property
@@ -543,8 +537,9 @@ class SpeedtestLastErrorSensor(SpeedtestMonitorEntity):
         device_identifier: tuple[str, str],
         device_name: str,
         controller_url: Optional[str],
+        client: UniFiOSClient,
     ) -> None:
-        super().__init__(entry_id, state, device_identifier, device_name, controller_url)
+        super().__init__(entry_id, state, device_identifier, device_name, controller_url, client)
         self._attr_unique_id = f"{entry_id}_speedtest_last_error"
 
     @property
@@ -563,8 +558,9 @@ class SpeedtestStatusSensor(SpeedtestMonitorEntity):
         device_identifier: tuple[str, str],
         device_name: str,
         controller_url: Optional[str],
+        client: UniFiOSClient,
     ) -> None:
-        super().__init__(entry_id, state, device_identifier, device_name, controller_url)
+        super().__init__(entry_id, state, device_identifier, device_name, controller_url, client)
         self._attr_unique_id = f"{entry_id}_speedtest_last_run_ok"
 
     @property
@@ -927,6 +923,13 @@ _WAN_IPV6_KEYS: tuple[str, ...] = (
     "ipv6_address",
     "global_ipv6",
     "public_ip6",
+    "wan_v6_ip",
+    "wan_v6_addr",
+    "v6_ip",
+    "wan_6_ip",
+    "inet6_addr",
+    "addr_v6",
+    "current_ipv6",
 )
 
 
@@ -1632,7 +1635,9 @@ def _parse_datetime_24h(value: Any) -> Optional[str]:
 
 
 class UniFiGatewaySensorBase(
-    CoordinatorEntity[UniFiGatewayData], SensorEntity
+    CoordinatorEntity[UniFiGatewayData], 
+    SensorEntity,
+    UniFiDeviceInfoMixin
 ):
     """Base entity for UniFi Gateway sensors."""
 
@@ -1648,18 +1653,11 @@ class UniFiGatewaySensorBase(
         device_name: Optional[str] = None,
     ) -> None:
         super().__init__(coordinator)
-        self._client = client
+        UniFiDeviceInfoMixin.__init__(self, client, device_name or "UniFi Gateway")
         self._attr_unique_id = unique_id
         self._attr_name = name
         self._default_icon = getattr(self, "_attr_icon", None)
-        self._device_name = device_name or self._derive_device_name()
         self._last_signature: Any | None = None
-
-    def _derive_device_name(self) -> str:
-        site = self._client.get_site()
-        if site:
-            return f"UniFi Gateway ({site})"
-        return "UniFi Gateway"
 
     def _controller_attrs(self) -> Dict[str, Any]:
         data = self.coordinator.data
@@ -1670,19 +1668,6 @@ class UniFiGatewaySensorBase(
             "controller_api": data.controller.get("api_url"),
             "controller_site": data.controller.get("site"),
         }
-
-    @property
-    def device_info(self) -> Dict[str, Any]:
-        info: Dict[str, Any] = {
-            "identifiers": {(DOMAIN, self._client.instance_key())},
-            "manufacturer": "Ubiquiti Networks",
-            "name": self._device_name,
-        }
-        try:
-            info["configuration_url"] = self._client.get_controller_url()
-        except Exception:  # pragma: no cover - guard against unexpected client errors
-            pass
-        return info
 
     def _state_signature(self) -> Any:
         native = self.native_value
@@ -1922,12 +1907,14 @@ class UniFiGatewayAlertsSensor(UniFiGatewaySensorBase):
         return attrs
 
 
-class UniFiGatewayVpnUsageSensor(SensorEntity):
+class UniFiGatewayVpnUsageSensor(CoordinatorEntity[UniFiGatewayData], SensorEntity, UniFiDeviceInfoMixin):
     """Sensor providing VPN client counts with enhanced detection."""
 
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_native_unit_of_measurement = "clients"
+    _attr_device_class = None  # ENUM type is deprecated
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_should_poll = True
 
     def __init__(
         self,
@@ -1940,11 +1927,17 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         *,
         unique_id: str,
     ) -> None:
-        self._coordinator = coordinator
+        super().__init__(coordinator)
         self._client = client
         self._base_name = base_name
         self._server = server
         self._linked_network = linked_network or {}
+        
+        vpn_type = server.get("vpn_type") or "VPN"
+        if vpn_type == "Unknown":
+            vpn_type = "VPN"
+            
+        self._attr_name = f"{server.get('name', 'VPN')} {vpn_type} Clients"
         self._attr_unique_id = unique_id
 
         self._srv_id = server.get("id")
@@ -2032,7 +2025,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         if self._subnet:
             return self._subnet
 
-        data = self._coordinator.data if self._coordinator else None
+        data = self.coordinator.data
         if not data:
             return None
 
@@ -2061,7 +2054,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         return None
 
     def _controller_attrs(self) -> Dict[str, Any]:
-        data = self._coordinator.data if self._coordinator else None
+        data = self.coordinator.data
         if data and isinstance(data.controller, dict):
             return {
                 "controller_ui": data.controller.get("url"),
@@ -2096,250 +2089,94 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
 
     @property
     def native_value(self) -> Optional[int]:
-        return self._state
+        """Return the number of connected VPN clients."""
+        data = self.coordinator.data
+        if not data:
+            return None
+        
+        count = 0
+        network_id = str(self._linked_net_id) if self._linked_net_id else None
+        
+        # Try getting count from active clients v2
+        try:
+            clients_v2 = data.active_clients_v2 or []
+            for client in clients_v2:
+                if not isinstance(client, Mapping):
+                    continue
+                if network_id and str(client.get("network_id")) != network_id:
+                    continue
+                if client.get("is_online") or client.get("status", "").lower() == "online":
+                    count += 1
+        except Exception:
+            pass
+            
+        # Try getting count from VPN sessions if no v2 clients found
+        if count == 0 and data.vpn_sessions:
+            sessions = data.vpn_sessions.get("by_server", {})
+            if self._srv_id and str(self._srv_id) in sessions:
+                count = sessions[str(self._srv_id)]
+            elif network_id and network_id in sessions:
+                count = sessions[network_id]
+                
+        return count
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        attrs = dict(self._attrs)
-        attrs.update(self._controller_attrs())
-        subnet_value = self._resolve_network_subnet()
-        if subnet_value:
-            attrs["subnet"] = subnet_value
-        attrs["connected_clients"] = list(self._connected_clients)
-        if self._connected_clients_html is not None:
-            attrs["connected_clients_html"] = self._connected_clients_html
+        """Return additional sensor attributes."""
+        attrs = {
+            "vpn_type": self._server.get("vpn_type", "unknown"),
+            "protocol": self._server.get("protocol", "unknown"),
+            "server_name": self._srv_name,
+        }
+        
+        # Add network info if available
+        if self._linked_network:
+            attrs.update({
+                "network_name": self._linked_network.get("name", "unknown"),
+                "network_purpose": self._linked_network.get("purpose") or self._linked_network.get("role", "unknown"),
+                "subnet": self._linked_network.get("subnet") or self._linked_network.get("ip_subnet", "unknown")
+            })
+            
+        # Add controller info
+        data = self.coordinator.data
+        if data and isinstance(data.controller, dict):
+            attrs.update({
+                "controller_url": data.controller.get("url"),
+                "controller_api": data.controller.get("api_url"),
+                "controller_site": data.controller.get("site")
+            })
+            
         return attrs
 
     @property
-    def extra_state_attribute_names(self) -> Dict[str, str]:
-        return {
-            "connected_clients": "Connected Clients",
-            "connected_clients_html": "Connected Clients HTML",
-        }
-
-    @property
     def device_info(self) -> Dict[str, Any]:
+        """Return device information."""
         return {
             "identifiers": {(DOMAIN, self._client.instance_key())},
             "manufacturer": "Ubiquiti Networks",
             "name": self._base_name,
         }
 
-    @Throttle(VPN_MIN_TIME_BETWEEN_UPDATES)
-    def update(self) -> None:
-        now_ts = time.time()
-        count = 0
-        v2_total = 0
-        v2_for_net = 0
-        connected_records: List[Dict[str, Any]] = []
+    @property
+    def extra_state_attribute_names(self) -> Dict[str, str]:
+        """Return the display names of extra state attributes."""
+        return {
+            "connected_clients": "Connected Clients",
+            "connected_clients_html": "Connected Clients HTML",
+        }
 
-        try:
-            clients_v2 = self._client.get_active_clients_v2()
-            v2_total = len(clients_v2)
-            target = str(self._linked_net_id) if self._linked_net_id else None
-            filtered_clients: List[Dict[str, Any]] = []
-            for client in clients_v2:
-                if not isinstance(client, Mapping):
-                    continue
-                if target and str(client.get("network_id")) != target:
-                    continue
-                status = str(client.get("status", "")).lower()
-                if status == "online" or client.get("is_online") is True or client.get("online") is True:
-                    filtered_clients.append(dict(client))
-            v2_for_net = len(filtered_clients)
-            connected_records = filtered_clients
-            count = v2_for_net
-        except (APIError, ConnectivityError) as err:
-            _LOGGER.debug("Active clients v2 fetch failed for VPN %s: %s", self._srv_name, err)
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
+        await self._handle_coordinator_update()
+        
+    async def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self.async_write_ha_state()
 
-        if count == 0:
-            try:
-                leases = self._client.get_dhcp_leases()
-            except (APIError, ConnectivityError) as err:
-                leases = []
-                _LOGGER.debug("DHCP leases fetch failed for VPN %s: %s", self._srv_name, err)
-            lease_matches: List[Dict[str, Any]] = []
-            for lease in leases or []:
-                if not isinstance(lease, Mapping):
-                    continue
-                try:
-                    if not self._client._lease_is_active(lease, now_ts):
-                        continue
-                except Exception:
-                    continue
-                lease_ip = lease.get("ip") or lease.get("lease_ip") or lease.get("assigned_ip")
-                lease_network = (
-                    lease.get("network_id")
-                    or lease.get("networkconf_id")
-                    or lease.get("network")
-                )
-                matched = False
-                if self._linked_net_id and str(lease_network) == str(self._linked_net_id):
-                    matched = True
-                if self._ip_network and lease_ip:
-                    try:
-                        if ipaddress.ip_address(lease_ip) in self._ip_network:
-                            matched = True
-                    except ValueError:
-                        continue
-                if matched:
-                    normalized = dict(lease)
-                    if lease_ip and not normalized.get("assigned_ip"):
-                        normalized.setdefault("assigned_ip", lease_ip)
-                    lease_matches.append(normalized)
-            if lease_matches:
-                connected_records = lease_matches
-                count = len(lease_matches)
 
-        if count == 0:
-            try:
-                session_map = self._client.get_vpn_active_sessions_map()
-            except (APIError, ConnectivityError) as err:
-                session_map = {"by_server": {}, "by_net": {}}
-                _LOGGER.debug("VPN session fetch failed for %s: %s", self._srv_name, err)
-            by_server = session_map.get("by_server", {})
-            by_net = session_map.get("by_net", {})
-            if self._srv_id and str(self._srv_id) in by_server:
-                count = by_server[str(self._srv_id)]
-            elif self._linked_net_id and str(self._linked_net_id) in by_net:
-                count = by_net[str(self._linked_net_id)]
 
-        if count == 0:
-            try:
-                legacy_clients = self._client.get_clients()
-            except (APIError, ConnectivityError) as err:
-                legacy_clients = []
-                _LOGGER.debug("Legacy clients fetch failed for VPN %s: %s", self._srv_name, err)
-            legacy_matches: List[Dict[str, Any]] = []
-            for client in legacy_clients or []:
-                if not isinstance(client, Mapping):
-                    continue
-                if not self._client.is_client_active(client, now_ts):
-                    continue
-                matched = False
-                if self._linked_net_id and str(client.get("network_id")) == str(self._linked_net_id):
-                    matched = True
-                if self._ip_network and client.get("ip"):
-                    try:
-                        if ipaddress.ip_address(client["ip"]) in self._ip_network:
-                            matched = True
-                    except ValueError:
-                        continue
-                if matched:
-                    legacy_matches.append(dict(client))
-            if legacy_matches:
-                connected_records = legacy_matches
-                count = len(legacy_matches)
 
-        self._state = count
-        self._attrs["debug_v2_seen_total"] = v2_total
-        self._attrs["Online users"] = v2_for_net
-        self._update_connected_clients(connected_records)
-
-    async def async_update(self) -> None:
-        if self.hass is None:
-            return
-        await self.hass.async_add_executor_job(self.update)
-
-    def _update_connected_clients(
-        self, primary_records: Optional[Iterable[Mapping[str, Any]]] = None
-    ) -> None:
-        raw_payload: Optional[Mapping[str, Any]] = None
-
-        if primary_records:
-            prepared: List[Mapping[str, Any]] = []
-            for record in primary_records:
-                if isinstance(record, Mapping):
-                    prepared.append(record)
-            if prepared:
-                raw_payload = {"connected_clients": prepared}
-
-        if raw_payload is not None:
-            signature = _freeze_state(raw_payload)
-            if (
-                signature == self._connected_clients_signature
-                and self._connected_clients_html is not None
-            ):
-                return
-            formatted, html_value = _prepare_connected_clients_output(raw_payload)
-            self._connected_clients = formatted
-            self._connected_clients_html = html_value
-            self._connected_clients_signature = signature
-            return
-
-        try:
-            servers = self._client.get_vpn_servers()
-        except (APIError, ConnectivityError) as err:
-            _LOGGER.debug(
-                "Fetching VPN server clients failed for %s: %s", self._srv_name, err
-            )
-            if (
-                self._connected_clients_signature is None
-                or self._connected_clients_html is None
-            ):
-                self._connected_clients = []
-                self._connected_clients_html = _render_connected_clients_html([])
-                self._connected_clients_signature = ("empty",)
-            return
-
-        target_id = str(self._srv_id) if self._srv_id is not None else None
-        target_link = str(self._linked_net_id) if self._linked_net_id is not None else None
-
-        fallback_raw: Optional[Mapping[str, Any]] = None
-        for server in servers:
-            raw = server.get("_raw") if isinstance(server, Mapping) else None
-            if not isinstance(raw, Mapping):
-                continue
-
-            server_id = server.get("id") if isinstance(server, Mapping) else None
-            linked_id = server.get("linked_network_id") if isinstance(server, Mapping) else None
-
-            if target_id is not None and server_id is not None and str(server_id) == target_id:
-                signature = _freeze_state(raw)
-                if (
-                    signature == self._connected_clients_signature
-                    and self._connected_clients_html is not None
-                ):
-                    return
-                formatted, html_value = _prepare_connected_clients_output(raw)
-                self._connected_clients = formatted
-                self._connected_clients_html = html_value
-                self._connected_clients_signature = signature
-                return
-
-            if (
-                target_link is not None
-                and linked_id is not None
-                and str(linked_id) == target_link
-            ):
-                fallback_raw = raw
-                continue
-
-            if fallback_raw is None and target_link is None and target_id is None:
-                fallback_raw = raw
-
-        if fallback_raw is not None:
-            signature = _freeze_state(fallback_raw)
-            if (
-                signature == self._connected_clients_signature
-                and self._connected_clients_html is not None
-            ):
-                return
-            formatted, html_value = _prepare_connected_clients_output(fallback_raw)
-            self._connected_clients = formatted
-            self._connected_clients_html = html_value
-            self._connected_clients_signature = signature
-            return
-
-        signature = ("empty",)
-        if (
-            signature == self._connected_clients_signature
-            and self._connected_clients_html is not None
-        ):
-            return
-        self._connected_clients = []
-        self._connected_clients_html = _render_connected_clients_html([])
-        self._connected_clients_signature = signature
 
 
 
