@@ -1,6 +1,7 @@
 """The UniFi Gateway Dashboard Analyzer integration."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from datetime import timedelta
@@ -13,6 +14,9 @@ if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers import entity_registry as er
     from homeassistant.helpers.typing import ConfigType
+
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from .async_client import UniFiGatewayAsyncClient
 
 from .const import (
     CONF_HOST,
@@ -43,6 +47,7 @@ from .const import (
 )
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
+from .async_wrapper import UniFiGatewayAsyncWrapper
 from .monitor import SpeedtestRunner
 
 _LOGGER = logging.getLogger(__name__)
@@ -161,159 +166,109 @@ async def async_setup(hass: "HomeAssistant", config: "ConfigType") -> bool:
 
 async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
     """Set up UniFi Gateway Dashboard Analyzer from a config entry."""
-    _LOGGER.debug("Setting up config entry %s", entry.title)
+    hass.data.setdefault(DOMAIN, {})
+    data = dict(entry.data)
+    options = dict(entry.options)
 
-    from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
-
-    client_kwargs: dict[str, Any] = {
-        "host": entry.data[CONF_HOST],
-        "port": entry.data.get(CONF_PORT, DEFAULT_PORT),
-        "site_id": entry.data.get(CONF_SITE_ID, DEFAULT_SITE),
-        "ssl_verify": entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
-        "use_proxy_prefix": entry.data.get(
-            CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX
-        ),
-        "timeout": entry.data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
-    }
-
-    username = entry.data.get(CONF_USERNAME)
-    password = entry.data.get(CONF_PASSWORD)
-    if username:
-        client_kwargs["username"] = username
-    if password:
-        client_kwargs["password"] = password
-
-    client_kwargs["instance_hint"] = entry.entry_id  # ensures stable unique_id across restarts
-
-    client_factory = partial(UniFiOSClient, **client_kwargs)
-
-    options = entry.options or {}
-
-    speedtest_interval_seconds = _resolve_speedtest_interval_seconds(options, entry.data)
-
-    wifi_guest = _normalize_wifi_option(options.get(CONF_WIFI_GUEST))
-    if wifi_guest is None:
-        wifi_guest = _normalize_wifi_option(entry.data.get(CONF_WIFI_GUEST))
-    wifi_iot = _normalize_wifi_option(options.get(CONF_WIFI_IOT))
-    if wifi_iot is None:
-        wifi_iot = _normalize_wifi_option(entry.data.get(CONF_WIFI_IOT))
+    # Clean up existing client
+    if entry.entry_id in hass.data[DOMAIN]:
+        try:
+            await hass.async_add_executor_job(
+                lambda: hass.data[DOMAIN][entry.entry_id].close()
+            )
+        except Exception as err:
+            _LOGGER.debug("Error closing existing client: %s", err)
 
     try:
-        client: UniFiOSClient = await hass.async_add_executor_job(client_factory)
-    except AuthError as err:
-        _LOGGER.error("Authentication failed while setting up entry %s: %s", entry.entry_id, err)
-        raise ConfigEntryAuthFailed("Authentication with UniFi controller failed") from err
-    except ConnectivityError as err:
-        _LOGGER.error("Connectivity issue while setting up entry %s: %s", entry.entry_id, err)
-        raise ConfigEntryNotReady(f"Cannot connect to UniFi controller: {err}") from err
-    except APIError as err:
-        _LOGGER.error("Controller error while setting up entry %s: %s", entry.entry_id, err)
-        raise ConfigEntryNotReady(f"UniFi controller error: {err}") from err
-
-    coordinator = UniFiGatewayDataUpdateCoordinator(
-        hass,
-        client,
-        speedtest_interval=speedtest_interval_seconds,
-    )
-    await coordinator.async_config_entry_first_refresh()
-
-    if speedtest_interval_seconds <= 0:
-        interval_minutes = DEFAULT_SPEEDTEST_INTERVAL_MINUTES
-    else:
-        interval_minutes = max(5, round(speedtest_interval_seconds / 60))
-
-    raw_entities = options.get(CONF_SPEEDTEST_ENTITIES, DEFAULT_SPEEDTEST_ENTITIES)
-    entity_ids = _normalize_speedtest_entity_ids(raw_entities)
-
-    async def _noop_result_callback(
-        *, success: bool, duration_ms: int, error: str | None, trace_id: str
-    ) -> None:
-        return None
-
-    base_name = entry.title or entry.data.get(CONF_HOST) or "UniFi Gateway"
-
-    entry_data = hass.data[DOMAIN][entry.entry_id] = {
-        "client": client,
-        "coordinator": coordinator,
-        "on_result_cb": _noop_result_callback,
-        DATA_RUNNER: None,
-        DATA_UNDO_TIMER: None,
-        "speedtest_entities": list(entity_ids),
-        "speedtest_interval_minutes": interval_minutes,
-        "device_name": base_name,
-        "wifi_guest": wifi_guest,
-        "wifi_iot": wifi_iot,
-        "wifi_overrides": {"guest": wifi_guest, "iot": wifi_iot},
-    }
-
-    async def _dispatch_result(
-        success: bool, duration_ms: int, error: str | None, trace_id: str
-    ) -> None:
-        store = hass.data.get(DOMAIN, {})
-        data = store.get(entry.entry_id)
-        if not data:
-            return
-        callback = data.get("on_result_cb")
-        if callback is None:
-            return
-        await callback(
-            success=success,
-            duration_ms=duration_ms,
-            error=error,
-            trace_id=trace_id,
+        client = UniFiOSClient(
+            host=data[CONF_HOST],
+            username=data.get(CONF_USERNAME),
+            password=data.get(CONF_PASSWORD),
+            port=data.get(CONF_PORT, DEFAULT_PORT),
+            site_id=data.get(CONF_SITE_ID, DEFAULT_SITE),
+            ssl_verify=data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
+            use_proxy_prefix=data.get(CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX),
+            timeout=data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
         )
 
-    runner = SpeedtestRunner(hass, entity_ids, _dispatch_result, client, coordinator)
-    entry_data[DATA_RUNNER] = runner
+        # Test connection with retries
+        for attempt in range(3):
+            try:
+                if not await hass.async_add_executor_job(client.ping):
+                    raise ConnectivityError("Connection test failed")
+                break
+            except (ConnectivityError, APIError) as err:
+                if attempt == 2:  # Last attempt
+                    raise ConfigEntryNotReady(f"Connection failed: {err}")
+                _LOGGER.warning(
+                    "Connection attempt %d failed: %s, retrying...",
+                    attempt + 1, 
+                    err
+                )
+                await asyncio.sleep(2 * (attempt + 1))
 
-    _LOGGER.debug(
-        "UniFi Gateway Dashboard Analyzer entry %s setup complete; scheduling platform forwards",
-        entry.entry_id,
-    )
-
-    await _async_migrate_speedtest_button_unique_id(hass, entry)
-    await _async_migrate_interface_unique_ids(hass, entry, client, coordinator.data)
-
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    hass.async_create_task(runner.async_trigger(reason="init"))
-
-    async def _periodic(_now) -> None:
-        await runner.async_trigger(reason="schedule")
-
-    from homeassistant.helpers.event import async_track_time_interval
-
-    undo = async_track_time_interval(
-        hass,
-        _periodic,
-        timedelta(minutes=interval_minutes),
-    )
-    entry_data[DATA_UNDO_TIMER] = undo
-
-    _LOGGER.info(
-        "UniFi Gateway Dashboard Analyzer entry %s fully initialized; Speedtest every %s minutes (entities=%s)",
-        entry.entry_id,
-        interval_minutes,
-        entity_ids,
-    )
-    return True
-
-
-async def async_unload_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
-    """Unload a config entry."""
-    _LOGGER.debug("Unloading config entry %s", entry.title)
-    stored = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-    if stored and (undo := stored.get(DATA_UNDO_TIMER)):
-        undo()
-        stored[DATA_UNDO_TIMER] = None
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok:
-        stored = hass.data.get(DOMAIN)
-        if stored and entry.entry_id in stored:
-            stored.pop(entry.entry_id)
-        _LOGGER.debug(
-            "UniFi Gateway Dashboard Analyzer entry %s unloaded", entry.entry_id
+        speedtest_interval = _resolve_speedtest_interval_seconds(options, data)
+        coordinator = UniFiGatewayDataUpdateCoordinator(
+            hass,
+            client,
+            speedtest_interval=speedtest_interval,
         )
+
+        try:
+            await coordinator.async_config_entry_first_refresh()
+        except Exception as err:
+            await hass.async_add_executor_job(client.close)
+            raise ConfigEntryNotReady(f"Data refresh failed: {err}") from err
+        
+        hass.data[DOMAIN][entry.entry_id] = {
+            "client": client,
+            "coordinator": coordinator,
+        }
+        
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        return True
+        
+    except Exception as err:
+        _LOGGER.error("Failed to set up %s: %s", entry.entry_id, err)
+        if 'client' in locals():
+            await hass.async_add_executor_job(client.close)
+        raise ConfigEntryNotReady(f"Setup failed: {err}") from err
+        async_client = UniFiGatewayAsyncClient(hass, client)
+
+        # Verify connection
+        if not await async_client.async_ping():
+            raise ConnectivityError("Failed to connect")
+
+        speedtest_interval = _resolve_speedtest_interval_seconds(options, data)
+        
+        coordinator = UniFiGatewayDataUpdateCoordinator(
+            hass,
+            client,
+            speedtest_interval=speedtest_interval,
+        )
+
+        await coordinator.async_config_entry_first_refresh()
+
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = {
+            "client": async_client,
+            "coordinator": coordinator,
+        }
+
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        return True
+
+    except Exception as err:
+        if 'client' in locals():
+            await hass.async_add_executor_job(client.close)
+        raise ConfigEntryNotReady(f"Failed to set up: {err}") from err
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload UniFi Gateway config entry."""
+    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        if client := hass.data[DOMAIN].pop(entry.entry_id, {}).get("client"):
+            await client.async_close()
     return unload_ok
 
 
@@ -430,5 +385,27 @@ async def _async_migrate_interface_unique_ids(
         len(mapping),
         entry.entry_id,
     )
+
+
+async def _validate_connection(hass: HomeAssistant, data: dict) -> None:
+    """Validate the connection with retry logic."""
+    for attempt in range(3):
+        try:
+            return await hass.async_add_executor_job(
+                lambda: UniFiOSClient(
+                    host=data[CONF_HOST],
+                    username=data.get(CONF_USERNAME),
+                    password=data.get(CONF_PASSWORD),
+                    port=data.get(CONF_PORT, DEFAULT_PORT),
+                    site_id=data.get(CONF_SITE_ID, DEFAULT_SITE),
+                    ssl_verify=data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
+                    use_proxy_prefix=data.get(CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX),
+                    timeout=max(data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT), 30),
+                ).ping()
+            )
+        except (ConnectivityError, APIError) as err:
+            if attempt == 2:
+                raise
+            await asyncio.sleep(2 * (attempt + 1))
 
 

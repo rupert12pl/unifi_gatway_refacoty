@@ -97,15 +97,18 @@ class UniFiOSClient:
 
         self._session = requests.Session()
         retries = Retry(
-            total=5,
+            total=8,
             connect=5,
             read=3,
-            backoff_factor=0.4,
-            status_forcelist=(429, 500, 502, 503, 504),
-            allowed_methods=("GET", "POST"),
+            backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504, 520, 521, 522, 523, 524),
+            allowed_methods=frozenset(["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"]),
+            respect_retry_after_header=True,
             raise_on_status=False,
         )
-        self._session.mount("https://", HTTPAdapter(max_retries=retries))
+        adapter = HTTPAdapter(max_retries=retries, pool_connections=3, pool_maxsize=10)
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
         self._session.headers.update({"Accept": "application/json"})
 
         try:
@@ -308,17 +311,23 @@ class UniFiOSClient:
         data: Any = None,
         timeout: Optional[int] = None,
     ) -> tuple["requests.Response", str]:
+        """Make an HTTP request to the UniFi controller with improved error handling and retries."""
         url = self._join(path)
         req_timeout = timeout or self._timeout
-        kwargs: Dict[str, Any] = {"timeout": req_timeout, "allow_redirects": False}
+        kwargs: Dict[str, Any] = {
+            "timeout": req_timeout,
+            "allow_redirects": False,
+            "verify": self._session.verify
+        }
         if params:
             kwargs["params"] = params
         if json_payload is not None:
             kwargs["json"] = json_payload
         if data is not None:
             kwargs["data"] = data
+        
         label = self._login_endpoint_label(url)
-        _LOGGER.debug("UniFi request %s %s initiated", method, label)
+        _LOGGER.debug("UniFi request %s %s initiated with timeout %s", method, label, req_timeout)
         requests = self._requests_module()
 
         start = time.perf_counter()
@@ -439,27 +448,67 @@ class UniFiOSClient:
         data: Any = None,
         timeout: Optional[int] = None,
     ) -> Any:
-        response, text = self._request(
-            method,
-            path,
-            params=params,
-            json_payload=json_payload,
-            data=data,
-            timeout=timeout,
-        )
-        if not text:
-            return None
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            label = self._login_endpoint_label(response.url)
-            _LOGGER.debug(
-                "UniFi request %s %s returned non-JSON payload: %s",
-                method,
-                label,
-                self._shorten(text),
-            )
-            return text
+        """Make a JSON request with improved error handling and retry logic."""
+        max_retries = 3
+        retry_delay = 1
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                response, text = self._request(
+                    method,
+                    path,
+                    params=params,
+                    json_payload=json_payload,
+                    data=data,
+                    timeout=timeout,
+                )
+                
+                if not text:
+                    return None
+                    
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    label = self._login_endpoint_label(response.url)
+                    _LOGGER.debug(
+                        "UniFi request %s %s returned non-JSON payload: %s",
+                        method,
+                        label,
+                        self._shorten(text),
+                    )
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay * (attempt + 1))
+                        continue
+                    return text
+                    
+                if isinstance(payload, dict) and payload.get("meta", {}).get("rc") == "error":
+                    error_msg = payload.get("meta", {}).get("msg", "Unknown error")
+                    raise APIError(
+                        f"UniFi API error: {error_msg}",
+                        status_code=response.status_code,
+                        url=str(response.url),
+                        expected=True,
+                    )
+                    
+                return payload
+                
+            except (ConnectivityError, APIError) as err:
+                last_error = err
+                if attempt < max_retries - 1 and not isinstance(err, AuthError):
+                    _LOGGER.debug(
+                        "Request attempt %d failed, retrying in %d seconds: %s",
+                        attempt + 1,
+                        retry_delay * (attempt + 1),
+                        err,
+                    )
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+                raise
+                
+        if last_error:
+            raise last_error
+        raise APIError("Max retries exceeded")
         try:
             return self._process_payload(payload, response.url)
         except APIError as err:

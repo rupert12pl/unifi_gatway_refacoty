@@ -42,24 +42,47 @@ from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 _LOGGER = logging.getLogger(__name__)
 
 async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the UniFi controller configuration with improved error handling."""
     def _sync():
-        client = UniFiOSClient(
-            host=data[CONF_HOST],
-            username=data.get(CONF_USERNAME),
-            password=data.get(CONF_PASSWORD),
-            port=data.get(CONF_PORT, DEFAULT_PORT),
-            site_id=data.get(CONF_SITE_ID, DEFAULT_SITE),
-            ssl_verify=data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
-            use_proxy_prefix=data.get(CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX),
-            timeout=data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
-        )
+        client = None
         try:
+            client = UniFiOSClient(
+                host=data[CONF_HOST],
+                username=data.get(CONF_USERNAME),
+                password=data.get(CONF_PASSWORD),
+                port=data.get(CONF_PORT, DEFAULT_PORT),
+                site_id=data.get(CONF_SITE_ID, DEFAULT_SITE),
+                ssl_verify=data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
+                use_proxy_prefix=data.get(CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX),
+                timeout=data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
+            )
+            
+            # Test basic connectivity first
             ping = client.ping()
+            if not ping:
+                raise ConnectivityError("Controller ping failed")
+                
+            # Then test API functionality
             sites = client.list_sites()
+            if not sites:
+                _LOGGER.warning("No sites found on UniFi controller")
+                
+            return {"ping": ping, "sites": sites}
+        except Exception as err:
+            _LOGGER.error("Error during UniFi controller validation: %s", err)
+            raise
         finally:
-            client.close()
-        return {"ping": ping, "sites": sites}
-    return await hass.async_add_executor_job(_sync)
+            if client:
+                try:
+                    client.close()
+                except Exception as err:
+                    _LOGGER.debug("Error closing UniFi client: %s", err)
+                    
+    try:
+        return await hass.async_add_executor_job(_sync)
+    except Exception as err:
+        _LOGGER.error("Failed to validate UniFi controller: %s", err)
+        raise
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
