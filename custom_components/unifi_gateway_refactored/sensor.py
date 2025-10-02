@@ -895,6 +895,9 @@ _WAN_IPV6_KEYS: tuple[str, ...] = (
     "wan_ip6",
     "wan_ipv6_address",
     "wan_ipv6_ip",
+    "ipv6_address",
+    "global_ipv6",
+    "public_ip6",
 )
 
 
@@ -2626,12 +2629,17 @@ class UniFiGatewayWanIpv6Sensor(UniFiGatewayWanSensorBase):
         health = self._wan_health_record()
         ipv6, source = _extract_wan_value_with_source(link, health, _WAN_IPV6_KEYS)
         if ipv6:
+            if source == "wan_link":
+                normalized_source = "link"
+            elif source == "wan_health":
+                normalized_source = "health"
+            else:
+                normalized_source = source or "unknown"
             self._last_ipv6 = ipv6
-            self._last_source = source or "unknown"
+            self._last_source = normalized_source
             return ipv6
         if self._last_ipv6:
-            if not self._last_source:
-                self._last_source = "cached"
+            self._last_source = "cached"
             return self._last_ipv6
         return None
 

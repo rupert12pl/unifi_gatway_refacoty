@@ -226,9 +226,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 raise
             except Exception as err:  # pragma: no cover - defensive guard
                 _LOGGER.exception(
-                    "Unexpected error while validating UniFi controller %s:%s",
+                    "Unexpected error while validating UniFi controller %s:%s: %s",
                     data.get(CONF_HOST),
                     data.get(CONF_PORT, DEFAULT_PORT),
+                    err,
                 )
                 errors["base"] = "unknown"
 
@@ -358,9 +359,10 @@ class OptionsFlow(config_entries.OptionsFlow):
                     errors["base"] = "cannot_connect" if not err.expected else "unknown"
                 except Exception as err:  # pragma: no cover - defensive guard
                     _LOGGER.exception(
-                        "Unexpected error while validating UniFi controller %s:%s during options flow",
+                        "Unexpected error while validating UniFi controller %s:%s during options flow: %s",
                         merged.get(CONF_HOST),
                         merged.get(CONF_PORT, DEFAULT_PORT),
+                        err,
                     )
                     errors["base"] = "unknown"
 
