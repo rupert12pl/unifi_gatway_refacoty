@@ -1,5 +1,6 @@
 {
   "name": "UniFi Gateway Dashboard Analyzer",
-  "content_in_root": false,
-  "render_readme": true
+  "render_readme": true,
+  "logo": "images/logo.svg",
+  "icon": "images/icon.svg"
 }

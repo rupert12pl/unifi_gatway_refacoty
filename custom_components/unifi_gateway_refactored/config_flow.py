@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional, TYPE_CHECKING
@@ -314,86 +315,64 @@ class OptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         if user_input is not None:
-            try:
-                # Czyszczenie i normalizacja danych wejściowych
-                cleaned = ConfigFlow._clean_auth_fields(user_input)
-                
-                # Przetwarzanie interwału speedtest
-                if CONF_SPEEDTEST_INTERVAL in cleaned:
-                    try:
-                        cleaned[CONF_SPEEDTEST_INTERVAL] = ConfigFlow._minutes_to_seconds(
-                            cleaned[CONF_SPEEDTEST_INTERVAL]
-                        )
-                    except (ValueError, TypeError):
-                        cleaned[CONF_SPEEDTEST_INTERVAL] = DEFAULT_SPEEDTEST_INTERVAL
-                
-                # Przetwarzanie encji speedtest
-                if CONF_SPEEDTEST_ENTITIES in cleaned:
-                    value = cleaned[CONF_SPEEDTEST_ENTITIES]
-                    if isinstance(value, str):
-                        collapsed = ",".join(
-                            segment.strip()
-                            for segment in value.replace("\n", ",").split(",")
-                            if segment.strip()
-                        )
-                        cleaned[CONF_SPEEDTEST_ENTITIES] = (
-                            collapsed or DEFAULT_SPEEDTEST_ENTITIES
-                        )
-                    elif isinstance(value, (list, tuple, set)):
-                        collapsed = ",".join(str(item).strip() for item in value if str(item).strip())
-                        cleaned[CONF_SPEEDTEST_ENTITIES] = (
-                            collapsed or DEFAULT_SPEEDTEST_ENTITIES
-                        )
-                
-                # Normalizacja pól WiFi
-                for key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
-                    if key in cleaned:
-                        normalized = ConfigFlow._normalize_optional_text(cleaned[key])
-                        if normalized is None:
-                            cleaned.pop(key)
-                        else:
-                            cleaned[key] = normalized
-                
-                # Łączenie danych z istniejącą konfiguracją
-                merged = {**self._entry.data, **self._entry.options}
-                # Aktualizacja tylko zmienionych wartości
-                for key, value in cleaned.items():
-                    if value is not None:
-                        merged[key] = value
-                
-                if not ConfigFlow._has_auth(merged):
-                    errors["base"] = "missing_auth"
-                else:
+            cleaned = ConfigFlow._clean_auth_fields(user_input)
+            if CONF_SPEEDTEST_INTERVAL in cleaned:
+                cleaned[CONF_SPEEDTEST_INTERVAL] = ConfigFlow._minutes_to_seconds(
+                    cleaned[CONF_SPEEDTEST_INTERVAL]
+                )
+            if CONF_SPEEDTEST_ENTITIES in cleaned:
+                value = cleaned[CONF_SPEEDTEST_ENTITIES]
+                if isinstance(value, str):
+                    collapsed = ",".join(
+                        segment.strip()
+                        for segment in value.replace("\n", ",").split(",")
+                        if segment.strip()
+                    )
+                    cleaned[CONF_SPEEDTEST_ENTITIES] = (
+                        collapsed or DEFAULT_SPEEDTEST_ENTITIES
+                    )
+                elif isinstance(value, (list, tuple, set)):
+                    collapsed = ",".join(str(item).strip() for item in value if str(item).strip())
+                    cleaned[CONF_SPEEDTEST_ENTITIES] = (
+                        collapsed or DEFAULT_SPEEDTEST_ENTITIES
+                    )
+            for key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
+                if key in cleaned:
+                    cleaned[key] = ConfigFlow._normalize_optional_text(cleaned[key])
+            merged = {**self._entry.data, **self._entry.options, **cleaned}
+            if not ConfigFlow._has_auth(merged):
+                errors["base"] = "missing_auth"
+            else:
+                try:
                     assert self.hass is not None
                     await _validate(self.hass, merged)
                     return self.async_create_entry(title="", data=cleaned)
-            
-            except AuthError:
-                errors["base"] = "invalid_auth"
-            except ConnectivityError as err:
-                _LOGGER.error(
-                    "Connectivity issue while validating UniFi controller %s:%s during options flow: %s",
-                    user_input.get(CONF_HOST),
-                    user_input.get(CONF_PORT, DEFAULT_PORT),
-                    err,
-                )
-                errors["base"] = "cannot_connect"
-            except APIError as err:
-                _LOGGER.error(
-                    "UniFi API error while validating controller %s:%s during options flow: %s",
-                    user_input.get(CONF_HOST),
-                    user_input.get(CONF_PORT, DEFAULT_PORT),
-                    err,
-                )
-                errors["base"] = "cannot_connect" if not err.expected else "unknown"
-            except Exception as err:  # pragma: no cover - defensive guard
-                _LOGGER.exception(
-                    "Unexpected error while validating UniFi controller %s:%s during options flow: %s",
-                    user_input.get(CONF_HOST),
-                    user_input.get(CONF_PORT, DEFAULT_PORT),
-                    err,
-                )
-                errors["base"] = "unknown"
+                except AuthError:
+                    errors["base"] = "invalid_auth"
+                except ConnectivityError as err:
+                    _LOGGER.error(
+                        "Connectivity issue while validating UniFi controller %s:%s during options flow: %s",
+                        merged.get(CONF_HOST),
+                        merged.get(CONF_PORT, DEFAULT_PORT),
+                        err,
+                    )
+                    errors["base"] = "cannot_connect"
+                except APIError as err:
+                    _LOGGER.error(
+                        "UniFi API error while validating controller %s:%s during options flow: %s",
+                        merged.get(CONF_HOST),
+                        merged.get(CONF_PORT, DEFAULT_PORT),
+                        err,
+                    )
+                    errors["base"] = "cannot_connect" if not err.expected else "unknown"
+                except Exception as err:  # pragma: no cover - defensive guard
+                    _LOGGER.exception(
+                        "Unexpected error while validating UniFi controller %s:%s during options flow: %s",
+                        merged.get(CONF_HOST),
+                        merged.get(CONF_PORT, DEFAULT_PORT),
+                        err,
+                    )
+                    errors["base"] = "unknown"
 
         current = {**self._entry.data, **self._entry.options}
         interval_default = ConfigFlow._seconds_to_minutes(
@@ -412,7 +391,7 @@ class OptionsFlow(config_entries.OptionsFlow):
             entities_default = DEFAULT_SPEEDTEST_ENTITIES
         schema = vol.Schema(
             {
-                vol.Required(CONF_HOST, default=current.get(CONF_HOST)): str,
+                vol.Optional(CONF_HOST, default=current.get(CONF_HOST)): str,
                 vol.Optional(
                     CONF_PORT,
                     default=current.get(CONF_PORT, DEFAULT_PORT),
@@ -444,12 +423,12 @@ class OptionsFlow(config_entries.OptionsFlow):
                 ): str,
                 vol.Optional(
                     CONF_WIFI_GUEST,
-                    default=current.get(CONF_WIFI_GUEST, ""),
-                ): str,
+                    default=current.get(CONF_WIFI_GUEST),
+                ): vol.Any(str, None),
                 vol.Optional(
                     CONF_WIFI_IOT,
-                    default=current.get(CONF_WIFI_IOT, ""),
-                ): str,
+                    default=current.get(CONF_WIFI_IOT),
+                ): vol.Any(str, None),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

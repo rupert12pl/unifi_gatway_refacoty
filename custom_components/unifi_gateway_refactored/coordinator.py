@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 import time
 from typing import Any, Dict, List, Optional
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
-from .speedtest import SpeedtestHandler
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -35,8 +35,6 @@ class UniFiGatewayData:
     clients: list[dict[str, Any]] = field(default_factory=list)
     speedtest: Optional[dict[str, Any]] = None
     vpn_tunnels: list[dict[str, Any]] = field(default_factory=list)
-    active_clients_v2: list[dict[str, Any]] = field(default_factory=list)
-    vpn_sessions: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData]):
@@ -50,13 +48,61 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         speedtest_interval: int | None = None,
     ) -> None:
         self._client = client
-        self._speedtest_handler = SpeedtestHandler(client, speedtest_interval)
+        self._speedtest_interval = self._sanitize_speedtest_interval(speedtest_interval)
         super().__init__(
             hass,
             logger=_LOGGER,
             name=f"{DOMAIN} data",
             update_interval=timedelta(seconds=15),
         )
+
+    @staticmethod
+    def _sanitize_speedtest_interval(value: int | None) -> int:
+        try:
+            interval = int(value) if value is not None else 0
+        except (TypeError, ValueError):
+            return 0
+        return max(0, interval)
+
+    @staticmethod
+    def _speedtest_last_timestamp(record: Optional[Dict[str, Any]]) -> Optional[float]:
+        if not isinstance(record, dict):
+            return None
+        for key in ("rundate", "timestamp", "time", "date", "start_time"):
+            if key not in record:
+                continue
+            value = record.get(key)
+            if value in (None, ""):
+                continue
+            if isinstance(value, (int, float)):
+                number = float(value)
+                if number > 1e11:
+                    number /= 1000.0
+                if number > 0:
+                    return number
+                continue
+            dt_value: Optional[datetime] = None
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    continue
+                try:
+                    number = float(text)
+                except (TypeError, ValueError):
+                    dt_value = dt_util.parse_datetime(text)
+                else:
+                    if number > 1e11:
+                        number /= 1000.0
+                    if number > 0:
+                        return number
+                    continue
+            elif isinstance(value, datetime):
+                dt_value = value
+            if dt_value is None:
+                continue
+            dt_utc = dt_util.as_utc(dt_value)
+            return dt_utc.timestamp()
+        return None
 
     async def _async_update_data(self) -> UniFiGatewayData:
         try:
@@ -162,9 +208,55 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         # VPN tunnel list retained for backward compatibility but populated elsewhere
         vpn_tunnels: List[Dict[str, Any]] = []
 
-        # Handle speedtest data and triggers
-        speedtest = self._speedtest_handler.get_speedtest()
-        self._speedtest_handler.check_and_trigger(time.time())
+        # Improved speedtest handling
+        speedtest = None
+        try:
+            speedtest = self._client.get_last_speedtest(cache_sec=5)
+            if speedtest:
+                # Validate speedtest data
+                has_values = any(
+                    isinstance(speedtest.get(key), (int, float)) and speedtest[key] > 0
+                    for key in ("download_mbps", "upload_mbps", "latency_ms")
+                )
+                if not has_values:
+                    _LOGGER.debug("Cached speedtest result has no valid measurements")
+                    speedtest = None
+                else:
+                    _LOGGER.debug(
+                        "Valid speedtest result: %0.1f/%0.1f Mbps, %0.1f ms",
+                        speedtest.get("download_mbps", 0),
+                        speedtest.get("upload_mbps", 0),
+                        speedtest.get("latency_ms", 0)
+                    )
+        except APIError as err:
+            _LOGGER.warning("Failed to fetch speedtest results: %s", err)
+
+        # Improved speedtest trigger logic
+        interval = self._speedtest_interval
+        if interval > 0:
+            last_ts = self._speedtest_last_timestamp(speedtest)
+            now_ts = time.time()
+            
+            should_trigger = False
+            if not speedtest:
+                should_trigger = True
+                reason = "missing"
+            elif last_ts and (now_ts - last_ts) >= interval:
+                should_trigger = True
+                reason = f"stale ({int(now_ts - last_ts)}s old)"
+                
+            if should_trigger:
+                cooldown = max(interval, 60)
+                try:
+                    self._client.maybe_start_speedtest(cooldown_sec=cooldown)
+                    _LOGGER.info(
+                        "Triggered speedtest (reason=%s, interval=%ss, cooldown=%ss)",
+                        reason,
+                        interval,
+                        cooldown
+                    )
+                except APIError as err:
+                    _LOGGER.warning("Failed to trigger speedtest: %s", err)
 
         data = UniFiGatewayData(
             controller=controller_info,

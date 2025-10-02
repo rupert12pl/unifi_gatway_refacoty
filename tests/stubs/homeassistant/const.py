@@ -21,9 +21,4 @@ class Platform(str, Enum):
     SENSOR = "sensor"
 
 
-CONF_HOST = "host"
-CONF_PORT = "port"
-CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
-
-__all__ = ["Platform", "UnitOfTime", "TIME_MILLISECONDS", "CONF_HOST", "CONF_PORT", "CONF_USERNAME", "CONF_PASSWORD"]
+__all__ = ["Platform", "UnitOfTime", "TIME_MILLISECONDS"]
