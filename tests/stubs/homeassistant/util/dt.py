@@ -27,4 +27,9 @@ def as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-__all__ = ["parse_datetime", "as_utc"]
+def as_local(value: datetime) -> datetime:
+    """Return the provided datetime without modification (local timezone stub)."""
+    return value
+
+
+__all__ = ["parse_datetime", "as_utc", "as_local"]

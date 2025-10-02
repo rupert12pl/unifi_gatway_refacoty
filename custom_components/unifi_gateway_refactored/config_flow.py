@@ -113,17 +113,23 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     def _resolve_interval_seconds(data: Dict[str, Any]) -> int:
         candidate = data.get(CONF_SPEEDTEST_INTERVAL)
-        try:
-            seconds = int(candidate)
-        except (TypeError, ValueError):
+        if isinstance(candidate, (int, float, str)):
+            try:
+                seconds = int(candidate)
+            except (TypeError, ValueError):
+                seconds = None
+        else:
             seconds = None
         if seconds is not None and seconds >= 0:
             return seconds
 
         legacy_candidate = data.get(LEGACY_CONF_SPEEDTEST_INTERVAL_MIN)
-        try:
-            minutes = int(legacy_candidate)
-        except (TypeError, ValueError):
+        if isinstance(legacy_candidate, (int, float, str)):
+            try:
+                minutes = int(legacy_candidate)
+            except (TypeError, ValueError):
+                minutes = None
+        else:
             minutes = None
         if minutes is not None and minutes >= 0:
             return minutes * 60
@@ -198,6 +204,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         data[key] = normalized
                         self._cached[key] = normalized
             try:
+                assert self.hass is not None
                 await _validate(self.hass, data)
                 await self.async_set_unique_id(
                     f"{data[CONF_HOST]}:{data.get(CONF_PORT, DEFAULT_PORT)}"
@@ -226,9 +233,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 raise
             except Exception as err:  # pragma: no cover - defensive guard
                 _LOGGER.exception(
-                    "Unexpected error while validating UniFi controller %s:%s",
+                    "Unexpected error while validating UniFi controller %s:%s: %s",
                     data.get(CONF_HOST),
                     data.get(CONF_PORT, DEFAULT_PORT),
+                    err,
                 )
                 errors["base"] = "unknown"
 
@@ -336,6 +344,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "missing_auth"
             else:
                 try:
+                    assert self.hass is not None
                     await _validate(self.hass, merged)
                     return self.async_create_entry(title="", data=cleaned)
                 except AuthError:
@@ -358,9 +367,10 @@ class OptionsFlow(config_entries.OptionsFlow):
                     errors["base"] = "cannot_connect" if not err.expected else "unknown"
                 except Exception as err:  # pragma: no cover - defensive guard
                     _LOGGER.exception(
-                        "Unexpected error while validating UniFi controller %s:%s during options flow",
+                        "Unexpected error while validating UniFi controller %s:%s during options flow: %s",
                         merged.get(CONF_HOST),
                         merged.get(CONF_PORT, DEFAULT_PORT),
+                        err,
                     )
                     errors["base"] = "unknown"
 

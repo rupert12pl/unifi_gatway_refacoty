@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import TYPE_CHECKING, cast
 
 from custom_components.unifi_gateway_refactored.coordinator import UniFiGatewayData
 from custom_components.unifi_gateway_refactored.sensor import (
     UniFiGatewaySubsystemSensor,
 )
+
+if TYPE_CHECKING:
+    from custom_components.unifi_gateway_refactored.coordinator import (
+        UniFiGatewayDataUpdateCoordinator,
+    )
+    from custom_components.unifi_gateway_refactored.unifi_client import UniFiOSClient
 
 
 class DummyCoordinator:
@@ -62,8 +69,8 @@ def test_wlan_subsystem_overrides_counts(hass) -> None:
     client = DummyClient()
 
     sensor = UniFiGatewaySubsystemSensor(
-        coordinator,
-        client,
+        cast("UniFiGatewayDataUpdateCoordinator", coordinator),
+        cast("UniFiOSClient", client),
         "wlan",
         "WLAN",
         "mdi:wifi",
@@ -99,8 +106,8 @@ def test_wlan_subsystem_preserves_counts_without_overrides(hass) -> None:
     client = DummyClient()
 
     sensor = UniFiGatewaySubsystemSensor(
-        coordinator,
-        client,
+        cast("UniFiGatewayDataUpdateCoordinator", coordinator),
+        cast("UniFiOSClient", client),
         "wlan",
         "WLAN",
         "mdi:wifi",

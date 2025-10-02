@@ -9,16 +9,31 @@ import hashlib
 import logging
 import time
 import ipaddress
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    TYPE_CHECKING,
+    Type,
+    Protocol,
+    cast,
+)
+
+if TYPE_CHECKING:  # pragma: no cover - type checking helpers only
+    from requests import Response as RequestsResponse
+    from requests.exceptions import RequestException as RequestsRequestException
+else:  # pragma: no cover - runtime fallback when requests missing
+    RequestsResponse = Any
+    RequestsRequestException = Exception
 
 try:  # pragma: no cover - optional dependency in test environment
     import requests
-    from requests import Response
-    from requests.exceptions import RequestException
 except ImportError:  # pragma: no cover - gracefully handle missing dependency
-    requests = None  # type: ignore[assignment]
-    Response = Any  # type: ignore[assignment]
-    RequestException = Exception  # type: ignore[assignment]
+    requests = cast(Any, None)
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -43,10 +58,22 @@ from .const import CONF_HOST, DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
+class _IPWhoisProtocol(Protocol):
+    def __init__(self, address: str) -> None:
+        ...
+
+    def lookup_whois(self, *args: Any, **kwargs: Any) -> Mapping[str, Any]:
+        ...
+
+
+_IPWhoisClass: Type[_IPWhoisProtocol] | None
+
 try:  # pragma: no cover - optional dependency for WHOIS lookups
-    from ipwhois import IPWhois  # type: ignore[attr-defined]
+    from ipwhois import IPWhois as _IPWhoisClass
 except ImportError:  # pragma: no cover - dependency is optional at runtime
-    IPWhois = None  # type: ignore[assignment]
+    _IPWhoisClass = None
+
+IPWhois: Type[_IPWhoisProtocol] | None = cast(Type[_IPWhoisProtocol] | None, _IPWhoisClass)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -858,7 +885,9 @@ _PLACEHOLDER_STRINGS: tuple[str, ...] = (
 )
 
 
-def _value_from_record(record: Optional[Dict[str, Any]], keys: Iterable[str]) -> Optional[Any]:
+def _value_from_record(
+    record: Optional[Mapping[str, Any]], keys: Iterable[str]
+) -> Optional[Any]:
     if not record:
         return None
     for key in keys:
@@ -895,6 +924,9 @@ _WAN_IPV6_KEYS: tuple[str, ...] = (
     "wan_ip6",
     "wan_ipv6_address",
     "wan_ipv6_ip",
+    "ipv6_address",
+    "global_ipv6",
+    "public_ip6",
 )
 
 
@@ -1043,10 +1075,10 @@ def _cached_geolocation_lookup(remote_ip: str) -> Dict[str, str]:
     extracted: Dict[str, str] = {}
 
     try:
-        response: Response = requests.get(
+        response: RequestsResponse = requests.get(
             f"https://ipapi.co/{remote_ip}/json/", timeout=5
         )
-    except RequestException as err:  # pragma: no cover - defensive logging
+    except RequestsRequestException as err:  # pragma: no cover - defensive logging
         _LOGGER.debug("Geolocation lookup failed for %s: %s", remote_ip, err)
         return {}
 
@@ -1600,7 +1632,7 @@ def _parse_datetime_24h(value: Any) -> Optional[str]:
 
 
 class UniFiGatewaySensorBase(
-    CoordinatorEntity[UniFiGatewayDataUpdateCoordinator], SensorEntity
+    CoordinatorEntity[UniFiGatewayData], SensorEntity
 ):
     """Base entity for UniFi Gateway sensors."""
 
@@ -2043,7 +2075,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         }
 
     @property
-    def name(self) -> str:
+    def name(self) -> Optional[str]:
         return self._attr_name
 
     @property
@@ -2205,6 +2237,8 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         self._update_connected_clients(connected_records)
 
     async def async_update(self) -> None:
+        if self.hass is None:
+            return
         await self.hass.async_add_executor_job(self.update)
 
     def _update_connected_clients(
@@ -2626,12 +2660,17 @@ class UniFiGatewayWanIpv6Sensor(UniFiGatewayWanSensorBase):
         health = self._wan_health_record()
         ipv6, source = _extract_wan_value_with_source(link, health, _WAN_IPV6_KEYS)
         if ipv6:
+            if source == "wan_link":
+                normalized_source = "link"
+            elif source == "wan_health":
+                normalized_source = "health"
+            else:
+                normalized_source = source or "unknown"
             self._last_ipv6 = ipv6
-            self._last_source = source or "unknown"
+            self._last_source = normalized_source
             return ipv6
         if self._last_ipv6:
-            if not self._last_source:
-                self._last_source = "cached"
+            self._last_source = "cached"
             return self._last_ipv6
         return None
 
@@ -2791,9 +2830,11 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
     def _matches_client(self, client: Dict[str, Any]) -> bool:
         if str(client.get("network_id")) == self._network_id:
             return True
+        network_name = client.get("network")
         if (
-            client.get("network")
-            and client.get("network").lower() == self._network_name.lower()
+            isinstance(network_name, str)
+            and isinstance(self._network_name, str)
+            and network_name.lower() == self._network_name.lower()
         ):
             return True
         if self._ip_network and client.get("ip"):
