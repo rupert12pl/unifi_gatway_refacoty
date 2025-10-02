@@ -21,6 +21,6 @@
     "custom_components.unifi_gateway_refactored.monitor",
     "custom_components.unifi_gateway_refactored.unifi_client"
   ],
-  "logo": "https://raw.githubusercontent.com/rupert12pl/unifi_gatway_refacoty/main/custom_components/logo.svg",
-  "icon": "https://raw.githubusercontent.com/rupert12pl/unifi_gatway_refacoty/main/custom_components/icon.svg"
+  "logo": "logo.svg",
+  "icon": "icon.svg"
 }
