@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, Union
+from typing import Any, Callable, Dict, Optional, TypeVar, Union
 
 T = TypeVar("T")
 
