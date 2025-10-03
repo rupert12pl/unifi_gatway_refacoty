@@ -962,15 +962,42 @@ def _extract_wan_value_with_source(
     link: Optional[Dict[str, Any]],
     health: Optional[Dict[str, Any]],
     keys: Iterable[str],
+    *,
+    version: Optional[int] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
+    link_local_candidate: Optional[Tuple[str, str]] = None
+
+    def _normalize(value: Any, source: str) -> Optional[Tuple[str, str]]:
+        nonlocal link_local_candidate
+        if version in (4, 6):
+            parsed = _extract_ip_from_value(value, version=version)
+        else:
+            parsed = value
+        if not parsed:
+            return None
+        if version == 6:
+            try:
+                address = ipaddress.ip_address(parsed)
+            except ValueError:
+                return parsed, source
+            if isinstance(address, ipaddress.IPv6Address) and address.is_link_local:
+                if link_local_candidate is None:
+                    link_local_candidate = (parsed, source)
+                return None
+        return parsed, source
+
     if link:
         value = _value_from_record(link, keys)
-        if value:
-            return value, "wan_link"
+        normalized = _normalize(value, "wan_link")
+        if normalized:
+            return normalized
     if health:
         value = _value_from_record(health, keys)
-        if value:
-            return value, "wan_health"
+        normalized = _normalize(value, "wan_health")
+        if normalized:
+            return normalized
+    if link_local_candidate:
+        return link_local_candidate
     return None, None
 
 
@@ -978,8 +1005,12 @@ def _extract_wan_value(
     link: Optional[Dict[str, Any]],
     health: Optional[Dict[str, Any]],
     keys: Iterable[str],
+    *,
+    version: Optional[int] = None,
 ) -> Optional[str]:
-    value, _ = _extract_wan_value_with_source(link, health, keys)
+    value, _ = _extract_wan_value_with_source(
+        link, health, keys, version=version
+    )
     return value
 
 
@@ -2511,9 +2542,11 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
         health = self._wan_health_record()
         link_dict = link or {}
         health_dict = health or {}
-        ip, ip_source = _extract_wan_value_with_source(link, health, _WAN_IPV4_KEYS)
+        ip, ip_source = _extract_wan_value_with_source(
+            link, health, _WAN_IPV4_KEYS, version=4
+        )
         ipv6, ipv6_source = _extract_wan_value_with_source(
-            link, health, _WAN_IPV6_KEYS
+            link, health, _WAN_IPV6_KEYS, version=6
         )
         attrs = {
             "name": self._link_name,
@@ -2594,7 +2627,9 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
     def native_value(self) -> Optional[str]:
         link = self._link()
         health = self._wan_health_record()
-        ip, source = _extract_wan_value_with_source(link, health, _WAN_IPV4_KEYS)
+        ip, source = _extract_wan_value_with_source(
+            link, health, _WAN_IPV4_KEYS, version=4
+        )
         if ip:
             self._last_ip = ip
             self._last_source = source or "unknown"
@@ -2625,7 +2660,9 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
                     "tunnel_network",
                 ),
             ),
-            "ipv6": _extract_wan_value(link, health, _WAN_IPV6_KEYS),
+            "ipv6": _extract_wan_value(
+                link, health, _WAN_IPV6_KEYS, version=6
+            ),
         }
         attrs.update(self._controller_attrs())
         return attrs
@@ -2662,7 +2699,9 @@ class UniFiGatewayWanIpv6Sensor(UniFiGatewayWanSensorBase):
     def native_value(self) -> Optional[str]:
         link = self._link()
         health = self._wan_health_record()
-        ipv6, source = _extract_wan_value_with_source(link, health, _WAN_IPV6_KEYS)
+        ipv6, source = _extract_wan_value_with_source(
+            link, health, _WAN_IPV6_KEYS, version=6
+        )
         if ipv6:
             if source == "wan_link":
                 normalized_source = "link"
@@ -2685,7 +2724,9 @@ class UniFiGatewayWanIpv6Sensor(UniFiGatewayWanSensorBase):
         attrs = {
             "last_ipv6": self._last_ipv6,
             "source": self._last_source or ("cached" if self._last_ipv6 else None),
-            "gateway_ipv6": _extract_wan_value(link, health, _WAN_GATEWAY_IPV6_KEYS),
+            "gateway_ipv6": _extract_wan_value(
+                link, health, _WAN_GATEWAY_IPV6_KEYS, version=6
+            ),
             "prefix": _extract_wan_value(link, health, _WAN_IPV6_PREFIX_KEYS),
         }
         attrs.update(self._controller_attrs())
@@ -3166,47 +3207,74 @@ def _to_ip_network(value: Optional[str]):
 
 
 def _extract_ip_from_value(value: Any, *, version: Optional[int] = None) -> Optional[str]:
-    if value in (None, ""):
-        return None
-    if isinstance(value, str):
-        candidate = value.strip()
-        if not candidate:
+    fallback_link_local: Optional[str] = None
+
+    def _extract(candidate: Any) -> Optional[str]:
+        nonlocal fallback_link_local
+        if candidate in (None, ""):
             return None
-        if "/" in candidate:
-            try:
-                interface = ipaddress.ip_interface(candidate)
-                if version and interface.ip.version != version:
+        if isinstance(candidate, str):
+            cleaned = candidate.strip()
+            if not cleaned:
+                return None
+            if "/" in cleaned:
+                try:
+                    interface = ipaddress.ip_interface(cleaned)
+                    address = interface.ip
+                except ValueError:
+                    address = None
+                else:
+                    if version and address.version != version:
+                        return None
+                    if isinstance(address, ipaddress.IPv6Address) and address.is_link_local:
+                        if fallback_link_local is None:
+                            fallback_link_local = str(address)
+                        return None
+                    return str(address)
+                prefix, _, _ = cleaned.partition("/")
+                try:
+                    parsed = ipaddress.ip_address(prefix.strip())
+                except ValueError:
                     return None
-                return str(interface.ip)
-            except ValueError:
-                pass
-            prefix, _, _ = candidate.partition("/")
-            try:
-                parsed = ipaddress.ip_address(prefix.strip())
                 if version and parsed.version != version:
                     return None
+                if isinstance(parsed, ipaddress.IPv6Address) and parsed.is_link_local:
+                    if fallback_link_local is None:
+                        fallback_link_local = str(parsed)
+                    return None
                 return str(parsed)
+            try:
+                parsed = ipaddress.ip_address(cleaned)
             except ValueError:
                 return None
-        try:
-            parsed = ipaddress.ip_address(candidate)
             if version and parsed.version != version:
                 return None
+            if isinstance(parsed, ipaddress.IPv6Address) and parsed.is_link_local:
+                if fallback_link_local is None:
+                    fallback_link_local = str(parsed)
+                return None
             return str(parsed)
-        except ValueError:
+        if isinstance(candidate, (list, tuple)):
+            for item in candidate:
+                result = _extract(item)
+                if result:
+                    return result
             return None
-    if isinstance(value, (list, tuple)):
-        for item in value:
-            result = _extract_ip_from_value(item, version=version)
-            if result:
-                return result
+        if isinstance(candidate, dict):
+            for key in ("ip", "address", "gateway", "value"):
+                if key not in candidate:
+                    continue
+                result = _extract(candidate.get(key))
+                if result:
+                    return result
+            return None
         return None
-    if isinstance(value, dict):
-        for key in ("ip", "address", "gateway", "value"):
-            result = _extract_ip_from_value(value.get(key), version=version)
-            if result:
-                return result
-        return None
+
+    result = _extract(value)
+    if result:
+        return result
+    if version in (None, 6):
+        return fallback_link_local
     return None
 
 
