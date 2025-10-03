@@ -11,6 +11,7 @@ class UnitOfTime(Enum):
 
 
 TIME_MILLISECONDS = UnitOfTime.MILLISECONDS
+STATE_UNKNOWN = "unknown"
 
 
 class Platform(str, Enum):
@@ -21,4 +22,4 @@ class Platform(str, Enum):
     SENSOR = "sensor"
 
 
-__all__ = ["Platform", "UnitOfTime", "TIME_MILLISECONDS"]
+__all__ = ["Platform", "UnitOfTime", "TIME_MILLISECONDS", "STATE_UNKNOWN"]
