@@ -3207,57 +3207,73 @@ def _to_ip_network(value: Optional[str]):
         return None
 
 
+IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+
+
 def _extract_ip_from_value(value: Any, *, version: Optional[int] = None) -> Optional[str]:
     fallback_link_local: Optional[str] = None
 
-    def _extract(candidate: Any) -> Optional[str]:
+    def _strip_ipv6_brackets(text: str) -> str:
+        if text.startswith("["):
+            closing = text.find("]")
+            if closing != -1:
+                inside = text[1:closing]
+                remainder = text[closing + 1 :]
+                if remainder.startswith(":") and remainder[1:].isdigit():
+                    remainder = ""
+                return inside + remainder
+        return text
+
+    def _strip_ipv6_scope_id(text: str) -> str:
+        if "%" not in text:
+            return text
+        head, _, tail = text.partition("%")
+        if not tail:
+            return head
+        for delimiter in ("/", "]", " "):
+            if delimiter in tail:
+                _, sep, remainder = tail.partition(delimiter)
+                return head + sep + remainder
+        if tail.startswith(":") and tail[1:].isdigit():
+            return head
+        return head
+
+    def _parse_ip(text: str) -> Optional[IPAddress]:
+        normalized = _strip_ipv6_scope_id(text)
+        try:
+            return ipaddress.ip_address(normalized)
+        except ValueError:
+            return None
+
+    def _handle(parsed: IPAddress) -> Optional[str]:
         nonlocal fallback_link_local
+        if version and parsed.version != version:
+            return None
+        if isinstance(parsed, ipaddress.IPv6Address) and parsed.is_link_local:
+            if fallback_link_local is None:
+                fallback_link_local = str(parsed)
+            return None
+        return str(parsed)
+
+    def _extract(candidate: Any) -> Optional[str]:
         if candidate in (None, ""):
             return None
         if isinstance(candidate, str):
             cleaned = candidate.strip()
             if not cleaned:
                 return None
+            cleaned = _strip_ipv6_brackets(cleaned)
             if "/" in cleaned:
-                try:
-                    interface = ipaddress.ip_interface(cleaned)
-                except ValueError:
-                    pass
-                else:
-                    address = cast(
-                        Union[ipaddress.IPv4Address, ipaddress.IPv6Address],
-                        interface.ip,
-                    )
-                    if version and address.version != version:
-                        return None
-                    if isinstance(address, ipaddress.IPv6Address) and address.is_link_local:
-                        if fallback_link_local is None:
-                            fallback_link_local = str(address)
-                        return None
-                    return str(address)
                 prefix, _, _ = cleaned.partition("/")
-                try:
-                    parsed = ipaddress.ip_address(prefix.strip())
-                except ValueError:
-                    return None
-                if version and parsed.version != version:
-                    return None
-                if isinstance(parsed, ipaddress.IPv6Address) and parsed.is_link_local:
-                    if fallback_link_local is None:
-                        fallback_link_local = str(parsed)
-                    return None
-                return str(parsed)
-            try:
-                parsed = ipaddress.ip_address(cleaned)
-            except ValueError:
-                return None
-            if version and parsed.version != version:
-                return None
-            if isinstance(parsed, ipaddress.IPv6Address) and parsed.is_link_local:
-                if fallback_link_local is None:
-                    fallback_link_local = str(parsed)
-                return None
-            return str(parsed)
+                parsed = _parse_ip(prefix.strip())
+                if parsed:
+                    handled = _handle(parsed)
+                    if handled:
+                        return handled
+            parsed = _parse_ip(cleaned)
+            if parsed:
+                return _handle(parsed)
+            return None
         if isinstance(candidate, (list, tuple)):
             for item in candidate:
                 result = _extract(item)

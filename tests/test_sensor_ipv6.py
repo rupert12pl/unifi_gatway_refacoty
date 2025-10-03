@@ -70,6 +70,20 @@ def test_extract_ip_from_value_prefers_non_link_local_ipv6():
     )
 
 
+def test_extract_ip_from_value_handles_scope_id_suffixes():
+    assert _extract_ip_from_value("fe80::1%wan", version=6) == "fe80::1"
+    assert (
+        _extract_ip_from_value(["fe80::2%wan", "2001:db8::2%wan"], version=6)
+        == "2001:db8::2"
+    )
+    assert (
+        _extract_ip_from_value(["fe80::3%eth0"], version=6)
+        == "fe80::3"
+    )
+    assert _extract_ip_from_value("fe80::4%eth0/64", version=6) == "fe80::4"
+    assert _extract_ip_from_value("2001:db8::5%eth0/64", version=6) == "2001:db8::5"
+
+
 def test_lan_sensor_reports_ipv6_attribute():
     network = {
         "_id": "lan-1",
