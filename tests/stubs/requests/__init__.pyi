@@ -5,6 +5,7 @@ from typing import Any, MutableMapping
 from requests.adapters import HTTPAdapter
 from requests.exceptions import RequestException
 
+
 class Response:
     status_code: int
     text: str

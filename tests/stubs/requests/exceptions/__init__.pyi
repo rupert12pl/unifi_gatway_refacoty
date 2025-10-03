@@ -1,6 +1,4 @@
-"""Requests exception stubs for typing tests."""
-
-class RequestException(Exception): ...  # noqa: N818 - matches requests API
+class RequestException(Exception): ...
 
 
 class HTTPError(RequestException): ...

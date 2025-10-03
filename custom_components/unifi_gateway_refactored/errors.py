@@ -11,12 +11,7 @@ class ConnectionFailedError(UniFiGatewayError):
 
     def __init__(self, host: str, reason: Optional[str] = None):
         """Initialize the error."""
-        message = (
-            f"Failed to connect to {host}: {reason}"
-            if reason
-            else f"Failed to connect to {host}"
-        )
-        super().__init__(message)
+        super().__init__(f"Failed to connect to {host}: {reason}" if reason else f"Failed to connect to {host}")
         self.host = host
         self.reason = reason
 

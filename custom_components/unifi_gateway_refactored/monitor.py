@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from time import monotonic
+import uuid
 from typing import Any, Protocol, Sequence
 
 from homeassistant.core import HomeAssistant
@@ -57,6 +57,7 @@ class SpeedtestRunner:
     @staticmethod
     def _normalize_entity_ids(entity_ids: Sequence[str]) -> list[str]:
         """Return entity IDs stripped of blanks and duplicates while preserving order."""
+
         normalized: dict[str, None] = {}
         for candidate in entity_ids:
             if not candidate:
