@@ -96,6 +96,15 @@ class UniFiOSClient:
         from urllib3.util.retry import Retry
 
         self._session = requests.Session()
+        self._session.verify = ssl_verify
+        if not ssl_verify:
+            from urllib3 import disable_warnings
+            from urllib3.exceptions import InsecureRequestWarning
+
+            disable_warnings(InsecureRequestWarning)
+            _LOGGER.debug(
+                "SSL verification disabled for UniFi controller – suppressing InsecureRequestWarning"
+            )
         retries = Retry(
             total=5,
             connect=5,
@@ -391,7 +400,13 @@ class UniFiOSClient:
                 body=body_preview,
             )
         if status >= 400:
-            _LOGGER.error(
+            is_expected = status == 404 or (
+                status == 400
+                and body_preview is not None
+                and "api.err.Invalid" in body_preview
+            )
+            log_func = _LOGGER.debug if is_expected else _LOGGER.error
+            log_func(
                 "UniFi request %s %s failed (status=%s, duration_ms=%d, body=%s)",
                 method,
                 label,
@@ -403,7 +418,7 @@ class UniFiOSClient:
                 f"UniFi API call {method} {url} failed with HTTP {status}",
                 status_code=status,
                 url=url,
-                expected=status == 404,
+                expected=is_expected,
                 body=body_preview,
             )
         _LOGGER.debug(
@@ -465,7 +480,8 @@ class UniFiOSClient:
             return self._process_payload(payload, response.url)
         except APIError as err:
             label = self._login_endpoint_label(response.url)
-            _LOGGER.error(
+            log_func = _LOGGER.debug if err.expected else _LOGGER.error
+            log_func(
                 "UniFi request %s %s returned controller error: %s",
                 method,
                 label,
