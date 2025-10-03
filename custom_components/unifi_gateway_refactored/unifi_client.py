@@ -18,6 +18,7 @@ from .const import DEFAULT_SITE
 
 
 DEFAULT_ACTIVE_WINDOW_SEC = 120
+UNAVAILABLE_ENDPOINT_RETRY_SEC = 1800
 _VPN_NET_ID_KEYS = (
     "networkconf_id",
     "network_id",
@@ -30,6 +31,14 @@ _VPN_NET_ID_KEYS = (
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class _RetryingLogFilter(logging.Filter):
+    """Suppress noisy urllib3 retry warnings that we handle ourselves."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # pragma: no cover - logging guard
+        message = record.getMessage()
+        return not (isinstance(message, str) and message.startswith("Retrying (Retry("))
 
 
 class APIError(Exception):
@@ -66,6 +75,18 @@ class UniFiOSClient:
 
         return requests
 
+    @staticmethod
+    def _configure_retry_logging() -> None:
+        """Install retry log filters for both urllib3 and Requests vendored loggers."""
+
+        for name in ("urllib3.connectionpool", "requests.packages.urllib3.connectionpool"):
+            logger = logging.getLogger(name)
+            for existing in logger.filters:
+                if isinstance(existing, _RetryingLogFilter):
+                    break
+            else:
+                logger.addFilter(_RetryingLogFilter())
+
     def __init__(
         self,
         host: str,
@@ -78,6 +99,7 @@ class UniFiOSClient:
         timeout: int = 10,
         instance_hint: str | None = None,
     ):
+        self._configure_retry_logging()
         self._scheme = "https"
         self._host = host
         self._port = port
@@ -144,6 +166,7 @@ class UniFiOSClient:
         self._vpn_servers_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
         self._vpn_sessions_cache: Optional[Tuple[float, Dict[str, Dict[str, int]]]] = None
         self._st_cache: Optional[tuple[float, Dict[str, Any] | None]] = None
+        self._unavailable_paths: dict[str, float] = {}
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
@@ -205,8 +228,16 @@ class UniFiOSClient:
         ]
 
         for path in candidates:
+            if self._is_path_unavailable(path):
+                _LOGGER.debug("Skipping previously unavailable site-id path %s", path)
+                continue
             try:
                 resp, text = self._request("GET", path, timeout=6)
+            except APIError as err:  # pragma: no cover - defensive network guard
+                if err.expected:
+                    self._mark_path_unavailable(path)
+                _LOGGER.debug("Site-id probe %s failed: %s", path, err)
+                continue
             except Exception as err:  # pragma: no cover - defensive network guard
                 _LOGGER.debug("Site-id probe %s failed: %s", path, err)
                 continue
@@ -445,6 +476,32 @@ class UniFiOSClient:
                     )
         return payload
 
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        return str(path or "").lstrip("/")
+
+    def _is_path_unavailable(self, path: str) -> bool:
+        normalized = self._normalize_path(path)
+        if not normalized:
+            return False
+        expiry = self._unavailable_paths.get(normalized)
+        if not expiry:
+            return False
+        if time.monotonic() < expiry:
+            return True
+        self._unavailable_paths.pop(normalized, None)
+        return False
+
+    def _mark_path_unavailable(self, path: str) -> None:
+        normalized = self._normalize_path(path)
+        if not normalized:
+            return
+        expiry = time.monotonic() + UNAVAILABLE_ENDPOINT_RETRY_SEC
+        existing = self._unavailable_paths.get(normalized)
+        if not existing or existing < expiry:
+            self._unavailable_paths[normalized] = expiry
+            _LOGGER.debug("Marking UniFi endpoint %s unavailable", normalized)
+
     def _request_json(
         self,
         method: str,
@@ -504,10 +561,14 @@ class UniFiOSClient:
         return []
 
     def _get_list(self, path: str, *, timeout: Optional[int] = None) -> List[Dict[str, Any]]:
+        if self._is_path_unavailable(path):
+            _LOGGER.debug("Skipping previously unavailable UniFi endpoint %s", path)
+            return []
         try:
             payload = self._request_json("GET", path, timeout=timeout)
         except APIError as err:
             if err.expected:
+                self._mark_path_unavailable(path)
                 _LOGGER.debug("UniFi endpoint %s unavailable: %s", path, err)
                 return []
             raise
@@ -1110,6 +1171,9 @@ class UniFiOSClient:
 
         last_error: Optional[Exception] = None
         for path in self._iter_vpn_paths(endpoint):
+            if self._is_path_unavailable(path):
+                _LOGGER.debug("Skipping unavailable VPN endpoint %s", path)
+                continue
             try:
                 if method.upper() == "GET":
                     response = self._request_json("GET", path, timeout=timeout)
@@ -1121,8 +1185,10 @@ class UniFiOSClient:
             except APIError as err:
                 last_error = err
                 if err.status_code in (404, 405) or err.expected:
+                    self._mark_path_unavailable(path)
                     continue
                 if err.status_code == 400 and method.upper() == "GET":
+                    self._mark_path_unavailable(path)
                     continue
                 raise
             except ConnectivityError as err:
@@ -1198,6 +1264,9 @@ class UniFiOSClient:
 
         last_error: Optional[Exception] = None
         for path in self._iter_speedtest_paths(endpoint):
+            if self._is_path_unavailable(path):
+                _LOGGER.debug("Skipping unavailable speedtest endpoint %s", path)
+                continue
             try:
                 if method.upper() == "GET":
                     response = self._request_json("GET", path, timeout=timeout)
@@ -1212,8 +1281,10 @@ class UniFiOSClient:
             except APIError as err:
                 last_error = err
                 if err.status_code in (404, 405) or err.expected:
+                    self._mark_path_unavailable(path)
                     continue
                 if err.status_code == 400 and method.upper() == "GET":
+                    self._mark_path_unavailable(path)
                     continue
                 raise
             except ConnectivityError as err:
