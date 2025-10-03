@@ -700,17 +700,6 @@ class UniFiOSClient:
             raise last_error
         raise ConnectivityError("Unable to determine UniFi Network API base path")
 
-    def ping(self) -> bool:
-        self.get_healthinfo()
-        return True
-
-    def list_sites(self) -> List[Dict[str, Any]]:
-        for path in ("api/self/sites", "api/stat/sites"):
-            sites = self._get_list(path)
-            if sites:
-                return sites
-        return []
-
     def get_healthinfo(self) -> List[Dict[str, Any]]:
         return self._get_list(self._site_path("stat/health"))
 

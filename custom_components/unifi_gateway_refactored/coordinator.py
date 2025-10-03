@@ -34,7 +34,6 @@ class UniFiGatewayData:
     wlans: list[dict[str, Any]] = field(default_factory=list)
     clients: list[dict[str, Any]] = field(default_factory=list)
     speedtest: Optional[dict[str, Any]] = None
-    vpn_tunnels: list[dict[str, Any]] = field(default_factory=list)
 
 
 class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData]):
@@ -218,9 +217,6 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         clients_all = self._client.get_clients() or []
         _LOGGER.debug("Retrieved %s clients", len(clients_all))
 
-        # VPN tunnel list retained for backward compatibility but populated elsewhere
-        vpn_tunnels: List[Dict[str, Any]] = []
-
         # Improved speedtest handling
         speedtest = None
         try:
@@ -285,7 +281,6 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             wlans=wlans,
             clients=clients_all,
             speedtest=speedtest,
-            vpn_tunnels=vpn_tunnels,
         )
         fetch_time = time.monotonic() - start_time
         _LOGGER.debug(

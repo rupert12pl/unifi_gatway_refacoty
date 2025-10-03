@@ -1,7 +1,7 @@
 from homeassistant.const import Platform
 
 DOMAIN = "unifi_gateway_refactored"
-PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
+PLATFORMS = [Platform.SENSOR, Platform.BUTTON]
 
 CONF_USERNAME = "username"
 # Placeholder configuration keys for UI forms.

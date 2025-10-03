@@ -55,11 +55,10 @@ async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]
             timeout=data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
         )
         try:
-            ping = client.ping()
-            sites = client.list_sites()
+            health = client.get_healthinfo()
         finally:
             client.close()
-        return {"ping": ping, "sites": sites}
+        return {"health": health}
     return await hass.async_add_executor_job(_sync)
 
 
