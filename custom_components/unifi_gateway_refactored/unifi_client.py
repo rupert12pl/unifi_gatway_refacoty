@@ -728,6 +728,55 @@ class UniFiOSClient:
                 return devices
         return []
 
+    def get_wan_ips_from_devices(self) -> tuple[str | None, str | None]:
+        """Return WAN IPv4/IPv6 addresses discovered from stat/device."""
+
+        try:
+            payload = self._get(self._site_path("stat/device"))
+        except APIError as err:
+            if err.expected:
+                return (None, None)
+            raise
+
+        devices = self._extract_list(payload)
+
+        ipv4: str | None = None
+        ipv6: str | None = None
+
+        for dev in devices:
+            if not isinstance(dev, dict):
+                continue
+            model = str(dev.get("type") or dev.get("model") or "").lower()
+            if not model:
+                continue
+            if not any(token in model for token in ("ugw", "udm")):
+                continue
+
+            for key in ("wan_ip", "ip_wan", "wan_ipaddr"):
+                value = dev.get(key)
+                if value:
+                    ipv4 = str(value)
+                    break
+
+            for key in ("wan_ip6", "wan_ipv6", "ip6_wan", "ip_wan6"):
+                value = dev.get(key)
+                if value:
+                    ipv6 = str(value)
+                    break
+
+            if not ipv6:
+                uplink = dev.get("uplink")
+                if isinstance(uplink, dict):
+                    for key in ("wan_ip6", "wan_ipv6"):
+                        value = uplink.get(key)
+                        if value:
+                            ipv6 = str(value)
+                            break
+
+            break
+
+        return (ipv4, ipv6)
+
     def get_networks(self) -> List[Dict[str, Any]]:
         for path in (
             "rest/networkconf",

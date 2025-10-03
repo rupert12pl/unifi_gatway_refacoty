@@ -186,6 +186,19 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 "WAN link discovery required fallback derivation; derived=%s",
                 len(wan_links_raw),
             )
+            try:
+                ipv4, ipv6 = self._client.get_wan_ips_from_devices()
+            except APIError as err:
+                _LOGGER.debug("Failed to fetch WAN IPs from devices: %s", err)
+                ipv4 = ipv6 = None
+            if ipv4 or ipv6:
+                for wan in wan_links_raw:
+                    if not isinstance(wan, dict):
+                        continue
+                    if ipv4 and not wan.get("last_ipv4"):
+                        wan["last_ipv4"] = ipv4
+                    if ipv6 and not wan.get("last_ipv6"):
+                        wan["last_ipv6"] = ipv6
         wan_links: List[Dict[str, Any]] = []
         for link in wan_links_raw:
             link_id = link.get("id") or link.get("_id") or link.get("ifname")

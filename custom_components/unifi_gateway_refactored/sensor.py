@@ -42,6 +42,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import STATE_UNKNOWN
 try:  # pragma: no cover - compatibility shim for older Home Assistant versions
     from homeassistant.const import UnitOfTime
 except ImportError:  # pragma: no cover - Home Assistant <=2023.11
@@ -2624,6 +2625,45 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
     def _wan_health_record(self) -> Optional[Dict[str, Any]]:
         return _find_wan_health_record(self.coordinator.data, self._identifiers)
 
+    def _ipv6_enabled(self) -> bool:
+        data = self.coordinator.data
+        if not data:
+            return False
+        for network in data.networks:
+            if not isinstance(network, Mapping):
+                continue
+            name = str(network.get("name") or "").strip().lower()
+            if name != "wan":
+                continue
+            mode = str(network.get("ipv6_interface_type") or "").strip().lower()
+            if mode and mode != "disabled":
+                return True
+        return False
+
+    def _select_wan_last_ip(
+        self,
+        link: Optional[Mapping[str, Any]],
+        health: Optional[Mapping[str, Any]],
+    ) -> str:
+        ipv6_enabled = self._ipv6_enabled()
+        ipv4: Optional[str] = None
+        ipv6: Optional[str] = None
+
+        if isinstance(link, Mapping):
+            ipv4 = _extract_ip_from_value(link.get("last_ipv4"), version=4)
+            ipv6 = _extract_ip_from_value(link.get("last_ipv6"), version=6)
+
+        if not ipv6 and isinstance(health, Mapping):
+            ipv6 = _extract_ip_from_value(health.get("last_ipv6"), version=6)
+
+        if ipv6_enabled and ipv6:
+            return ipv6
+        if ipv4:
+            return ipv4
+        if self._last_ip:
+            return self._last_ip
+        return STATE_UNKNOWN
+
     @property
     def native_value(self) -> Optional[str]:
         link = self._link()
@@ -2632,14 +2672,20 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
             link, health, _WAN_IPV4_KEYS, version=4
         )
         if ip:
+            if isinstance(link, Mapping) and not link.get("last_ipv4"):
+                link.setdefault("last_ipv4", ip)
             self._last_ip = ip
             self._last_source = source or "unknown"
             return ip
-        if self._last_ip:
+
+        fallback = self._select_wan_last_ip(link, health)
+        if fallback != STATE_UNKNOWN:
+            self._last_ip = fallback
             if not self._last_source:
                 self._last_source = "cached"
-            return self._last_ip
-        return None
+            return fallback
+
+        return STATE_UNKNOWN
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
