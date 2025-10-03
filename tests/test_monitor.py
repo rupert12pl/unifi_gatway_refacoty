@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -33,25 +34,26 @@ def mock_callback():
     return AsyncMock()
 
 
-async def run_test(coro) -> None:
-    """Execute coroutine with patched asyncio.sleep for fast tests.
+def run_test(
+    async_run: Callable[[Awaitable[object]], object], coro: Awaitable[object]
+) -> None:
+    """Execute coroutine with patched asyncio.sleep for fast tests."""
 
-    Args:
-        coro: The coroutine to execute.
-
-    Returns:
-        None
-
-    """
     with patch("asyncio.sleep", new=AsyncMock(return_value=None)), patch(
         "custom_components.unifi_gateway_refactored.monitor.DEFAULT_MAX_WAIT_S", 1
     ), patch(
         "custom_components.unifi_gateway_refactored.monitor.DEFAULT_POLL_INTERVAL",
         0.01,
     ):
-        await coro
+        async_run(coro)
 
-async def test_speedtest_success(hass: HomeAssistant, mock_client, mock_coordinator, mock_callback):
+def test_speedtest_success(
+    hass: HomeAssistant,
+    async_run,
+    mock_client: MagicMock,
+    mock_coordinator: MagicMock,
+    mock_callback: AsyncMock,
+) -> None:
     """Test successful speedtest run."""
     runner = SpeedtestRunner(
         hass,
@@ -73,7 +75,7 @@ async def test_speedtest_success(hass: HomeAssistant, mock_client, mock_coordina
     ]
     mock_client.get_speedtest_status.return_value = {"status": "completed"}
 
-    await run_test(runner.async_trigger("test"))
+    run_test(async_run, runner.async_trigger("test"))
 
     # Check that callback was called with success
     assert mock_callback.call_count == 1
@@ -81,7 +83,13 @@ async def test_speedtest_success(hass: HomeAssistant, mock_client, mock_coordina
     assert args["success"] is True
     assert args["error"] is None
 
-async def test_speedtest_timeout(hass: HomeAssistant, mock_client, mock_coordinator, mock_callback):
+def test_speedtest_timeout(
+    hass: HomeAssistant,
+    async_run,
+    mock_client: MagicMock,
+    mock_coordinator: MagicMock,
+    mock_callback: AsyncMock,
+) -> None:
     """Test speedtest timeout scenario."""
     runner = SpeedtestRunner(
         hass,
@@ -95,7 +103,7 @@ async def test_speedtest_timeout(hass: HomeAssistant, mock_client, mock_coordina
     mock_client.get_last_speedtest.return_value = None
     mock_client.get_speedtest_status.return_value = {"status": "running"}
 
-    await runner.async_trigger("test")
+    async_run(runner.async_trigger("test"))
 
     # Check that callback was called with error
     assert mock_callback.call_count == 1
@@ -103,9 +111,13 @@ async def test_speedtest_timeout(hass: HomeAssistant, mock_client, mock_coordina
     assert args["success"] is False
     assert "TimeoutError" in args["error"]
 
-async def test_speedtest_failure_status(
-    hass: HomeAssistant, mock_client, mock_coordinator, mock_callback
-):
+def test_speedtest_failure_status(
+    hass: HomeAssistant,
+    async_run,
+    mock_client: MagicMock,
+    mock_coordinator: MagicMock,
+    mock_callback: AsyncMock,
+) -> None:
     """Test speedtest failure status handling."""
     runner = SpeedtestRunner(
         hass,
@@ -121,7 +133,7 @@ async def test_speedtest_failure_status(
         "error": "Test failed"
     }
 
-    await runner.async_trigger("test")
+    async_run(runner.async_trigger("test"))
 
     # Check that callback was called with error
     assert mock_callback.call_count == 1
@@ -129,7 +141,13 @@ async def test_speedtest_failure_status(
     assert args["success"] is False
     assert "failure status" in args["error"]
 
-async def test_concurrent_runs(hass: HomeAssistant, mock_client, mock_coordinator, mock_callback):
+def test_concurrent_runs(
+    hass: HomeAssistant,
+    async_run,
+    mock_client: MagicMock,
+    mock_coordinator: MagicMock,
+    mock_callback: AsyncMock,
+) -> None:
     """Test prevention of concurrent speedtest runs."""
     runner = SpeedtestRunner(
         hass,
@@ -153,12 +171,18 @@ async def test_concurrent_runs(hass: HomeAssistant, mock_client, mock_coordinato
         task2 = asyncio.create_task(runner.async_trigger("test2"))
         await asyncio.gather(task1, task2)
 
-    await run_test(_run_concurrent())
+    run_test(async_run, _run_concurrent())
 
     # Check that only one test was executed
     assert mock_callback.call_count == 1
 
-async def test_retry_mechanism(hass: HomeAssistant, mock_client, mock_coordinator, mock_callback):
+def test_retry_mechanism(
+    hass: HomeAssistant,
+    async_run,
+    mock_client: MagicMock,
+    mock_coordinator: MagicMock,
+    mock_callback: AsyncMock,
+) -> None:
     """Test speedtest retry mechanism."""
     runner = SpeedtestRunner(
         hass,
@@ -180,7 +204,7 @@ async def test_retry_mechanism(hass: HomeAssistant, mock_client, mock_coordinato
         },
     ]
 
-    await run_test(runner.async_trigger("test"))
+    run_test(async_run, runner.async_trigger("test"))
 
     # Check that test succeeded after retry
     assert mock_callback.call_count == 1

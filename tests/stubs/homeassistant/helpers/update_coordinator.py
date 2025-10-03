@@ -1,4 +1,5 @@
-"""Stub implementations of Home Assistant's update coordinator utilities."""
+"""Test stubs for Home Assistant's update coordinator helpers."""
+
 from __future__ import annotations
 
 from typing import Any, Callable, Generic, Optional, TypeVar
@@ -6,7 +7,7 @@ from typing import Any, Callable, Generic, Optional, TypeVar
 T = TypeVar("T")
 
 
-class UpdateFailed(Exception):
+class UpdateFailed(Exception):  # noqa: N818 - matches Home Assistant API
     """Exception raised when an update cannot be completed."""
 
 
