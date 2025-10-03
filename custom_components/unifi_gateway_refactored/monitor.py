@@ -4,7 +4,7 @@ import asyncio
 import logging
 from time import monotonic
 import uuid
-from typing import Any, Protocol, Sequence
+from typing import Any, Awaitable, Callable, Sequence
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -25,13 +25,6 @@ from .unifi_client import APIError, UniFiOSClient
 _LOGGER = logging.getLogger(__name__)
 
 
-class ResultCallback(Protocol):
-    async def __call__(
-        self, *, success: bool, duration_ms: int, error: str | None, trace_id: str
-    ) -> None:
-        ...
-
-
 DEFAULT_MAX_WAIT_S = 600
 DEFAULT_POLL_INTERVAL = 5.0
 
@@ -43,7 +36,7 @@ class SpeedtestRunner:
         self,
         hass: HomeAssistant,
         entity_ids: Sequence[str],
-        on_result_cb: ResultCallback,
+        on_result_cb: Callable[..., Awaitable[None]],
         client: UniFiOSClient,
         coordinator: UniFiGatewayDataUpdateCoordinator,
     ) -> None:
@@ -325,7 +318,6 @@ class SpeedtestRunner:
 
 __all__ = [
     "SpeedtestRunner",
-    "ResultCallback",
     "DEFAULT_MAX_WAIT_S",
     "DEFAULT_POLL_INTERVAL",
 ]

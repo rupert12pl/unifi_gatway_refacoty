@@ -4,10 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import socket
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from urllib.parse import urlsplit
 
@@ -700,17 +701,6 @@ class UniFiOSClient:
             raise last_error
         raise ConnectivityError("Unable to determine UniFi Network API base path")
 
-    def ping(self) -> bool:
-        self.get_healthinfo()
-        return True
-
-    def list_sites(self) -> List[Dict[str, Any]]:
-        for path in ("api/self/sites", "api/stat/sites"):
-            sites = self._get_list(path)
-            if sites:
-                return sites
-        return []
-
     def get_healthinfo(self) -> List[Dict[str, Any]]:
         return self._get_list(self._site_path("stat/health"))
 
@@ -727,55 +717,6 @@ class UniFiOSClient:
             if devices:
                 return devices
         return []
-
-    def get_wan_ips_from_devices(self) -> tuple[str | None, str | None]:
-        """Return WAN IPv4/IPv6 addresses discovered from stat/device."""
-
-        try:
-            payload = self._get(self._site_path("stat/device"))
-        except APIError as err:
-            if err.expected:
-                return (None, None)
-            raise
-
-        devices = self._extract_list(payload)
-
-        ipv4: str | None = None
-        ipv6: str | None = None
-
-        for dev in devices:
-            if not isinstance(dev, dict):
-                continue
-            model = str(dev.get("type") or dev.get("model") or "").lower()
-            if not model:
-                continue
-            if not any(token in model for token in ("ugw", "udm")):
-                continue
-
-            for key in ("wan_ip", "ip_wan", "wan_ipaddr"):
-                value = dev.get(key)
-                if value:
-                    ipv4 = str(value)
-                    break
-
-            for key in ("wan_ip6", "wan_ipv6", "ip6_wan", "ip_wan6"):
-                value = dev.get(key)
-                if value:
-                    ipv6 = str(value)
-                    break
-
-            if not ipv6:
-                uplink = dev.get("uplink")
-                if isinstance(uplink, dict):
-                    for key in ("wan_ip6", "wan_ipv6"):
-                        value = uplink.get(key)
-                        if value:
-                            ipv6 = str(value)
-                            break
-
-            break
-
-        return (ipv4, ipv6)
 
     def get_networks(self) -> List[Dict[str, Any]]:
         for path in (
@@ -1786,3 +1727,73 @@ class UniFiOSClient:
             self._st_last_trigger = now
         except Exception:
             return
+
+    def get_wan_ips_from_devices(self) -> tuple[str | None, str | None]:
+        """Return WAN IPv4/IPv6 addresses discovered from the device inventory."""
+
+        try:
+            payload = self._get(self._site_path("stat/device"))
+        except APIError as err:
+            if getattr(err, "expected", False):
+                return (None, None)
+            raise
+
+        devices = self._extract_list(payload)
+
+        if not devices:
+            return (None, None)
+
+        ipv6_pattern = re.compile(r"\b([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}\b", re.IGNORECASE)
+        ipv4_pattern = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+
+        def pick_first_ipv4(obj: Mapping[str, Any]) -> str | None:
+            for key in ("wan_ip", "ip_wan", "wan_ipaddr", "wan", "ip"):
+                value = obj.get(key)
+                if isinstance(value, str):
+                    match = ipv4_pattern.search(value)
+                    if match:
+                        return match.group(0)
+            dump = json.dumps(obj, ensure_ascii=False)
+            match = ipv4_pattern.search(dump)
+            return match.group(0) if match else None
+
+        def pick_first_ipv6(obj: Mapping[str, Any]) -> str | None:
+            for key in ("wan_ip6", "wan_ipv6", "ip6_wan", "ip_wan6", "ipv6", "ip6"):
+                value = obj.get(key)
+                if isinstance(value, str):
+                    match = ipv6_pattern.search(value)
+                    if match:
+                        return match.group(0)
+
+            for nested_key in ("uplink", "port_table", "network_table", "statistics"):
+                nested_value = obj.get(nested_key)
+                if isinstance(nested_value, Mapping):
+                    hit = pick_first_ipv6(nested_value)
+                    if hit:
+                        return hit
+                elif isinstance(nested_value, list):
+                    for item in nested_value:
+                        if isinstance(item, Mapping):
+                            hit = pick_first_ipv6(item)
+                            if hit:
+                                return hit
+
+            dump = json.dumps(obj, ensure_ascii=False)
+            match = ipv6_pattern.search(dump)
+            return match.group(0) if match else None
+
+        for device in devices:
+            if not isinstance(device, Mapping):
+                continue
+            model = str(device.get("type") or device.get("model") or "").lower()
+            role = str(device.get("role") or device.get("device_role") or "").lower()
+            if any(token in model for token in ("ugw", "udm")) or role in {
+                "gw",
+                "gateway",
+                "router",
+            }:
+                ipv4 = pick_first_ipv4(device)
+                ipv6 = pick_first_ipv6(device)
+                return (ipv4, ipv6)
+
+        return (None, None)
