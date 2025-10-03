@@ -19,6 +19,7 @@ class Retry:
         status_forcelist: Sequence[int] | None = ...,
         allowed_methods: Iterable[str] | None = ...,
         raise_on_status: bool = ...,
+        respect_retry_after_header: bool = ...,
     ) -> None: ...
 
     def new(self, **kwargs: Any) -> Retry: ...

@@ -1,12 +1,18 @@
-"""Core Home Assistant stubs for tests."""
+"""Minimal Home Assistant core stubs used in tests."""
+
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import Any, Callable, Coroutine
 
 
 class _ConfigEntriesManager:
     """Extremely small stub of Home Assistant's config entries manager."""
+
+    async def async_setup(self, entry_id: Any) -> bool:
+        """Pretend to set up a config entry."""
+        return True
 
     async def async_forward_entry_setups(self, entry: Any, platforms: Any) -> bool:
         return True
@@ -33,13 +39,36 @@ class EventBus:
         self._events.append((event_type, event_data))
 
 
+class _Config:
+    """Configuration container mirroring the attributes used in tests."""
+
+    def __init__(self) -> None:
+        self.components: set[str] = set()
+
+
 class HomeAssistant:
     """Extremely small subset of the HomeAssistant core API used in tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, config_dir: str | None = None) -> None:
+        self.config_dir = config_dir
         self.bus = EventBus()
         self.data: dict[str, Any] = {}
-        self.config_entries = _ConfigEntriesManager()
+        self.config = _Config()
+        self.config_entries: Any = _ConfigEntriesManager()
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self.loop: asyncio.AbstractEventLoop | None = None
+
+    async def async_start(self) -> None:
+        """Start the Home Assistant instance."""
+        return None
+
+    async def async_stop(self) -> None:
+        """Stop the Home Assistant instance and cancel pending tasks."""
+        for task in list(self._tasks):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        self._tasks.clear()
 
     async def async_add_executor_job(
         self, func: Callable[..., Any], *args: Any, **kwargs: Any
@@ -49,4 +78,18 @@ class HomeAssistant:
 
     def async_create_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         """Schedule an asynchronous task."""
-        return asyncio.create_task(coro)
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    async def async_block_till_done(self) -> None:
+        """Run the event loop until no tracked tasks remain."""
+        while True:
+            pending = [task for task in self._tasks if not task.done()]
+            if not pending:
+                break
+            await asyncio.sleep(0)
+
+
+__all__ = ["HomeAssistant", "EventBus"]
