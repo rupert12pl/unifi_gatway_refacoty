@@ -44,12 +44,53 @@ def test_extract_ip_from_value_filters_by_version():
     assert _extract_ip_from_value("192.0.2.5", version=6) is None
 
 
+def test_extract_ip_from_value_prefers_non_link_local_ipv6():
+    assert (
+        _extract_ip_from_value(
+            ["fe80::1/64", "2001:db8::1/64", "fe80::2"], version=6
+        )
+        == "2001:db8::1"
+    )
+    assert (
+        _extract_ip_from_value(
+            [
+                {"address": "fe80::1/64"},
+                {"address": "2001:db8::2/64"},
+                {"address": "fe80::2"},
+            ],
+            version=6,
+        )
+        == "2001:db8::2"
+    )
+    assert (
+        _extract_ip_from_value(
+            ["fe80::3", {"ip": "fe80::4"}, "2001:db8::5"], version=6
+        )
+        == "2001:db8::5"
+    )
+
+
+def test_extract_ip_from_value_handles_scope_id_suffixes():
+    assert _extract_ip_from_value("fe80::1%wan", version=6) == "fe80::1"
+    assert (
+        _extract_ip_from_value(["fe80::2%wan", "2001:db8::2%wan"], version=6)
+        == "2001:db8::2"
+    )
+    assert (
+        _extract_ip_from_value(["fe80::3%eth0"], version=6)
+        == "fe80::3"
+    )
+    assert _extract_ip_from_value("fe80::4%eth0/64", version=6) == "fe80::4"
+    assert _extract_ip_from_value("2001:db8::5%eth0/64", version=6) == "2001:db8::5"
+
+
 def test_lan_sensor_reports_ipv6_attribute():
     network = {
         "_id": "lan-1",
         "name": "LAN",
         "subnet": "192.168.1.1/24",
         "cidr": "2001:db8::1/64",
+        "inet6": ["fe80::1/64", "2001:db8::1/64"],
     }
     data = _make_data(
         lan_networks=[network],
@@ -67,8 +108,18 @@ def test_lan_sensor_reports_ipv6_attribute():
 
 
 def test_wlan_sensor_uses_network_ipv6_information():
-    network = {"name": "Corporate", "vlan": 10, "cidr": "2001:db8:5::1/64"}
-    wlan = {"name": "WiFi", "networkconf_id": "net-1", "ipv6_address": "2001:db8:5::5"}
+    network = {
+        "name": "Corporate",
+        "vlan": 10,
+        "cidr": "2001:db8:5::1/64",
+        "inet6": ["fe80::10/64", "2001:db8:5::1/64"],
+    }
+    wlan = {
+        "name": "WiFi",
+        "networkconf_id": "net-1",
+        "ipv6_address": "fe80::5",
+        "ip6": ["fe80::5", "2001:db8:5::5"],
+    }
     data = _make_data(network_map={"net-1": network}, wlans=[wlan])
     coordinator = SimpleNamespace(data=data)
     sensor = UniFiGatewayWlanClientsSensor(
@@ -81,10 +132,14 @@ def test_wlan_sensor_uses_network_ipv6_information():
 
 
 def test_wan_ipv6_sensor_reports_details():
-    link = {"id": "wan1", "name": "WAN", "wan_ipv6": "2001:db8::1"}
+    link = {
+        "id": "wan1",
+        "name": "WAN",
+        "wan_ipv6": ["fe80::1", "2001:db8::1"],
+    }
     health = {
         "id": "wan1",
-        "wan_ipv6": "2001:db8::2",
+        "wan_ipv6": ["fe80::2", "2001:db8::2"],
         "gateway_ipv6": "fe80::1",
         "wan_ipv6_prefix": "2001:db8::/64",
     }
