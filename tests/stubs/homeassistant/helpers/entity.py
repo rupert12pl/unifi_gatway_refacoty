@@ -1,9 +1,11 @@
-"""Test stubs for Home Assistant entity helpers."""
-
 from __future__ import annotations
 
 from typing import Any, Dict
 
+
+"""Test stubs for Home Assistant entity helpers."""
+
+from typing import Any, Dict
 
 class Entity:
     """Simplified Entity base class for testing."""

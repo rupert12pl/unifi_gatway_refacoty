@@ -9,9 +9,7 @@ from custom_components.unifi_gateway_refactored.const import DOMAIN
 from custom_components.unifi_gateway_refactored.unifi_client import ConnectivityError
 
 
-def test_async_setup_retry_logic(
-    hass: HomeAssistant, async_run, mock_unifi_client
-) -> None:
+async def test_async_setup_retry_logic(hass: HomeAssistant, mock_unifi_client):
     """Test retry logic during setup."""
     # Simulate a slow device that fails twice before succeeding
     mock_unifi_client.return_value.ping.side_effect = [
@@ -30,8 +28,8 @@ def test_async_setup_retry_logic(
     )
 
     entry.add_to_hass(hass)
-    async_run(hass.config_entries.async_setup(entry.entry_id))
-    async_run(hass.async_block_till_done())
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
 
     # Verify that ping was called exactly 3 times
     assert mock_unifi_client.return_value.ping.call_count == 3
@@ -41,9 +39,7 @@ def test_async_setup_retry_logic(
     assert entry.entry_id in hass.data[DOMAIN]
     assert "client" in hass.data[DOMAIN][entry.entry_id]
 
-def test_setup_all_retries_failed(
-    hass: HomeAssistant, async_run, mock_unifi_client
-) -> None:
+async def test_setup_all_retries_failed(hass: HomeAssistant, mock_unifi_client):
     """Test that setup fails after all retries fail."""
     # Simulate a device that always times out
     mock_unifi_client.return_value.ping.side_effect = ConnectivityError("Timeout")
@@ -59,8 +55,8 @@ def test_setup_all_retries_failed(
 
     entry.add_to_hass(hass)
     with pytest.raises(ConfigEntryNotReady):
-        async_run(hass.config_entries.async_setup(entry.entry_id))
-    async_run(hass.async_block_till_done())
+        await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
 
     # Verify that ping was called exactly 3 times
     assert mock_unifi_client.return_value.ping.call_count == 3
