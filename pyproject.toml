@@ -1,5 +1,5 @@
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.13"
 show_error_codes = true
 follow_imports = "silent"
 ignore_missing_imports = true
@@ -22,9 +22,26 @@ asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
-select = ["E", "W", "F", "I", "N", "B", "C", "D"]
-ignore = ["D203", "D213", "D406", "D407"]
+target-version = "py313"
+extend-exclude = ["tests/stubs"]
 
-[tool.ruff.isort]
+[tool.ruff.lint]
+select = ["E", "F"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"custom_components/unifi_gateway_refactored/sensor.py" = [
+    "C901",
+    "D101",
+    "D102",
+    "D103",
+    "D107",
+]
+"custom_components/unifi_gateway_refactored/unifi_client.py" = [
+    "C901",
+    "D102",
+    "D103",
+]
+
+[tool.ruff.lint.isort]
 known-first-party = ["custom_components.unifi_gateway_refactored"]

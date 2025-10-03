@@ -14,6 +14,23 @@ class _ConfigEntriesManager:
     async def async_unload_platforms(self, entry: Any, platforms: Any) -> bool:
         return True
 
+    def async_update_entry(
+        self,
+        entry: Any,
+        *,
+        data: dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+        title: str | None = None,
+    ) -> None:
+        """Update the provided config entry in-place."""
+
+        if data is not None:
+            entry.data = data
+        if options is not None:
+            entry.options = options
+        if title is not None:
+            entry.title = title
+
 
 class EventBus:
     """Very small async event bus recorder."""
