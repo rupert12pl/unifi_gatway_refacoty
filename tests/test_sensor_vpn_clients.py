@@ -1,18 +1,15 @@
-"""Test VPN client functionality in sensors."""
-
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from custom_components.unifi_gateway_refactored.sensor import (
-    UniFiGatewayVpnUsageSensor,
     _collect_vpn_connected_clients_details,
     _format_vpn_connected_clients,
     _prepare_connected_clients_output,
+    UniFiGatewayVpnUsageSensor,
 )
 
 
 def test_format_vpn_connected_clients_extracts_values():
-    """Test that VPN client formatting extracts correct values."""
     raw = {
         "connected_clients": [
             {
@@ -72,7 +69,6 @@ def test_format_vpn_connected_clients_extracts_values():
 
 
 def test_format_vpn_connected_clients_handles_missing_fields():
-    """Test that VPN client formatting handles missing fields correctly."""
     raw = {
         "clients": {
             "items": [
@@ -89,7 +85,6 @@ def test_format_vpn_connected_clients_handles_missing_fields():
 
 
 def test_format_vpn_connected_clients_keeps_existing_city_when_whois_lacks_city():
-    """Test that VPN client formatting preserves existing city when WHOIS data lacks it."""
     raw = {
         "connected_clients": [
             {
@@ -111,15 +106,11 @@ def test_format_vpn_connected_clients_keeps_existing_city_when_whois_lacks_city(
         formatted = _format_vpn_connected_clients(raw)
 
     assert formatted == [
-        (
-            "Client A ~ 1.1.1.1 | Unknown | 10.0.0.5 | "
-            "Unknown | Fallback State | Initial City | Unknown"
-        )
+        "Client A ~ 1.1.1.1 | Unknown | 10.0.0.5 | Unknown | Fallback State | Initial City | Unknown"
     ]
 
 
 def test_prepare_connected_clients_output_merges_remote_ip_columns_in_html():
-    """Test that connected clients output merges remote IP columns in HTML format."""
     raw = {
         "connected_clients": [
             {
@@ -156,7 +147,6 @@ def test_prepare_connected_clients_output_merges_remote_ip_columns_in_html():
 
 
 def test_connected_clients_city_uses_ipv6_when_ipv4_lookup_empty():
-    """Test that connected clients use IPv6 for city lookup when IPv4 lookup is empty."""
     raw = {
         "connected_clients": [
             {
@@ -194,7 +184,6 @@ class _DummyClient:
 
 
 def test_vpn_sensor_attribute_display_names():
-    """Test that VPN sensor has correct attribute display names."""
     sensor = UniFiGatewayVpnUsageSensor(
         coordinator=SimpleNamespace(data=None),
         client=_DummyClient(),

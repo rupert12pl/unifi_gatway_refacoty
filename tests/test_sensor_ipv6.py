@@ -1,43 +1,27 @@
-"""Test IPv6 functionality in sensors."""
-
 from types import SimpleNamespace
 
 from custom_components.unifi_gateway_refactored.sensor import (
+    _extract_ip_from_value,
     UniFiGatewayLanClientsSensor,
     UniFiGatewaySubsystemSensor,
-    UniFiGatewayWanIpv6Sensor,
     UniFiGatewayWanStatusSensor,
+    UniFiGatewayWanIpv6Sensor,
     UniFiGatewayWlanClientsSensor,
-    _extract_ip_from_value,
 )
 
 
 class _StubClient:
-    """Stub client implementation for testing."""
-
     def instance_key(self) -> str:
-        """Return a stub instance key."""
         return "stub"
 
     def get_site(self) -> str:
-        """Return a stub site name."""
         return "Site"
 
     def get_controller_url(self):
-        """Return a stub controller URL."""
         return None
 
 
 def _make_data(**overrides):
-    """Create a test data object with default values and optional overrides.
-
-    Args:
-        **overrides: Dictionary of values to override default test data.
-
-    Returns:
-        SimpleNamespace: A namespace object containing the test data.
-
-    """
     base = {
         "controller": {"url": None, "api_url": None, "site": None},
         "clients": [],
@@ -53,7 +37,6 @@ def _make_data(**overrides):
 
 
 def test_extract_ip_from_value_filters_by_version():
-    """Test IP extraction with version filtering."""
     assert _extract_ip_from_value(["192.0.2.1", "2001:db8::1"], version=4) == "192.0.2.1"
     assert _extract_ip_from_value(["192.0.2.1", "2001:db8::1"], version=6) == "2001:db8::1"
     assert _extract_ip_from_value("2001:db8::5/64", version=6) == "2001:db8::5"
@@ -62,7 +45,6 @@ def test_extract_ip_from_value_filters_by_version():
 
 
 def test_lan_sensor_reports_ipv6_attribute():
-    """Test that LAN sensor correctly reports IPv6 attributes."""
     network = {
         "_id": "lan-1",
         "name": "LAN",
@@ -85,7 +67,6 @@ def test_lan_sensor_reports_ipv6_attribute():
 
 
 def test_wlan_sensor_uses_network_ipv6_information():
-    """Test WLAN sensor's use of network IPv6 information."""
     network = {"name": "Corporate", "vlan": 10, "cidr": "2001:db8:5::1/64"}
     wlan = {"name": "WiFi", "networkconf_id": "net-1", "ipv6_address": "2001:db8:5::5"}
     data = _make_data(network_map={"net-1": network}, wlans=[wlan])
@@ -100,7 +81,6 @@ def test_wlan_sensor_uses_network_ipv6_information():
 
 
 def test_wan_ipv6_sensor_reports_details():
-    """Test that WAN IPv6 sensor reports correct details."""
     link = {"id": "wan1", "name": "WAN", "wan_ipv6": "2001:db8::1"}
     health = {
         "id": "wan1",
@@ -125,7 +105,6 @@ def test_wan_ipv6_sensor_reports_details():
 
 
 def test_wan_ipv6_sensor_ignores_placeholder_values():
-    """Test that WAN IPv6 sensor correctly handles placeholder values."""
     link = {"id": "wan1", "name": "WAN", "wan_ipv6": "Unknown"}
     health = {
         "id": "wan1",
@@ -150,7 +129,6 @@ def test_wan_ipv6_sensor_ignores_placeholder_values():
 
 
 def test_wan_subsystem_sensor_includes_ipv6_attribute():
-    """Test that WAN subsystem sensor includes IPv6 attribute."""
     data = _make_data(
         health_by_subsystem={"wan": {"status": "ok", "ipv6": "2001:db8::10"}},
         wan_links=[{"id": "wan1", "name": "WAN"}],
@@ -166,7 +144,6 @@ def test_wan_subsystem_sensor_includes_ipv6_attribute():
 
 
 def test_wan_status_sensor_reports_ip_sources():
-    """Test that WAN status sensor reports correct IP sources."""
     link = {
         "id": "wan1",
         "name": "WAN",
