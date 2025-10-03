@@ -47,7 +47,7 @@ class HomeAssistant:
         self, func: Callable[..., Any], *args: Any, **kwargs: Any
     ) -> Any:
         """Run a synchronous callable in a background thread."""
-        return await asyncio.to_thread(func, *args, **kwargs)
+        return func(*args, **kwargs)
 
     def async_create_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         """Schedule an asynchronous task."""
