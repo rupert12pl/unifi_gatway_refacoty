@@ -5,9 +5,11 @@ from custom_components.unifi_gateway_refactored.sensor import (
     UniFiGatewayLanClientsSensor,
     UniFiGatewaySubsystemSensor,
     UniFiGatewayWanStatusSensor,
+    UniFiGatewayWanIpSensor,
     UniFiGatewayWanIpv6Sensor,
     UniFiGatewayWlanClientsSensor,
 )
+from homeassistant.const import STATE_UNKNOWN
 
 
 class _StubClient:
@@ -18,6 +20,9 @@ class _StubClient:
         return "Site"
 
     def get_controller_url(self):
+        return None
+
+    def get_controller_api_url(self):
         return None
 
 
@@ -31,6 +36,7 @@ def _make_data(**overrides):
         "health_by_subsystem": {},
         "network_map": {},
         "wlans": [],
+        "networks": [],
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -181,6 +187,64 @@ def test_wan_ipv6_sensor_ignores_placeholder_values():
     assert attrs["source"] == "health"
     assert attrs["gateway_ipv6"] == "fe80::2"
     assert attrs["prefix"] == "2001:db8::/60"
+
+
+def test_wan_ip_sensor_prefers_ipv6_when_enabled():
+    link = {
+        "id": "wan1",
+        "name": "WAN",
+        "last_ipv4": "192.0.2.5",
+        "last_ipv6": "2001:db8::5",
+    }
+    data = _make_data(
+        wan_links=[link],
+        networks=[{"name": "WAN", "ipv6_interface_type": "dhcpv6"}],
+    )
+    coordinator = SimpleNamespace(data=data)
+    sensor = UniFiGatewayWanIpSensor(
+        coordinator, _StubClient(), "entry-id", dict(link)
+    )
+
+    value = sensor.native_value
+
+    assert value == "2001:db8::5"
+
+
+def test_wan_ip_sensor_uses_ipv4_when_ipv6_disabled():
+    link = {
+        "id": "wan1",
+        "name": "WAN",
+        "last_ipv4": "192.0.2.10",
+        "last_ipv6": "2001:db8::10",
+    }
+    data = _make_data(
+        wan_links=[link],
+        networks=[{"name": "WAN", "ipv6_interface_type": "disabled"}],
+    )
+    coordinator = SimpleNamespace(data=data)
+    sensor = UniFiGatewayWanIpSensor(
+        coordinator, _StubClient(), "entry-id", dict(link)
+    )
+
+    value = sensor.native_value
+
+    assert value == "192.0.2.10"
+
+
+def test_wan_ip_sensor_unknown_without_addresses():
+    link = {"id": "wan1", "name": "WAN"}
+    data = _make_data(
+        wan_links=[link],
+        networks=[{"name": "WAN", "ipv6_interface_type": "dhcpv6"}],
+    )
+    coordinator = SimpleNamespace(data=data)
+    sensor = UniFiGatewayWanIpSensor(
+        coordinator, _StubClient(), "entry-id", dict(link)
+    )
+
+    value = sensor.native_value
+
+    assert value == STATE_UNKNOWN
 
 
 def test_wan_subsystem_sensor_includes_ipv6_attribute():
