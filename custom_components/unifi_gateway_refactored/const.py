@@ -4,7 +4,8 @@ DOMAIN = "unifi_gateway_refactored"
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
 
 CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
+# Placeholder configuration keys for UI forms.
+CONF_PASSWORD = "password"  # nosec B105
 CONF_HOST = "host"
 CONF_PORT = "port"
 CONF_SITE_ID = "site_id"
@@ -42,4 +43,3 @@ ATTR_REASON = "reason"
 ATTR_ENTITY_IDS = "entity_ids"
 ATTR_DURATION_MS = "duration_ms"
 ATTR_ERROR = "error"
-

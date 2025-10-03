@@ -11,7 +11,7 @@ from typing import Any, Iterable, Optional, TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
-    from homeassistant.helpers import entity_registry as er
+    from homeassistant.helpers.entity_registry import RegistryEntry
     from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -337,7 +337,7 @@ async def _async_migrate_speedtest_button_unique_id(
 
     migrated = False
 
-    async def _migrate(entity_entry: er.RegistryEntry) -> dict[str, str] | None:
+    async def _migrate(entity_entry: "RegistryEntry") -> dict[str, str] | None:
         nonlocal migrated
         if entity_entry.config_entry_id != entry.entry_id:
             return None
@@ -413,7 +413,7 @@ async def _async_migrate_interface_unique_ids(
         _LOGGER.debug("No interface unique ID migrations required for entry %s", entry.entry_id)
         return
 
-    async def _migrate(entity_entry: er.RegistryEntry) -> dict[str, str] | None:
+    async def _migrate(entity_entry: "RegistryEntry") -> dict[str, str] | None:
         if entity_entry.config_entry_id != entry.entry_id:
             return None
         unique_id = entity_entry.unique_id
@@ -430,5 +430,3 @@ async def _async_migrate_interface_unique_ids(
         len(mapping),
         entry.entry_id,
     )
-
-

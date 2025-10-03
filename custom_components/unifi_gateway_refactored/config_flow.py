@@ -41,6 +41,7 @@ from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 
 _LOGGER = logging.getLogger(__name__)
 
+
 async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]:
     def _sync():
         client = UniFiOSClient(
@@ -60,6 +61,7 @@ async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]
             client.close()
         return {"ping": ping, "sites": sites}
     return await hass.async_add_executor_job(_sync)
+
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
@@ -204,7 +206,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         data[key] = normalized
                         self._cached[key] = normalized
             try:
-                assert self.hass is not None
+                # Ensure Home Assistant context is available before validation.
+                assert self.hass is not None  # nosec B101
                 await _validate(self.hass, data)
                 await self.async_set_unique_id(
                     f"{data[CONF_HOST]}:{data.get(CONF_PORT, DEFAULT_PORT)}"
@@ -308,6 +311,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(config_entry: config_entries.ConfigEntry):
         return OptionsFlow(config_entry)
 
+
 class OptionsFlow(config_entries.OptionsFlow):
     def __init__(self, entry: config_entries.ConfigEntry) -> None:
         self._entry = entry
@@ -344,7 +348,8 @@ class OptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "missing_auth"
             else:
                 try:
-                    assert self.hass is not None
+                    # Ensure Home Assistant context is available before validation.
+                    assert self.hass is not None  # nosec B101
                     await _validate(self.hass, merged)
                     return self.async_create_entry(title="", data=cleaned)
                 except AuthError:
