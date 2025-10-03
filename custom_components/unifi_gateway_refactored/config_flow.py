@@ -336,6 +336,36 @@ class OptionsFlow(config_entries.OptionsFlow):
     def __init__(self, entry: config_entries.ConfigEntry) -> None:
         self._entry = entry
 
+    @staticmethod
+    def _data_keys() -> set[str]:
+        """Return config entry data keys updated by the options flow."""
+
+        return {
+            CONF_HOST,
+            CONF_PORT,
+            CONF_USERNAME,
+            CONF_PASSWORD,
+            CONF_SITE_ID,
+            CONF_VERIFY_SSL,
+            CONF_USE_PROXY_PREFIX,
+            CONF_TIMEOUT,
+            CONF_SPEEDTEST_INTERVAL,
+            CONF_SPEEDTEST_ENTITIES,
+            CONF_WIFI_GUEST,
+            CONF_WIFI_IOT,
+        }
+
+    @staticmethod
+    def _option_keys() -> set[str]:
+        """Return option keys persisted on the config entry."""
+
+        return {
+            CONF_SPEEDTEST_INTERVAL,
+            CONF_SPEEDTEST_ENTITIES,
+            CONF_WIFI_GUEST,
+            CONF_WIFI_IOT,
+        }
+
     async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         if user_input is not None:
@@ -370,7 +400,42 @@ class OptionsFlow(config_entries.OptionsFlow):
                 try:
                     assert self.hass is not None
                     await _validate(self.hass, merged)
-                    return self.async_create_entry(title="", data=cleaned)
+
+                    updated_data = dict(self._entry.data)
+                    for key in self._data_keys():
+                        if key not in merged:
+                            continue
+                        value = merged.get(key)
+                        if value is None and key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
+                            updated_data.pop(key, None)
+                        elif value is None and key not in self._option_keys():
+                            # Required connection parameters should never be None
+                            continue
+                        else:
+                            updated_data[key] = value
+
+                    new_title = self._entry.title
+                    host_candidate = merged.get(CONF_HOST)
+                    if isinstance(host_candidate, str) and host_candidate:
+                        new_title = f"UniFi {host_candidate}"
+
+                    self.hass.config_entries.async_update_entry(
+                        self._entry,
+                        data=updated_data,
+                        title=new_title,
+                    )
+
+                    options_payload: Dict[str, Any] = {}
+                    for key in self._option_keys():
+                        value = merged.get(key)
+                        if value is None:
+                            continue
+                        options_payload[key] = value
+
+                    self._entry.data = updated_data
+                    self._entry.options = options_payload
+
+                    return self.async_create_entry(title="", data=options_payload)
                 except AuthError:
                     errors["base"] = "invalid_auth"
                 except ConnectivityError as err:

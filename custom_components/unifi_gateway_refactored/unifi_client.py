@@ -90,6 +90,7 @@ class UniFiOSClient:
             use_proxy_prefix: Whether to use proxy prefix in URLs.
             timeout: Timeout for requests in seconds.
             instance_hint: Optional instance identifier.
+
         """
         self._scheme = "https"
         self._host = host
@@ -116,7 +117,7 @@ class UniFiOSClient:
             backoff_factor=0.5,
             status_forcelist=(429, 500, 502, 503, 504, 520, 521, 522, 523, 524),
             allowed_methods=frozenset(["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"]),
-            respect_retry_after_header=True,
+            respect_retry_after_header=True,  # type: ignore[call-arg]
             raise_on_status=False,
         )
         adapter = HTTPAdapter(max_retries=retries, pool_connections=3, pool_maxsize=10)
@@ -677,9 +678,10 @@ class UniFiOSClient:
 
     def ping(self) -> bool:
         """Test connectivity to the UniFi OS device.
-        
+
         Returns:
             bool: True if connection is successful.
+
         """
         self.get_healthinfo()
         return True
@@ -689,6 +691,7 @@ class UniFiOSClient:
 
         Returns:
             List[Dict[str, Any]]: List of site information.
+
         """
         for path in ("api/self/sites", "api/stat/sites"):
             sites = self._get_list(path)
@@ -701,6 +704,7 @@ class UniFiOSClient:
 
         Returns:
             List[Dict[str, Any]]: List of health status information.
+
         """
         return self._get_list(self._site_path("stat/health"))
 
@@ -709,6 +713,7 @@ class UniFiOSClient:
 
         Returns:
             List[Dict[str, Any]]: List of active alerts.
+
         """
         for path in ("stat/alert", "list/alarm", "stat/alarm"):
             alerts = self._get_list(self._site_path(path))
@@ -718,9 +723,10 @@ class UniFiOSClient:
 
     def get_devices(self) -> List[Dict[str, Any]]:
         """Get list of devices managed by the UniFi OS device.
-        
+
         Returns:
             List[Dict[str, Any]]: List of device information.
+
         """
         for path in ("stat/device", "stat/device-basic"):
             devices = self._get_list(self._site_path(path))
@@ -730,9 +736,10 @@ class UniFiOSClient:
 
     def get_networks(self) -> List[Dict[str, Any]]:
         """Get list of networks configured on the UniFi OS device.
-        
+
         Returns:
             List[Dict[str, Any]]: List of network configurations.
+
         """
         for path in (
             "rest/networkconf",
@@ -746,9 +753,10 @@ class UniFiOSClient:
 
     def get_wlans(self) -> List[Dict[str, Any]]:
         """Get list of wireless networks (WLANs) configured on the UniFi OS device.
-        
+
         Returns:
             List[Dict[str, Any]]: List of WLAN configurations.
+
         """
         for path in ("rest/wlanconf", "list/wlanconf"):
             wlans = self._get_list(self._site_path(path))
@@ -1236,9 +1244,10 @@ class UniFiOSClient:
     # ---- Speedtest helpers (base-relative) ----
     def get_gateway_mac(self) -> Optional[str]:
         """Get MAC address of the UniFi Gateway device.
-        
+
         Returns:
             Optional[str]: MAC address if found, None otherwise.
+
         """
         try:
             devs = self.get_devices()
@@ -1247,7 +1256,8 @@ class UniFiOSClient:
         for d in devs or []:
             t = (d.get("type") or "").lower()
             m = (d.get("model") or "").lower()
-            if t in ("ugw", "udm") or m.startswith("udm") or "gateway" in (d.get("name") or "").lower():
+            name = (d.get("name") or "").lower()
+            if t in ("ugw", "udm") or m.startswith("udm") or "gateway" in name:
                 mac = d.get("mac") or d.get("device_mac")
                 if mac:
                     return mac
@@ -1388,6 +1398,7 @@ class UniFiOSClient:
         Args:
             mac: Optional MAC address of the device to run speedtest on.
                 If None, uses the gateway's MAC address.
+
         """
         if mac is None:
             mac = self.get_gateway_mac()

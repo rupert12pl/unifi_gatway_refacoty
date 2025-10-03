@@ -5,35 +5,26 @@ import asyncio
 import hashlib
 import logging
 from collections.abc import Mapping
-from datetime import timedelta
-from functools import partial
 from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
-    from homeassistant.helpers import entity_registry as er
     from homeassistant.helpers.typing import ConfigType
 
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryNotReady
 
 from .async_client import UniFiGatewayAsyncClient
-from .async_wrapper import UniFiGatewayAsyncWrapper
 from .const import (
     CONF_HOST,
     CONF_PASSWORD,
     CONF_PORT,
     CONF_SITE_ID,
-    CONF_SPEEDTEST_ENTITIES,
     CONF_SPEEDTEST_INTERVAL,
     CONF_TIMEOUT,
     CONF_USE_PROXY_PREFIX,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
-    CONF_WIFI_GUEST,
-    CONF_WIFI_IOT,
-    DATA_RUNNER,
-    DATA_UNDO_TIMER,
     DEFAULT_PORT,
     DEFAULT_SITE,
     DEFAULT_SPEEDTEST_ENTITIES,
@@ -47,8 +38,7 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
-from .monitor import SpeedtestRunner
-from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
+from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
 _LOGGER = logging.getLogger(__name__)
 

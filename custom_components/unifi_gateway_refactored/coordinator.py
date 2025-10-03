@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -11,7 +12,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .unifi_client import APIError, ConnectivityError, UniFiOSClient
+from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -136,6 +137,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             except Exception as err:
                 _LOGGER.error("Unexpected error during update: %s", err)
                 raise UpdateFailed(f"Unexpected error: {err}") from err
+
+        raise UpdateFailed("Failed to update UniFi Gateway data after retries")
 
     def _fetch_data(self) -> UniFiGatewayData:
         """Fetch data with improved VPN and speedtest handling."""
