@@ -36,6 +36,7 @@ async def async_setup_entry(
         True,
     )
 
+
 class SpeedtestRunButton(ButtonEntity):
     _attr_name = "Run Speedtest"
     _attr_icon = "mdi:speedometer"

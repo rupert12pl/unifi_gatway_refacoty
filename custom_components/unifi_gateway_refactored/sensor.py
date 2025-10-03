@@ -58,6 +58,7 @@ from .const import CONF_HOST, DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
+
 class _IPWhoisProtocol(Protocol):
     def __init__(self, address: str) -> None:
         ...
@@ -767,6 +768,7 @@ def build_lan_unique_id(entry_id: str, network: Dict[str, Any]) -> str:
 def build_wlan_unique_id(entry_id: str, wlan: Dict[str, Any]) -> str:
     return f"{entry_id}::wlan::{wlan_interface_key(wlan)}::clients"
 
+
 def build_vpn_unique_id(entry_id: str, tunnel: Dict[str, Any], suffix: str) -> str:
     return f"{entry_id}::vpn::{vpn_instance_key(tunnel)}::{suffix}"
 
@@ -808,6 +810,8 @@ def _is_connected(record: Any) -> bool:
     if isinstance(record, (int, float)):
         return bool(record)
     return record is True
+
+
 def _wan_identifier_candidates(
     link_id: str, link_name: str, link: Dict[str, Any]
 ) -> set[str]:
@@ -1680,7 +1684,8 @@ class UniFiGatewaySensorBase(
         }
         try:
             info["configuration_url"] = self._client.get_controller_url()
-        except Exception:  # pragma: no cover - guard against unexpected client errors
+        # Ignore unexpected client errors when building device information.
+        except Exception:  # pragma: no cover - guard against unexpected client errors  # nosec B110
             pass
         return info
 
@@ -1885,7 +1890,6 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
             "iot": iot_count,
             "total": total,
         }
-
 
 
 class UniFiGatewayAlertsSensor(UniFiGatewaySensorBase):
@@ -2165,7 +2169,8 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
                 try:
                     if not self._client._lease_is_active(lease, now_ts):
                         continue
-                except Exception:
+                # Malformed lease entries are skipped during aggregation.
+                except Exception:  # nosec B112
                     continue
                 lease_ip = lease.get("ip") or lease.get("lease_ip") or lease.get("assigned_ip")
                 lease_network = (
@@ -2340,7 +2345,6 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         self._connected_clients = []
         self._connected_clients_html = _render_connected_clients_html([])
         self._connected_clients_signature = signature
-
 
 
 class UniFiGatewayFirmwareSensor(UniFiGatewaySensorBase):
@@ -3012,7 +3016,7 @@ class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
         """Return enhanced speedtest attributes."""
         data = self.coordinator.data
         record = data.speedtest if data else None
-        
+
         attrs = {
             "source": record.get("source") if record else None,
             "last_run": _parse_datetime_24h(record.get("rundate") if record else None),
@@ -3052,11 +3056,11 @@ class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
         """Get normalized speedtest status."""
         if not record:
             return "unknown"
-        
+
         status = record.get("status", "")
         if not status:
             return "unknown"
-            
+
         status = str(status).lower()
         if "error" in status or "fail" in status:
             return "error"
@@ -3064,7 +3068,7 @@ class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
             return "running"
         if "success" in status or "complete" in status:
             return "success"
-            
+
         return status
 
 
@@ -3150,7 +3154,6 @@ class UniFiGatewaySpeedtestPingSensor(UniFiGatewaySpeedtestSensor):
         if record and record.get("latency_ms") is not None:
             return round(float(record["latency_ms"]), 1)
         return None
-
 
 
 def _to_ip_network(value: Optional[str]):

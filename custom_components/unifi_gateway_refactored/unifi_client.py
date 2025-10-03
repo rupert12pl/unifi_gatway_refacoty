@@ -142,6 +142,7 @@ class UniFiOSClient:
         session = getattr(self, "_session", None)
         if session is not None:
             session.close()
+
     def _net_base(self) -> str:
         """Return the normalized base URL for UniFi Network requests."""
 
@@ -157,12 +158,12 @@ class UniFiOSClient:
         base = self._net_base().rstrip("/")
         cleaned = str(path or "").lstrip("/")
         if cleaned.startswith("proxy/network/"):
-            cleaned = cleaned[len("proxy/network/") :]
+            cleaned = cleaned[len("proxy/network/"):]
         if cleaned.startswith("network/") and self._path_prefix.strip("/") == "network":
-            cleaned = cleaned[len("network/") :]
+            cleaned = cleaned[len("network/"):]
         prefix = self._path_prefix.strip("/")
         if prefix and cleaned.startswith(f"{prefix}/"):
-            cleaned = cleaned[len(prefix) + 1 :]
+            cleaned = cleaned[len(prefix) + 1:]
         return f"{base}/{cleaned}" if cleaned else base
 
     def _site_path(self, path: str = "") -> str:
@@ -753,12 +754,12 @@ class UniFiOSClient:
         if "expired" in lease:
             try:
                 return not bool(lease.get("expired"))
-            except Exception:  # pragma: no cover - defensive
+            except Exception:  # pragma: no cover - defensive  # nosec B110
                 pass
         if "is_active" in lease:
             try:
                 return bool(lease.get("is_active"))
-            except Exception:  # pragma: no cover - defensive
+            except Exception:  # pragma: no cover - defensive  # nosec B110
                 pass
         end = lease.get("end") or lease.get("expires") or lease.get("expire_time")
         if end is None:
@@ -862,7 +863,8 @@ class UniFiOSClient:
         ):
             try:
                 payload, _ = self._call_vpn_endpoint("GET", endpoint)
-            except Exception:
+            # Allow transient controller errors when probing VPN endpoints.
+            except Exception:  # nosec B112
                 continue
 
             records: List[Dict[str, Any]] = []
@@ -971,7 +973,8 @@ class UniFiOSClient:
         for endpoint in endpoints:
             try:
                 payload, _ = self._call_vpn_endpoint("GET", endpoint)
-            except Exception:
+            # Allow controllers without remote-user endpoints to be skipped.
+            except Exception:  # nosec B112
                 continue
 
             if not isinstance(payload, list):
@@ -1137,7 +1140,8 @@ class UniFiOSClient:
                     mac = sub.get("gw_mac") or sub.get("gw-mac") or sub.get("wan_ip_gw_mac")
                     if mac:
                         return mac
-        except Exception:
+        # Ignore unexpected payload shapes when deriving MAC information.
+        except Exception:  # nosec B110
             pass
         return None
 
@@ -1276,17 +1280,18 @@ class UniFiOSClient:
             # Record the trigger time to avoid immediate duplicate runs from other paths
             try:
                 self._st_last_trigger = time.time()
-            except Exception:
-                pass
+            except Exception:  # pragma: no cover - cache update is best-effort
+                _LOGGER.debug("Failed to update speedtest trigger timestamp", exc_info=True)
             return result
+        # Fallback to legacy endpoint when the preferred endpoint fails.
         except Exception:
             result, _ = self._call_speedtest_endpoint(
                 "POST", "internet/speedtest/run", payload={}
             )
             try:
                 self._st_last_trigger = time.time()
-            except Exception:
-                pass
+            except Exception:  # pragma: no cover - cache update is best-effort
+                _LOGGER.debug("Failed to update speedtest trigger timestamp", exc_info=True)
             return result
 
     def restart_gateway(self, mac: Optional[str] = None):
@@ -1312,7 +1317,8 @@ class UniFiOSClient:
         try:
             result, _ = self._call_speedtest_endpoint("POST", "cmd/devmgr", payload=payload)
             return result
-        except Exception:
+        # Fall back to legacy endpoints on controller errors.
+        except Exception:  # nosec B110
             pass
 
         for method in ("GET", "POST"):
@@ -1322,7 +1328,8 @@ class UniFiOSClient:
                     method, "internet/speedtest/status", payload=payload_arg
                 )
                 return result
-            except Exception:
+            # Some controllers implement only one of these endpoints.
+            except Exception:  # nosec B112
                 continue
         raise APIError("Unable to retrieve UniFi speedtest status", expected=True)
 
@@ -1607,7 +1614,8 @@ class UniFiOSClient:
                     out["source"] = "status"
                     self._st_cache = (now, out)
                     return out
-        except Exception:
+        # Cache population is best-effort; unexpected payloads are ignored.
+        except Exception:  # nosec B110
             pass
         try:
             hist = self.get_speedtest_history()
@@ -1622,7 +1630,8 @@ class UniFiOSClient:
                     out["source"] = "history"
                     self._st_cache = (now, out)
                     return out
-        except Exception:
+        # Cache population is best-effort; unexpected payloads are ignored.
+        except Exception:  # nosec B110
             pass
         self._st_cache = (now, None)
         return None

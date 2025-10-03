@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.unifi_gateway_refactored.monitor import SpeedtestRunner
 
+
 @pytest.fixture
 def mock_client():
     """Create mock UniFi client."""
@@ -20,12 +21,14 @@ def mock_client():
     client.get_speedtest_status.return_value = None
     return client
 
+
 @pytest.fixture
 def mock_coordinator():
     """Create mock coordinator."""
     coordinator = MagicMock()
     coordinator.async_request_refresh = AsyncMock()
     return coordinator
+
 
 @pytest.fixture
 def mock_callback():
@@ -42,6 +45,7 @@ def run(coro) -> None:
         0.01,
     ):
         asyncio.run(coro)
+
 
 def test_speedtest_success(hass: HomeAssistant, mock_client, mock_coordinator, mock_callback):
     """Test successful speedtest run."""
@@ -73,6 +77,7 @@ def test_speedtest_success(hass: HomeAssistant, mock_client, mock_coordinator, m
     assert args["success"] is True
     assert args["error"] is None
 
+
 def test_speedtest_timeout(hass: HomeAssistant, mock_client, mock_coordinator, mock_callback):
     """Test speedtest timeout scenario."""
     runner = SpeedtestRunner(
@@ -94,6 +99,7 @@ def test_speedtest_timeout(hass: HomeAssistant, mock_client, mock_coordinator, m
     args = mock_callback.call_args[1]
     assert args["success"] is False
     assert "TimeoutError" in args["error"]
+
 
 def test_speedtest_failure_status(hass: HomeAssistant, mock_client, mock_coordinator, mock_callback):
     """Test speedtest failure status handling."""
@@ -118,6 +124,7 @@ def test_speedtest_failure_status(hass: HomeAssistant, mock_client, mock_coordin
     args = mock_callback.call_args[1]
     assert args["success"] is False
     assert "failure status" in args["error"]
+
 
 def test_concurrent_runs(hass: HomeAssistant, mock_client, mock_coordinator, mock_callback):
     """Test prevention of concurrent speedtest runs."""
@@ -147,6 +154,7 @@ def test_concurrent_runs(hass: HomeAssistant, mock_client, mock_coordinator, moc
 
     # Sprawdź czy tylko jeden test został wykonany
     assert mock_callback.call_count == 1
+
 
 def test_retry_mechanism(hass: HomeAssistant, mock_client, mock_coordinator, mock_callback):
     """Test speedtest retry mechanism."""
