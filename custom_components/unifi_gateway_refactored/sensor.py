@@ -20,6 +20,7 @@ from typing import (
     TYPE_CHECKING,
     Type,
     Protocol,
+    Union,
     cast,
 )
 
@@ -3223,7 +3224,10 @@ def _extract_ip_from_value(value: Any, *, version: Optional[int] = None) -> Opti
                 except ValueError:
                     pass
                 else:
-                    address = interface.ip
+                    address = cast(
+                        Union[ipaddress.IPv4Address, ipaddress.IPv6Address],
+                        interface.ip,
+                    )
                     if version and address.version != version:
                         return None
                     if isinstance(address, ipaddress.IPv6Address) and address.is_link_local:
