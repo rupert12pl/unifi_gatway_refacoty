@@ -6,7 +6,6 @@ from typing import Any, Callable, Optional
 
 @dataclass
 class RegistryEntry:
-    """Class holding entity data registered in the entity registry."""
     entity_id: str
     unique_id: Optional[str] = None
     config_entry_id: Optional[str] = None
@@ -16,18 +15,9 @@ class EntityRegistry:
     """Very small registry representation."""
 
     def __init__(self) -> None:
-        """Initialize the entity registry."""
         self.entities: dict[str, RegistryEntry] = {}
 
     def async_get(self, entity_id: str) -> Optional[RegistryEntry]:
-        """Get entity entry from the registry.
-        
-        Args:
-            entity_id: Entity ID to look up
-            
-        Returns:
-            Entity entry if found, None otherwise
-        """
         return self.entities.get(entity_id)
 
 

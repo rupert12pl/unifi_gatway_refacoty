@@ -12,6 +12,7 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities
 ) -> None:
     """Set up UniFi Gateway binary sensors (none required)."""
+
     _LOGGER.debug(
         "No binary sensors to set up for UniFi Gateway entry %s", entry.entry_id
     )
