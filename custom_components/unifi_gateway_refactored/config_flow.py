@@ -227,18 +227,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     else:
                         data[key] = normalized
                         self._cached[key] = normalized
-
             try:
-                if self.hass is None:
-                    raise RuntimeError("Flow missing hass reference")
+                assert self.hass is not None
                 await _validate(self.hass, data)
                 await self.async_set_unique_id(
                     f"{data[CONF_HOST]}:{data.get(CONF_PORT, DEFAULT_PORT)}"
                 )
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(
-                    title=f"UniFi {data[CONF_HOST]}", data=data
-                )
+                return self.async_create_entry(title=f"UniFi {data[CONF_HOST]}", data=data)
             except AuthError:
                 errors["base"] = "invalid_auth"
             except ConnectivityError as err:
@@ -372,16 +368,14 @@ class OptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "missing_auth"
             else:
                 try:
-                    if self.hass is None:
-                        raise RuntimeError("Flow missing hass reference")
+                    assert self.hass is not None
                     await _validate(self.hass, merged)
                     return self.async_create_entry(title="", data=cleaned)
                 except AuthError:
                     errors["base"] = "invalid_auth"
                 except ConnectivityError as err:
                     _LOGGER.error(
-                        "Connectivity issue while validating UniFi controller %s:%s "
-                        "during options flow: %s",
+                        "Connectivity issue while validating UniFi controller %s:%s during options flow: %s",
                         merged.get(CONF_HOST),
                         merged.get(CONF_PORT, DEFAULT_PORT),
                         err,
@@ -397,8 +391,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     errors["base"] = "cannot_connect" if not err.expected else "unknown"
                 except Exception as err:  # pragma: no cover - defensive guard
                     _LOGGER.exception(
-                        "Unexpected error while validating UniFi controller %s:%s "
-                        "during options flow: %s",
+                        "Unexpected error while validating UniFi controller %s:%s during options flow: %s",
                         merged.get(CONF_HOST),
                         merged.get(CONF_PORT, DEFAULT_PORT),
                         err,

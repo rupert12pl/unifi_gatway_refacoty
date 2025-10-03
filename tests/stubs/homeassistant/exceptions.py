@@ -1,17 +1,15 @@
-"""Home Assistant exception stubs used in tests."""
-
-from __future__ import annotations
+"""Home Assistant exception stubs."""
 
 
 class HomeAssistantError(Exception):
     """Exception raised for Home Assistant specific errors."""
 
 
-class ConfigEntryAuthFailed(HomeAssistantError):  # noqa: N818 - matches Home Assistant API
+class ConfigEntryAuthFailed(HomeAssistantError):
     """Raised when authentication for a config entry fails."""
 
 
-class ConfigEntryNotReady(HomeAssistantError):  # noqa: N818 - matches Home Assistant API
+class ConfigEntryNotReady(HomeAssistantError):
     """Raised when a config entry is not ready to be set up."""
 
 

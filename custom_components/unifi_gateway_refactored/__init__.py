@@ -5,25 +5,35 @@ import asyncio
 import hashlib
 import logging
 from collections.abc import Mapping
+from datetime import timedelta
+from functools import partial
 from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
+    from homeassistant.helpers import entity_registry as er
     from homeassistant.helpers.typing import ConfigType
 
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
+from .async_client import UniFiGatewayAsyncClient
+from .async_wrapper import UniFiGatewayAsyncWrapper
 from .const import (
     CONF_HOST,
     CONF_PASSWORD,
     CONF_PORT,
     CONF_SITE_ID,
+    CONF_SPEEDTEST_ENTITIES,
     CONF_SPEEDTEST_INTERVAL,
     CONF_TIMEOUT,
     CONF_USE_PROXY_PREFIX,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
+    CONF_WIFI_GUEST,
+    CONF_WIFI_IOT,
+    DATA_RUNNER,
+    DATA_UNDO_TIMER,
     DEFAULT_PORT,
     DEFAULT_SITE,
     DEFAULT_SPEEDTEST_ENTITIES,
@@ -37,7 +47,8 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
-from .unifi_client import APIError, ConnectivityError, UniFiOSClient
+from .monitor import SpeedtestRunner
+from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -167,7 +178,6 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
         except Exception as err:
             _LOGGER.debug("Error closing existing client: %s", err)
 
-    client: UniFiOSClient | None = None
     try:
         client = UniFiOSClient(
             host=data[CONF_HOST],
@@ -180,18 +190,19 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
             timeout=data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
         )
 
+        # Test connection with retries
         for attempt in range(3):
             try:
-                if await hass.async_add_executor_job(client.ping):
-                    break
-                raise ConnectivityError("Connection test failed")
+                if not await hass.async_add_executor_job(client.ping):
+                    raise ConnectivityError("Connection test failed")
+                break
             except (ConnectivityError, APIError) as err:
                 if attempt == 2:  # Last attempt
-                    raise ConfigEntryNotReady(f"Connection failed: {err}") from err
+                    raise ConfigEntryNotReady(f"Connection failed: {err}")
                 _LOGGER.warning(
                     "Connection attempt %d failed: %s, retrying...",
                     attempt + 1,
-                    err,
+                    err
                 )
                 await asyncio.sleep(2 * (attempt + 1))
 
@@ -218,9 +229,38 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
 
     except Exception as err:
         _LOGGER.error("Failed to set up %s: %s", entry.entry_id, err)
-        if client is not None:
+        if 'client' in locals():
             await hass.async_add_executor_job(client.close)
         raise ConfigEntryNotReady(f"Setup failed: {err}") from err
+        async_client = UniFiGatewayAsyncClient(hass, client)
+
+        # Verify connection
+        if not await async_client.async_ping():
+            raise ConnectivityError("Failed to connect")
+
+        speedtest_interval = _resolve_speedtest_interval_seconds(options, data)
+
+        coordinator = UniFiGatewayDataUpdateCoordinator(
+            hass,
+            client,
+            speedtest_interval=speedtest_interval,
+        )
+
+        await coordinator.async_config_entry_first_refresh()
+
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = {
+            "client": async_client,
+            "coordinator": coordinator,
+        }
+
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        return True
+
+    except Exception as err:
+        if 'client' in locals():
+            await hass.async_add_executor_job(client.close)
+        raise ConfigEntryNotReady(f"Failed to set up: {err}") from err
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
