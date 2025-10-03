@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+import asyncio
 import logging
 import time
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from homeassistant.core import HomeAssistant
@@ -11,8 +12,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .unifi_client import APIError, ConnectivityError, UniFiOSClient
-
+from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class UniFiGatewayData:
 
 
 class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData]):
-    """Coordinate UniFi Gateway data retrieval for Home Assistant entities."""
+    """Coordinate UniFi Gateway data retrieval for Home Assistant entities with robust error handling."""
 
     def __init__(
         self,
@@ -105,12 +105,40 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         return None
 
     async def _async_update_data(self) -> UniFiGatewayData:
-        try:
-            return await self.hass.async_add_executor_job(
-                self._fetch_data,
-            )
-        except (ConnectivityError, APIError) as err:
-            raise UpdateFailed(str(err)) from err
+        """Fetch data with improved error handling and retry logic."""
+        for attempt in range(3):  # Try up to 3 times
+            try:
+                # Check connectivity first
+                ping_success = await self.hass.async_add_executor_job(self._client.ping)
+                if not ping_success:
+                    raise ConnectivityError("Controller ping failed")
+
+                return await self.hass.async_add_executor_job(
+                    self._fetch_data,
+                )
+            except AuthError as err:
+                _LOGGER.error("Authentication failed during update: %s", err)
+                raise UpdateFailed("Authentication error") from err
+            except ConnectivityError as err:
+                if attempt == 2:  # Last attempt
+                    _LOGGER.error("Connection failed after 3 attempts: %s", err)
+                    raise UpdateFailed(f"Connection failed: {err}") from err
+                _LOGGER.warning("Connection attempt %d failed: %s", attempt + 1, err)
+                await asyncio.sleep(2 * (attempt + 1))  # Exponential backoff
+            except APIError as err:
+                if getattr(err, 'expected', False):
+                    _LOGGER.debug("Expected API error: %s", err)
+                    raise UpdateFailed(str(err)) from err
+                if attempt == 2:  # Last attempt
+                    _LOGGER.error("API error after 3 attempts: %s", err)
+                    raise UpdateFailed(f"API error: {err}") from err
+                _LOGGER.warning("API attempt %d failed: %s", attempt + 1, err)
+                await asyncio.sleep(2 * (attempt + 1))
+            except Exception as err:
+                _LOGGER.error("Unexpected error during update: %s", err)
+                raise UpdateFailed(f"Unexpected error: {err}") from err
+
+        raise UpdateFailed("Failed to update UniFi Gateway data after retries")
 
     def _fetch_data(self) -> UniFiGatewayData:
         """Fetch data with improved VPN and speedtest handling."""
@@ -236,7 +264,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         if interval > 0:
             last_ts = self._speedtest_last_timestamp(speedtest)
             now_ts = time.time()
-            
+
             should_trigger = False
             if not speedtest:
                 should_trigger = True
@@ -244,7 +272,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             elif last_ts and (now_ts - last_ts) >= interval:
                 should_trigger = True
                 reason = f"stale ({int(now_ts - last_ts)}s old)"
-                
+
             if should_trigger:
                 cooldown = max(interval, 60)
                 try:

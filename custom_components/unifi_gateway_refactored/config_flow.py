@@ -1,11 +1,12 @@
 
 from __future__ import annotations
+
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from homeassistant import config_entries
-from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import AbortFlow
 
 if TYPE_CHECKING:
     from homeassistant.data_entry_flow import FlowResult
@@ -14,52 +15,75 @@ else:  # pragma: no cover - fallback for older Home Assistant
 import voluptuous as vol
 
 from .const import (
-    DOMAIN,
-    CONF_USERNAME,
-    CONF_PASSWORD,
     CONF_HOST,
+    CONF_PASSWORD,
     CONF_PORT,
-    CONF_VERIFY_SSL,
-    CONF_USE_PROXY_PREFIX,
     CONF_SITE_ID,
-    CONF_TIMEOUT,
-    CONF_SPEEDTEST_INTERVAL,
     CONF_SPEEDTEST_ENTITIES,
+    CONF_SPEEDTEST_INTERVAL,
+    CONF_TIMEOUT,
+    CONF_USE_PROXY_PREFIX,
+    CONF_USERNAME,
+    CONF_VERIFY_SSL,
     CONF_WIFI_GUEST,
     CONF_WIFI_IOT,
     DEFAULT_PORT,
     DEFAULT_SITE,
-    DEFAULT_VERIFY_SSL,
-    DEFAULT_USE_PROXY_PREFIX,
-    DEFAULT_TIMEOUT,
+    DEFAULT_SPEEDTEST_ENTITIES,
     DEFAULT_SPEEDTEST_INTERVAL,
     DEFAULT_SPEEDTEST_INTERVAL_MINUTES,
-    DEFAULT_SPEEDTEST_ENTITIES,
+    DEFAULT_TIMEOUT,
+    DEFAULT_USE_PROXY_PREFIX,
+    DEFAULT_VERIFY_SSL,
+    DOMAIN,
     LEGACY_CONF_SPEEDTEST_INTERVAL_MIN,
 )
-from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
+from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
 
 _LOGGER = logging.getLogger(__name__)
 
 async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the UniFi controller configuration with improved error handling."""
     def _sync():
-        client = UniFiOSClient(
-            host=data[CONF_HOST],
-            username=data.get(CONF_USERNAME),
-            password=data.get(CONF_PASSWORD),
-            port=data.get(CONF_PORT, DEFAULT_PORT),
-            site_id=data.get(CONF_SITE_ID, DEFAULT_SITE),
-            ssl_verify=data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
-            use_proxy_prefix=data.get(CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX),
-            timeout=data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
-        )
+        client = None
         try:
+            client = UniFiOSClient(
+                host=data[CONF_HOST],
+                username=data.get(CONF_USERNAME),
+                password=data.get(CONF_PASSWORD),
+                port=data.get(CONF_PORT, DEFAULT_PORT),
+                site_id=data.get(CONF_SITE_ID, DEFAULT_SITE),
+                ssl_verify=data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
+                use_proxy_prefix=data.get(CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX),
+                timeout=data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
+            )
+
+            # Test basic connectivity first
             ping = client.ping()
+            if not ping:
+                raise ConnectivityError("Controller ping failed")
+
+            # Then test API functionality
             sites = client.list_sites()
+            if not sites:
+                _LOGGER.warning("No sites found on UniFi controller")
+
+            return {"ping": ping, "sites": sites}
+        except Exception as err:
+            _LOGGER.error("Error during UniFi controller validation: %s", err)
+            raise
         finally:
-            client.close()
-        return {"ping": ping, "sites": sites}
-    return await hass.async_add_executor_job(_sync)
+            if client:
+                try:
+                    client.close()
+                except Exception as err:
+                    _LOGGER.debug("Error closing UniFi client: %s", err)
+
+    try:
+        return await hass.async_add_executor_job(_sync)
+    except Exception as err:
+        _LOGGER.error("Failed to validate UniFi controller: %s", err)
+        raise
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
@@ -312,6 +336,36 @@ class OptionsFlow(config_entries.OptionsFlow):
     def __init__(self, entry: config_entries.ConfigEntry) -> None:
         self._entry = entry
 
+    @staticmethod
+    def _data_keys() -> set[str]:
+        """Return config entry data keys updated by the options flow."""
+
+        return {
+            CONF_HOST,
+            CONF_PORT,
+            CONF_USERNAME,
+            CONF_PASSWORD,
+            CONF_SITE_ID,
+            CONF_VERIFY_SSL,
+            CONF_USE_PROXY_PREFIX,
+            CONF_TIMEOUT,
+            CONF_SPEEDTEST_INTERVAL,
+            CONF_SPEEDTEST_ENTITIES,
+            CONF_WIFI_GUEST,
+            CONF_WIFI_IOT,
+        }
+
+    @staticmethod
+    def _option_keys() -> set[str]:
+        """Return option keys persisted on the config entry."""
+
+        return {
+            CONF_SPEEDTEST_INTERVAL,
+            CONF_SPEEDTEST_ENTITIES,
+            CONF_WIFI_GUEST,
+            CONF_WIFI_IOT,
+        }
+
     async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         if user_input is not None:
@@ -346,7 +400,42 @@ class OptionsFlow(config_entries.OptionsFlow):
                 try:
                     assert self.hass is not None
                     await _validate(self.hass, merged)
-                    return self.async_create_entry(title="", data=cleaned)
+
+                    updated_data = dict(self._entry.data)
+                    for key in self._data_keys():
+                        if key not in merged:
+                            continue
+                        value = merged.get(key)
+                        if value is None and key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
+                            updated_data.pop(key, None)
+                        elif value is None and key not in self._option_keys():
+                            # Required connection parameters should never be None
+                            continue
+                        else:
+                            updated_data[key] = value
+
+                    new_title = self._entry.title
+                    host_candidate = merged.get(CONF_HOST)
+                    if isinstance(host_candidate, str) and host_candidate:
+                        new_title = f"UniFi {host_candidate}"
+
+                    self.hass.config_entries.async_update_entry(
+                        self._entry,
+                        data=updated_data,
+                        title=new_title,
+                    )
+
+                    options_payload: Dict[str, Any] = {}
+                    for key in self._option_keys():
+                        value = merged.get(key)
+                        if value is None:
+                            continue
+                        options_payload[key] = value
+
+                    self._entry.data = updated_data
+                    self._entry.options = options_payload
+
+                    return self.async_create_entry(title="", data=options_payload)
                 except AuthError:
                     errors["base"] = "invalid_auth"
                 except ConnectivityError as err:
