@@ -1,12 +1,11 @@
 
 from __future__ import annotations
-
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import AbortFlow
+from homeassistant.core import HomeAssistant
 
 if TYPE_CHECKING:
     from homeassistant.data_entry_flow import FlowResult
@@ -15,30 +14,30 @@ else:  # pragma: no cover - fallback for older Home Assistant
 import voluptuous as vol
 
 from .const import (
-    CONF_HOST,
-    CONF_PASSWORD,
-    CONF_PORT,
-    CONF_SITE_ID,
-    CONF_SPEEDTEST_ENTITIES,
-    CONF_SPEEDTEST_INTERVAL,
-    CONF_TIMEOUT,
-    CONF_USE_PROXY_PREFIX,
+    DOMAIN,
     CONF_USERNAME,
+    CONF_PASSWORD,
+    CONF_HOST,
+    CONF_PORT,
     CONF_VERIFY_SSL,
+    CONF_USE_PROXY_PREFIX,
+    CONF_SITE_ID,
+    CONF_TIMEOUT,
+    CONF_SPEEDTEST_INTERVAL,
+    CONF_SPEEDTEST_ENTITIES,
     CONF_WIFI_GUEST,
     CONF_WIFI_IOT,
     DEFAULT_PORT,
     DEFAULT_SITE,
-    DEFAULT_SPEEDTEST_ENTITIES,
+    DEFAULT_VERIFY_SSL,
+    DEFAULT_USE_PROXY_PREFIX,
+    DEFAULT_TIMEOUT,
     DEFAULT_SPEEDTEST_INTERVAL,
     DEFAULT_SPEEDTEST_INTERVAL_MINUTES,
-    DEFAULT_TIMEOUT,
-    DEFAULT_USE_PROXY_PREFIX,
-    DEFAULT_VERIFY_SSL,
-    DOMAIN,
+    DEFAULT_SPEEDTEST_ENTITIES,
     LEGACY_CONF_SPEEDTEST_INTERVAL_MIN,
 )
-from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
+from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,17 +56,17 @@ async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]
                 use_proxy_prefix=data.get(CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX),
                 timeout=data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
             )
-
+            
             # Test basic connectivity first
             ping = client.ping()
             if not ping:
                 raise ConnectivityError("Controller ping failed")
-
+                
             # Then test API functionality
             sites = client.list_sites()
             if not sites:
                 _LOGGER.warning("No sites found on UniFi controller")
-
+                
             return {"ping": ping, "sites": sites}
         except Exception as err:
             _LOGGER.error("Error during UniFi controller validation: %s", err)
@@ -78,7 +77,7 @@ async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]
                     client.close()
                 except Exception as err:
                     _LOGGER.debug("Error closing UniFi client: %s", err)
-
+                    
     try:
         return await hass.async_add_executor_job(_sync)
     except Exception as err:
@@ -227,18 +226,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     else:
                         data[key] = normalized
                         self._cached[key] = normalized
-
             try:
-                if self.hass is None:
-                    raise RuntimeError("Flow missing hass reference")
+                assert self.hass is not None
                 await _validate(self.hass, data)
                 await self.async_set_unique_id(
                     f"{data[CONF_HOST]}:{data.get(CONF_PORT, DEFAULT_PORT)}"
                 )
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(
-                    title=f"UniFi {data[CONF_HOST]}", data=data
-                )
+                return self.async_create_entry(title=f"UniFi {data[CONF_HOST]}", data=data)
             except AuthError:
                 errors["base"] = "invalid_auth"
             except ConnectivityError as err:
@@ -372,16 +367,14 @@ class OptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "missing_auth"
             else:
                 try:
-                    if self.hass is None:
-                        raise RuntimeError("Flow missing hass reference")
+                    assert self.hass is not None
                     await _validate(self.hass, merged)
                     return self.async_create_entry(title="", data=cleaned)
                 except AuthError:
                     errors["base"] = "invalid_auth"
                 except ConnectivityError as err:
                     _LOGGER.error(
-                        "Connectivity issue while validating UniFi controller %s:%s "
-                        "during options flow: %s",
+                        "Connectivity issue while validating UniFi controller %s:%s during options flow: %s",
                         merged.get(CONF_HOST),
                         merged.get(CONF_PORT, DEFAULT_PORT),
                         err,
@@ -397,8 +390,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     errors["base"] = "cannot_connect" if not err.expected else "unknown"
                 except Exception as err:  # pragma: no cover - defensive guard
                     _LOGGER.exception(
-                        "Unexpected error while validating UniFi controller %s:%s "
-                        "during options flow: %s",
+                        "Unexpected error while validating UniFi controller %s:%s during options flow: %s",
                         merged.get(CONF_HOST),
                         merged.get(CONF_PORT, DEFAULT_PORT),
                         err,

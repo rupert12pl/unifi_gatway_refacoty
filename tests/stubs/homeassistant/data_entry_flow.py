@@ -5,7 +5,7 @@ from typing import Any, Dict
 FlowResult = Dict[str, Any]
 
 
-class AbortFlow(Exception):  # noqa: N818 - matches Home Assistant API
+class AbortFlow(Exception):
     """Raised to signal flow abort."""
 
 
