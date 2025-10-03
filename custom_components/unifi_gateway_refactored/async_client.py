@@ -3,14 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional, TypeVar, Generic
+from typing import Any, Dict, List, TypeVar
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import DEFAULT_TIMEOUT
-from .unifi_client import UniFiOSClient, APIError, ConnectivityError, AuthError
+from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
 _LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -37,7 +35,7 @@ class UniFiGatewayAsyncClient:
     ) -> Any:
         """Execute a client method with retry logic."""
         last_exception = None
-        
+
         for attempt in range(retries):
             try:
                 async with self._lock:
@@ -59,7 +57,7 @@ class UniFiGatewayAsyncClient:
 
         if last_exception:
             raise last_exception
-        
+
         raise HomeAssistantError(f"Failed to execute {method} after {retries} attempts")
 
     async def async_ping(self) -> bool:

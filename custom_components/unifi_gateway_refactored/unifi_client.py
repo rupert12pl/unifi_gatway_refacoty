@@ -7,15 +7,13 @@ import logging
 import socket
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
-
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 if TYPE_CHECKING:  # pragma: no cover - for typing only
     import requests
 
 from .const import DEFAULT_SITE
-
 
 DEFAULT_ACTIVE_WINDOW_SEC = 120
 _VPN_NET_ID_KEYS = (
@@ -60,6 +58,8 @@ class ConnectivityError(APIError):
 
 
 class UniFiOSClient:
+    """Client for interacting with UniFi OS devices."""
+
     @staticmethod
     def _requests_module():
         import requests
@@ -78,6 +78,19 @@ class UniFiOSClient:
         timeout: int = 10,
         instance_hint: str | None = None,
     ):
+        """Initialize the client.
+
+        Args:
+            host: The hostname/IP of the UniFi OS device.
+            username: Username for authentication.
+            password: Password for authentication.
+            port: Port number for the UniFi OS device.
+            site_id: Site ID to connect to.
+            ssl_verify: Whether to verify SSL certificates.
+            use_proxy_prefix: Whether to use proxy prefix in URLs.
+            timeout: Timeout for requests in seconds.
+            instance_hint: Optional instance identifier.
+        """
         self._scheme = "https"
         self._host = host
         self._port = port
@@ -141,13 +154,12 @@ class UniFiOSClient:
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
-
         session = getattr(self, "_session", None)
         if session is not None:
             session.close()
+
     def _net_base(self) -> str:
         """Return the normalized base URL for UniFi Network requests."""
-
         base = f"{self._scheme}://{self._host}:{self._port}"
         prefix = self._path_prefix.strip("/")
         if prefix:
@@ -156,7 +168,6 @@ class UniFiOSClient:
 
     def _join(self, path: str) -> str:
         """Join ``path`` onto the normalized UniFi Network base."""
-
         base = self._net_base().rstrip("/")
         cleaned = str(path or "").lstrip("/")
         if cleaned.startswith("proxy/network/"):
@@ -170,7 +181,6 @@ class UniFiOSClient:
 
     def _site_path(self, path: str = "") -> str:
         """Return the controller API path for the configured site."""
-
         base = f"api/s/{self._site_name}".rstrip("/")
         if path:
             return f"{base}/{path.lstrip('/')}"
@@ -178,17 +188,14 @@ class UniFiOSClient:
 
     def site_name(self) -> str:
         """Return the textual site name used for API requests."""
-
         return self._site_name
 
     def site_id(self) -> Optional[str]:
         """Return the cached GUID-style site identifier if known."""
-
         return self._site_id
 
     def _ensure_site_id_sync(self) -> Optional[str]:
         """Fetch and cache the GUID-style site identifier (synchronous path)."""
-
         if self._site_id:
             return self._site_id
 
@@ -239,7 +246,6 @@ class UniFiOSClient:
 
     def _site_path_for(self, site: Optional[str], path: str = "") -> str:
         """Return the API path for a specific site without duplicate prefixes."""
-
         site_name = str(site or self._site_name or DEFAULT_SITE).strip() or DEFAULT_SITE
         base = f"api/s/{site_name}".rstrip("/")
         if path:
@@ -258,7 +264,6 @@ class UniFiOSClient:
     @staticmethod
     def _login_endpoint_label(url: str) -> str:
         """Return a sanitized label for login endpoint logging."""
-
         parts = urlsplit(url)
         path = parts.path or "/"
         host = parts.hostname or parts.netloc
@@ -325,7 +330,7 @@ class UniFiOSClient:
             kwargs["json"] = json_payload
         if data is not None:
             kwargs["data"] = data
-        
+
         label = self._login_endpoint_label(url)
         _LOGGER.debug("UniFi request %s %s initiated with timeout %s", method, label, req_timeout)
         requests = self._requests_module()
@@ -452,7 +457,7 @@ class UniFiOSClient:
         max_retries = 3
         retry_delay = 1
         last_error = None
-        
+
         for attempt in range(max_retries):
             try:
                 response, text = self._request(
@@ -463,10 +468,10 @@ class UniFiOSClient:
                     data=data,
                     timeout=timeout,
                 )
-                
+
                 if not text:
                     return None
-                    
+
                 try:
                     payload = json.loads(text)
                 except json.JSONDecodeError:
@@ -481,7 +486,7 @@ class UniFiOSClient:
                         time.sleep(retry_delay * (attempt + 1))
                         continue
                     return text
-                    
+
                 if isinstance(payload, dict) and payload.get("meta", {}).get("rc") == "error":
                     error_msg = payload.get("meta", {}).get("msg", "Unknown error")
                     raise APIError(
@@ -490,9 +495,9 @@ class UniFiOSClient:
                         url=str(response.url),
                         expected=True,
                     )
-                    
+
                 return payload
-                
+
             except (ConnectivityError, APIError) as err:
                 last_error = err
                 if attempt < max_retries - 1 and not isinstance(err, AuthError):
@@ -505,7 +510,7 @@ class UniFiOSClient:
                     time.sleep(retry_delay * (attempt + 1))
                     continue
                 raise
-                
+
         if last_error:
             raise last_error
         raise APIError("Max retries exceeded")
@@ -560,9 +565,29 @@ class UniFiOSClient:
         self._session.headers.update({"Referer": base})
 
         attempts = [
-            ("/api/auth/login", {"username": self._username, "password": self._password, "rememberMe": True}, True),
-            ("/api/login", {"username": self._username, "password": self._password, "remember": True}, True),
-            ("/login", {"username": self._username, "password": self._password}, False),
+            (
+                "/api/auth/login",
+                {
+                    "username": self._username,
+                    "password": self._password,
+                    "rememberMe": True,
+                },
+                True,
+            ),
+            (
+                "/api/login",
+                {
+                    "username": self._username,
+                    "password": self._password,
+                    "remember": True,
+                },
+                True,
+            ),
+            (
+                "/login",
+                {"username": self._username, "password": self._password},
+                False,
+            ),
         ]
 
         last_error: Optional[Exception] = None
@@ -672,10 +697,22 @@ class UniFiOSClient:
         raise ConnectivityError("Unable to determine UniFi Network API base path")
 
     def ping(self) -> bool:
+        """Test connectivity to the UniFi OS device.
+
+        Returns:
+            bool: True if connection is successful.
+
+        """
         self.get_healthinfo()
         return True
 
     def list_sites(self) -> List[Dict[str, Any]]:
+        """Get list of available sites.
+
+        Returns:
+            List[Dict[str, Any]]: List of site information.
+
+        """
         for path in ("api/self/sites", "api/stat/sites"):
             sites = self._get_list(path)
             if sites:
@@ -683,9 +720,21 @@ class UniFiOSClient:
         return []
 
     def get_healthinfo(self) -> List[Dict[str, Any]]:
+        """Get health information from the UniFi OS device.
+
+        Returns:
+            List[Dict[str, Any]]: List of health status information.
+
+        """
         return self._get_list(self._site_path("stat/health"))
 
     def get_alerts(self) -> List[Dict[str, Any]]:
+        """Get active alerts from the UniFi OS device.
+
+        Returns:
+            List[Dict[str, Any]]: List of active alerts.
+
+        """
         for path in ("stat/alert", "list/alarm", "stat/alarm"):
             alerts = self._get_list(self._site_path(path))
             if alerts:
@@ -693,6 +742,12 @@ class UniFiOSClient:
         return []
 
     def get_devices(self) -> List[Dict[str, Any]]:
+        """Get list of devices managed by the UniFi OS device.
+
+        Returns:
+            List[Dict[str, Any]]: List of device information.
+
+        """
         for path in ("stat/device", "stat/device-basic"):
             devices = self._get_list(self._site_path(path))
             if devices:
@@ -700,6 +755,12 @@ class UniFiOSClient:
         return []
 
     def get_networks(self) -> List[Dict[str, Any]]:
+        """Get list of networks configured on the UniFi OS device.
+
+        Returns:
+            List[Dict[str, Any]]: List of network configurations.
+
+        """
         for path in (
             "rest/networkconf",
             "stat/networkconf",
@@ -711,6 +772,12 @@ class UniFiOSClient:
         return []
 
     def get_wlans(self) -> List[Dict[str, Any]]:
+        """Get list of wireless networks (WLANs) configured on the UniFi OS device.
+
+        Returns:
+            List[Dict[str, Any]]: List of WLAN configurations.
+
+        """
         for path in ("rest/wlanconf", "list/wlanconf"):
             wlans = self._get_list(self._site_path(path))
             if wlans:
@@ -718,6 +785,12 @@ class UniFiOSClient:
         return []
 
     def get_clients(self) -> List[Dict[str, Any]]:
+        """Get list of clients connected to the UniFi OS device.
+
+        Returns:
+            List[Dict[str, Any]]: List of client information.
+
+        """
         for path in ("stat/sta", "stat/associated", "stat/user"):
             clients = self._get_list(self._site_path(path))
             if clients:
@@ -726,7 +799,6 @@ class UniFiOSClient:
 
     def get_active_clients_v2(self, cache_sec: int = 5) -> List[Dict[str, Any]]:
         """Return active client list from the UniFi Network v2 API if available."""
-
         now = time.time()
         if self._clients_v2_cache and (now - self._clients_v2_cache[0]) < cache_sec:
             return self._clients_v2_cache[1]
@@ -788,7 +860,6 @@ class UniFiOSClient:
 
     def get_dhcp_leases(self, cache_sec: int = 8) -> List[Dict[str, Any]]:
         """Return cached DHCP leases from the controller."""
-
         now = time.time()
         if self._leases_cache and (now - self._leases_cache[0]) < cache_sec:
             return self._leases_cache[1]
@@ -802,13 +873,13 @@ class UniFiOSClient:
         if "expired" in lease:
             try:
                 return not bool(lease.get("expired"))
-            except Exception:  # pragma: no cover - defensive
-                pass
+            except Exception as err:  # pragma: no cover - defensive
+                _LOGGER.debug("Lease expired flag parsing error: %s", err)
         if "is_active" in lease:
             try:
                 return bool(lease.get("is_active"))
-            except Exception:  # pragma: no cover - defensive
-                pass
+            except Exception as err:  # pragma: no cover - defensive
+                _LOGGER.debug("Lease active flag parsing error: %s", err)
         end = lease.get("end") or lease.get("expires") or lease.get("expire_time")
         if end is None:
             return True
@@ -820,30 +891,33 @@ class UniFiOSClient:
             end_ts /= 1000.0
         return now_ts < end_ts
 
-    def is_client_active(self, client: Dict[str, Any], now_ts: float) -> bool:
-        """Determine if a client record should be considered active."""
-
+    @staticmethod
+    def _status_indicates_activity(client: Dict[str, Any]) -> bool:
         status = str(client.get("status") or client.get("state") or "").lower()
-        if status in {"online", "connected", "up", "active", "authorized"}:
-            return True
+        return status in {"online", "connected", "up", "active", "authorized"}
 
-        if client.get("is_online") is True or client.get("connected") is True:
-            return True
+    @staticmethod
+    def _online_flag_is_active(client: Dict[str, Any]) -> bool:
+        return any(client.get(flag) is True for flag in ("is_online", "connected"))
 
+    @staticmethod
+    def _uptime_is_positive(client: Dict[str, Any]) -> bool:
         try:
-            uptime = int(client.get("uptime", 0))
+            return int(client.get("uptime", 0)) > 0
         except (TypeError, ValueError):
-            uptime = 0
-        if uptime > 0:
-            return True
+            return False
 
+    @staticmethod
+    def _transfer_activity_present(client: Dict[str, Any]) -> bool:
         for key in ("rx_bytes-r", "tx_bytes-r", "rx_rate", "tx_rate"):
             try:
                 if float(client.get(key, 0)) > 0:
                     return True
             except (TypeError, ValueError):
                 continue
+        return False
 
+    def _recently_seen(self, client: Dict[str, Any], now_ts: float) -> bool:
         for key in ("last_seen", "last_seen_ts"):
             ts = client.get(key)
             if ts is None:
@@ -856,6 +930,24 @@ class UniFiOSClient:
                 ts_value /= 1000.0
             if (now_ts - ts_value) <= self._active_window:
                 return True
+        return False
+
+    def is_client_active(self, client: Dict[str, Any], now_ts: float) -> bool:
+        """Determine if a client record should be considered active."""
+        if self._status_indicates_activity(client):
+            return True
+
+        if self._online_flag_is_active(client):
+            return True
+
+        if self._uptime_is_positive(client):
+            return True
+
+        if self._transfer_activity_present(client):
+            return True
+
+        if self._recently_seen(client, now_ts):
+            return True
 
         return False
 
@@ -893,7 +985,6 @@ class UniFiOSClient:
         self, cache_sec: int = 8, *, net_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Return VPN server definitions discovered on the controller."""
-
         now = time.time()
         if (
             net_id is None
@@ -911,7 +1002,8 @@ class UniFiOSClient:
         ):
             try:
                 payload, _ = self._call_vpn_endpoint("GET", endpoint)
-            except Exception:
+            except Exception as err:
+                _LOGGER.debug("VPN server fetch failed for %s: %s", endpoint, err)
                 continue
 
             records: List[Dict[str, Any]] = []
@@ -993,7 +1085,6 @@ class UniFiOSClient:
         self, cache_sec: int = 8
     ) -> Dict[str, Dict[str, int]]:
         """Return active VPN session counts indexed by server and network."""
-
         now = time.time()
         if (
             self._vpn_sessions_cache
@@ -1020,7 +1111,8 @@ class UniFiOSClient:
         for endpoint in endpoints:
             try:
                 payload, _ = self._call_vpn_endpoint("GET", endpoint)
-            except Exception:
+            except Exception as err:
+                _LOGGER.debug("VPN peer/session fetch failed for %s: %s", endpoint, err)
                 continue
 
             if not isinstance(payload, list):
@@ -1081,6 +1173,11 @@ class UniFiOSClient:
         return result
 
     def get_wan_links(self) -> List[Dict[str, Any]]:
+        """Get list of WAN links configured on the UniFi OS device.
+
+        Returns:
+            List[Dict[str, Any]]: List of WAN link information.
+        """
         for path in (
             "internet/wan",
             "stat/waninfo",
@@ -1101,9 +1198,19 @@ class UniFiOSClient:
         return []
 
     def instance_key(self) -> str:
+        """Get unique identifier for this client instance.
+
+        Returns:
+            str: Unique instance identifier.
+        """
         return self._iid
 
     def get_controller_url(self):
+        """Get URL for accessing the UniFi OS web interface.
+
+        Returns:
+            str: Web interface URL.
+        """
         parts = urlsplit(self._base)
         hostname = parts.hostname or self._host
         port = parts.port or self._port
@@ -1113,18 +1220,32 @@ class UniFiOSClient:
         return f"{parts.scheme}://{netloc}/login?redirect=%2Fdashboard"
 
     def get_controller_api_url(self):
+        """Get base URL for the UniFi OS API.
+
+        Returns:
+            str: API base URL.
+        """
         return self._base.split("/api", 1)[0].rstrip("/")
 
     def get_site(self) -> str:
+        """Get the name of the currently selected site.
+
+        Returns:
+            str: Current site name.
+        """
         return self._site_name
 
     def now(self) -> float:
+        """Get current timestamp.
+
+        Returns:
+            float: Current Unix timestamp.
+        """
         return time.time()
 
     # ---- VPN helpers (generic, multi-endpoint discovery) ----
     def _iter_vpn_paths(self, endpoint: str) -> List[str]:
         """Return candidate API paths for a VPN endpoint (mirrors site variants)."""
-
         # Reuse the speedtest path normalizer for site-aware permutations
         return self._iter_speedtest_paths(endpoint)
 
@@ -1137,7 +1258,6 @@ class UniFiOSClient:
         timeout: Optional[int] = None,
     ) -> Tuple[Any, str]:
         """Invoke a VPN endpoint trying multiple path variations."""
-
         last_error: Optional[Exception] = None
         for path in self._iter_vpn_paths(endpoint):
             try:
@@ -1168,14 +1288,24 @@ class UniFiOSClient:
 
     # ---- Speedtest helpers (base-relative) ----
     def get_gateway_mac(self) -> Optional[str]:
+        """Get MAC address of the UniFi Gateway device.
+
+        Returns:
+            Optional[str]: MAC address if found, None otherwise.
+        """
         try:
             devs = self.get_devices()
-        except Exception:
+        except Exception as err:
+            _LOGGER.debug("Device fetch failed while resolving gateway MAC: %s", err)
             devs = None
         for d in devs or []:
             t = (d.get("type") or "").lower()
             m = (d.get("model") or "").lower()
-            if t in ("ugw", "udm") or m.startswith("udm") or "gateway" in (d.get("name") or "").lower():
+            if (
+                t in ("ugw", "udm")
+                or m.startswith("udm")
+                or "gateway" in (d.get("name") or "").lower()
+            ):
                 mac = d.get("mac") or d.get("device_mac")
                 if mac:
                     return mac
@@ -1183,16 +1313,19 @@ class UniFiOSClient:
             hi = self.get_healthinfo()
             for sub in hi or []:
                 if sub.get("subsystem") == "www":
-                    mac = sub.get("gw_mac") or sub.get("gw-mac") or sub.get("wan_ip_gw_mac")
+                    mac = (
+                        sub.get("gw_mac")
+                        or sub.get("gw-mac")
+                        or sub.get("wan_ip_gw_mac")
+                    )
                     if mac:
                         return mac
-        except Exception:
-            pass
+        except Exception as err:
+            _LOGGER.debug("Healthinfo fetch failed while resolving gateway MAC: %s", err)
         return None
 
     def _iter_speedtest_paths(self, endpoint: str) -> List[str]:
         """Return candidate API paths for a speedtest endpoint."""
-
         cleaned = str(endpoint or "").lstrip("/")
         site_id = self._ensure_site_id_sync()
         site_name = self._site_name
@@ -1224,7 +1357,6 @@ class UniFiOSClient:
         timeout: Optional[int] = None,
     ) -> Tuple[Any, str]:
         """Invoke a speedtest endpoint trying multiple path variations."""
-
         last_error: Optional[Exception] = None
         for path in self._iter_speedtest_paths(endpoint):
             try:
@@ -1258,7 +1390,6 @@ class UniFiOSClient:
 
     def _enable_speedtest_flags(self, payload: Any) -> bool:
         """Ensure logging/monitoring flags are enabled within the payload."""
-
         changed = False
         if isinstance(payload, dict):
             for key, value in list(payload.items()):
@@ -1289,13 +1420,12 @@ class UniFiOSClient:
 
     def ensure_speedtest_monitoring_enabled(self, cache_sec: int = 3600) -> None:
         """Make sure controller-side logging/monitoring toggles required for speedtest are on."""
-
         now = time.time()
         last_check = getattr(self, "_st_settings_check", 0.0)
         if now - last_check < cache_sec:
             return
 
-        setattr(self, "_st_settings_check", now)
+        self._st_settings_check = now
 
         try:
             settings_payload, path = self._call_speedtest_endpoint(
@@ -1315,6 +1445,12 @@ class UniFiOSClient:
             _LOGGER.debug("Failed to persist speedtest settings via %s: %s", path, err)
 
     def start_speedtest(self, mac: Optional[str] = None):
+        """Start a speedtest on the UniFi Gateway device.
+
+        Args:
+            mac: Optional MAC address of the device to run speedtest on.
+                If None, uses the gateway's MAC address.
+        """
         if mac is None:
             mac = self.get_gateway_mac()
         payload = {"cmd": "speedtest"}
@@ -1325,22 +1461,22 @@ class UniFiOSClient:
             # Record the trigger time to avoid immediate duplicate runs from other paths
             try:
                 self._st_last_trigger = time.time()
-            except Exception:
-                pass
+            except Exception as err:
+                _LOGGER.debug("Failed to update speedtest trigger time: %s", err)
             return result
-        except Exception:
+        except Exception as err:
+            _LOGGER.debug("Primary speedtest trigger failed: %s", err)
             result, _ = self._call_speedtest_endpoint(
                 "POST", "internet/speedtest/run", payload={}
             )
             try:
                 self._st_last_trigger = time.time()
-            except Exception:
-                pass
+            except Exception as err:
+                _LOGGER.debug("Failed to update speedtest trigger time after fallback: %s", err)
             return result
 
     def restart_gateway(self, mac: Optional[str] = None):
         """Trigger a soft restart of the UniFi gateway device."""
-
         if mac is None:
             mac = self.get_gateway_mac()
         payload: Dict[str, Any] = {"cmd": "restart"}
@@ -1361,8 +1497,8 @@ class UniFiOSClient:
         try:
             result, _ = self._call_speedtest_endpoint("POST", "cmd/devmgr", payload=payload)
             return result
-        except Exception:
-            pass
+        except Exception as err:
+            _LOGGER.debug("Speedtest status via devmgr failed: %s", err)
 
         for method in ("GET", "POST"):
             try:
@@ -1371,7 +1507,8 @@ class UniFiOSClient:
                     method, "internet/speedtest/status", payload=payload_arg
                 )
                 return result
-            except Exception:
+            except Exception as err:
+                _LOGGER.debug("Speedtest status fetch failed via %s: %s", method, err)
                 continue
         raise APIError("Unable to retrieve UniFi speedtest status", expected=True)
 
@@ -1398,7 +1535,8 @@ class UniFiOSClient:
             if isinstance(result, list):
                 return result
             return self._extract_list(result)
-        except Exception:
+        except Exception as err:
+            _LOGGER.debug("Speedtest history fallback failed: %s", err)
             result, _ = self._call_speedtest_endpoint("GET", "internet/speedtest/results")
             if isinstance(result, list):
                 return result
@@ -1649,15 +1787,16 @@ class UniFiOSClient:
                 out = self._normalize_speedtest_record(rec)
                 # Only trust status payloads that carry actual values or timestamps.
                 has_values = any(
-                    out.get(key) not in (None, "") for key in ("download_mbps", "upload_mbps", "latency_ms")
+                    out.get(key) not in (None, "")
+                    for key in ("download_mbps", "upload_mbps", "latency_ms")
                 )
                 has_timestamp = out.get("rundate") not in (None, "")
                 if has_values or has_timestamp:
                     out["source"] = "status"
                     self._st_cache = (now, out)
                     return out
-        except Exception:
-            pass
+        except Exception as err:
+            _LOGGER.debug("Speedtest status normalization failed: %s", err, exc_info=True)
         try:
             hist = self.get_speedtest_history()
             if isinstance(hist, list) and hist:
@@ -1671,8 +1810,8 @@ class UniFiOSClient:
                     out["source"] = "history"
                     self._st_cache = (now, out)
                     return out
-        except Exception:
-            pass
+        except Exception as err:
+            _LOGGER.debug("Speedtest history normalization failed: %s", err)
         self._st_cache = (now, None)
         return None
 
@@ -1688,5 +1827,5 @@ class UniFiOSClient:
         try:
             self.start_speedtest(self.get_gateway_mac())
             self._st_last_trigger = now
-        except Exception:
-            return
+        except Exception as err:
+            _LOGGER.debug("Unable to trigger speedtest: %s", err)

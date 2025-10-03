@@ -1,25 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import html
+import ipaddress
+import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, partial
-import html
-import hashlib
-import logging
-import time
-import ipaddress
 from typing import (
+    TYPE_CHECKING,
     Any,
     Dict,
     Iterable,
     List,
     Mapping,
     Optional,
-    Tuple,
-    TYPE_CHECKING,
-    Type,
     Protocol,
+    Tuple,
+    Type,
     cast,
 )
 
@@ -41,6 +41,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
+
 try:  # pragma: no cover - compatibility shim for older Home Assistant versions
     from homeassistant.const import UnitOfTime
 except ImportError:  # pragma: no cover - Home Assistant <=2023.11
@@ -48,15 +49,17 @@ except ImportError:  # pragma: no cover - Home Assistant <=2023.11
 else:  # pragma: no cover - modern Home Assistant releases
     UNIT_MILLISECONDS = UnitOfTime.MILLISECONDS
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.entity import EntityCategory
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
-from homeassistant.util import dt as dt_util
+from homeassistant.helpers.entity import EntityCategory
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import Throttle
+from homeassistant.util import dt as dt_util
+
 from .const import CONF_HOST, DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
+
 
 class _IPWhoisProtocol(Protocol):
     def __init__(self, address: str) -> None:
@@ -84,7 +87,6 @@ VPN_MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=10)
 
 def _freeze_state(value: Any) -> Any:
     """Create a hashable representation of an arbitrary value."""
-
     if isinstance(value, Mapping):
         return tuple(sorted((key, _freeze_state(val)) for key, val in value.items()))
     if isinstance(value, (list, tuple, set)):
@@ -713,8 +715,17 @@ def vpn_instance_key(tunnel: Dict[str, Any]) -> str:
 
 
 def _parse_protocol_and_mode(vpn_type_value: Optional[str]) -> Tuple[str, str]:
-    """Parse ``vpn_type`` textual description into protocol/mode pair."""
+    """Parse VPN type description into protocol and mode components.
 
+    Args:
+        vpn_type_value: Text describing the VPN configuration type.
+
+    Returns:
+        Tuple containing:
+        - protocol: Normalized protocol name (openvpn, wireguard, l2tp-ipsec, etc)
+        - mode: Operational mode (client, server, site-to-site)
+    """
+    """Parse ``vpn_type`` textual description into protocol/mode pair."""
     text = (vpn_type_value or "").strip().lower()
     normalized = text.replace("_", " ").replace("-", " ")
 
@@ -745,7 +756,15 @@ def _parse_protocol_and_mode(vpn_type_value: Optional[str]) -> Tuple[str, str]:
         mode = "client"
     elif any(
         term in normalized
-        for term in ("site to site", "site-to-site", "s2s", "gateway to gateway", "peer", "peering", "tunnel")
+        for term in (
+            "site to site",
+            "site-to-site",
+            "s2s",
+            "gateway to gateway",
+            "peer",
+            "peering",
+            "tunnel",
+        )
     ):
         mode = "site-to-site"
     elif "remote user" in normalized or "road warrior" in normalized or "roadwarrior" in normalized:
@@ -1287,6 +1306,14 @@ def _extract_nested_value(
 
 
 def _iter_connected_client_records(raw: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
+    """Extract client records from raw VPN data.
+
+    Args:
+        raw: The raw data containing VPN client information, possibly nested in various structures.
+
+    Returns:
+        An iterator of client record mappings found in various common data locations.
+    """
     if not isinstance(raw, Mapping):
         return []
 
@@ -1332,6 +1359,22 @@ def _iter_connected_client_records(raw: Mapping[str, Any]) -> Iterable[Mapping[s
 def _collect_vpn_connected_clients_details(
     raw: Mapping[str, Any]
 ) -> List[Dict[str, str]]:
+    """Collect and normalize VPN client connection details.
+
+    Args:
+        raw: Raw VPN connection data from UniFi Gateway.
+
+    Returns:
+        List of dictionaries containing normalized client details including:
+        - name: Client name/identifier
+        - source_ip: Public/remote IP of the client
+        - source_ipv6: Public/remote IPv6 of the client
+        - internal_ip: VPN-assigned IPv4 address
+        - internal_ipv6: VPN-assigned IPv6 address
+        - country: Client location country
+        - city: Client location city
+        - isp: Client's Internet Service Provider
+    """
     details: List[Dict[str, str]] = []
     for client in _iter_connected_client_records(raw):
         name = _normalize_client_field(
@@ -1507,6 +1550,16 @@ def _collect_vpn_connected_clients_details(
 
 
 def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
+    """Generate HTML table representation of VPN client details.
+
+    Args:
+        clients: Collection of client detail dictionaries, each containing
+                standardized fields for name, IPs, location, etc.
+
+    Returns:
+        HTML string containing a formatted table of client information with
+        appropriate styling and structure for display in Home Assistant.
+    """
     table_open = (
         '<table width="100%" border="1" '
         'style="border: 1px black solid; border-collapse: collapse;">'
@@ -1521,7 +1574,8 @@ def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
             remote_ip_parts.append(escaped_remote_ip)
         if remote_ipv6 and remote_ipv6 != "Unknown":
             remote_ip_parts.append(
-                f"<span style=\"font-size: 0.9em; color: #555;\">{html.escape(remote_ipv6)}" "</span>"
+                "<span style=\"font-size: 0.9em; color: #555;\">"
+                f"{html.escape(remote_ipv6)}</span>"
             )
         remote_ip_cell = "<br>".join(remote_ip_parts)
 
@@ -1534,20 +1588,28 @@ def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
         internal_ipv6_value = client.get("internal_ipv6", "")
         if internal_ipv6_value and internal_ipv6_value != "Unknown":
             internal_ip_parts.append(
-                f"<span style=\"font-size: 0.9em; color: #555;\">{html.escape(internal_ipv6_value)}" "</span>"
+                "<span style=\"font-size: 0.9em; color: #555;\">"
+                f"{html.escape(internal_ipv6_value)}</span>"
             )
         internal_ip_cell = "<br>".join(internal_ip_parts)
 
-        rows.append(
-            "<tr>"
-            f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('name', ''))}</td>"
-            f"<td style=\"padding: 4px; text-align: right;\">{remote_ip_cell}</td>"
-            f"<td style=\"padding: 4px; text-align: right;\">{internal_ip_cell}</td>"
-            f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('country', ''))}</td>"
-            f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('city', ''))}</td>"
-            f"<td style=\"padding: 4px; text-align: left;\">{html.escape(client.get('isp', ''))}</td>"
-            "</tr>"
-        )
+        row_cells = [
+            "<tr>",
+            "<td style=\"padding: 4px; text-align: left;\">",
+            f"{html.escape(client.get('name', ''))}</td>",
+            "<td style=\"padding: 4px; text-align: right;\">",
+            f"{remote_ip_cell}</td>",
+            "<td style=\"padding: 4px; text-align: right;\">",
+            f"{internal_ip_cell}</td>",
+            "<td style=\"padding: 4px; text-align: left;\">",
+            f"{html.escape(client.get('country', ''))}</td>",
+            "<td style=\"padding: 4px; text-align: left;\">",
+            f"{html.escape(client.get('city', ''))}</td>",
+            "<td style=\"padding: 4px; text-align: left;\">",
+            f"{html.escape(client.get('isp', ''))}</td>",
+            "</tr>",
+        ]
+        rows.append("".join(row_cells))
 
     if not rows:
         rows.append(
@@ -1571,6 +1633,16 @@ def _render_connected_clients_html(clients: Iterable[Mapping[str, str]]) -> str:
 
 
 def _prepare_connected_clients_output(raw: Mapping[str, Any]) -> Tuple[List[str], str]:
+    """Prepare formatted text and HTML output for connected VPN clients.
+
+    Args:
+        raw: Raw VPN client data from UniFi Gateway.
+
+    Returns:
+        Tuple containing:
+        - List of formatted text strings for each client (one per line)
+        - HTML table representation of client details
+    """
     details = _collect_vpn_connected_clients_details(raw)
     formatted: List[str] = []
     for client in details:
@@ -1590,6 +1662,15 @@ def _prepare_connected_clients_output(raw: Mapping[str, Any]) -> Tuple[List[str]
 
 
 def _format_vpn_connected_clients(raw: Mapping[str, Any]) -> List[str]:
+    """Format VPN client connection details as text strings.
+
+    Args:
+        raw: Raw VPN client data from UniFi Gateway.
+
+    Returns:
+        List of formatted strings, one per connected client, containing:
+        name, IPs (v4/v6), location and ISP information in a consistent format.
+    """
     formatted, _ = _prepare_connected_clients_output(raw)
     return formatted
 
@@ -1680,8 +1761,8 @@ class UniFiGatewaySensorBase(
         }
         try:
             info["configuration_url"] = self._client.get_controller_url()
-        except Exception:  # pragma: no cover - guard against unexpected client errors
-            pass
+        except Exception as err:  # pragma: no cover - guard against unexpected client errors
+            _LOGGER.debug("Unable to fetch configuration URL: %s", err)
         return info
 
     def _state_signature(self) -> Any:
@@ -1817,9 +1898,7 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
                 "num_guest": ("num_guest", "guest", "guests", "user_guest"),
                 "num_iot": ("num_iot", "user_iot", "iot", "users_iot"),
             }
-            normalized_counts: Dict[str, int] = {
-                key: 0 for key in count_sources
-            }
+            normalized_counts: Dict[str, int] = dict.fromkeys(count_sources, 0)
             for target, keys in count_sources.items():
                 count = _resolve_client_count_from_record(record, keys)
                 if count is None:
@@ -2144,7 +2223,11 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
                 if target and str(client.get("network_id")) != target:
                     continue
                 status = str(client.get("status", "")).lower()
-                if status == "online" or client.get("is_online") is True or client.get("online") is True:
+                if (
+                    status == "online"
+                    or client.get("is_online") is True
+                    or client.get("online") is True
+                ):
                     filtered_clients.append(dict(client))
             v2_for_net = len(filtered_clients)
             connected_records = filtered_clients
@@ -2165,7 +2248,8 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
                 try:
                     if not self._client._lease_is_active(lease, now_ts):
                         continue
-                except Exception:
+                except Exception as err:
+                    _LOGGER.debug("Failed to evaluate lease activity: %s", err)
                     continue
                 lease_ip = lease.get("ip") or lease.get("lease_ip") or lease.get("assigned_ip")
                 lease_network = (
@@ -2217,7 +2301,10 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
                 if not self._client.is_client_active(client, now_ts):
                     continue
                 matched = False
-                if self._linked_net_id and str(client.get("network_id")) == str(self._linked_net_id):
+                if (
+                    self._linked_net_id
+                    and str(client.get("network_id")) == str(self._linked_net_id)
+                ):
                     matched = True
                 if self._ip_network and client.get("ip"):
                     try:
@@ -3012,7 +3099,7 @@ class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
         """Return enhanced speedtest attributes."""
         data = self.coordinator.data
         record = data.speedtest if data else None
-        
+
         attrs = {
             "source": record.get("source") if record else None,
             "last_run": _parse_datetime_24h(record.get("rundate") if record else None),
@@ -3052,11 +3139,11 @@ class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
         """Get normalized speedtest status."""
         if not record:
             return "unknown"
-        
+
         status = record.get("status", "")
         if not status:
             return "unknown"
-            
+
         status = str(status).lower()
         if "error" in status or "fail" in status:
             return "error"
@@ -3064,7 +3151,7 @@ class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
             return "running"
         if "success" in status or "complete" in status:
             return "success"
-            
+
         return status
 
 

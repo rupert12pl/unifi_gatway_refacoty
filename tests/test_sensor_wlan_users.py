@@ -1,3 +1,4 @@
+"""Test WLAN user functionality in sensors."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -16,28 +17,47 @@ if TYPE_CHECKING:
 
 
 class DummyCoordinator:
+    """Test double for DataUpdateCoordinator."""
+
     def __init__(self, hass, data: UniFiGatewayData) -> None:
+        """Initialize coordinator with test data."""
         self.hass = hass
         self.data = data
 
     def async_add_listener(self, _callback):  # pragma: no cover - not used in tests
+        """Add listener for update notifications."""
         return lambda: None
 
 
 class DummyClient:
+    """Test double for UniFi client."""
+
     def instance_key(self) -> str:
+        """Get unique instance key."""
         return "test"
 
     def get_controller_url(self) -> str:
+        """Get controller URL for UniFi device."""
         return "https://unifi.local"
 
     def get_site(self) -> str:
+        """Get site name for UniFi device."""
         return "default"
 
 
 def _build_wlan_data() -> UniFiGatewayData:
+    """Build test data for WLAN functionality tests.
+
+    Returns:
+        UniFiGatewayData: Test data object with WLAN configuration.
+
+    """
     return UniFiGatewayData(
-        controller={"url": "https://unifi.local", "api_url": "https://unifi.local/api", "site": "default"},
+        controller={
+            "url": "https://unifi.local",
+            "api_url": "https://unifi.local/api",
+            "site": "default"
+        },
         health=[],
         health_by_subsystem={
             "wlan": {
@@ -64,6 +84,7 @@ def _build_wlan_data() -> UniFiGatewayData:
 
 
 def test_wlan_subsystem_overrides_counts(hass) -> None:
+    """Test that WLAN subsystem correctly overrides user counts."""
     data = _build_wlan_data()
     coordinator = DummyCoordinator(hass, data)
     client = DummyClient()
@@ -91,6 +112,7 @@ def test_wlan_subsystem_overrides_counts(hass) -> None:
 
 
 def test_wlan_subsystem_preserves_counts_without_overrides(hass) -> None:
+    """Test that WLAN subsystem preserves user counts when no overrides exist."""
     data = replace(
         _build_wlan_data(),
         health_by_subsystem={

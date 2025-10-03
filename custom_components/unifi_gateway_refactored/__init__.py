@@ -4,35 +4,26 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from datetime import timedelta
-from functools import partial
 from collections.abc import Mapping
-from typing import Any, Iterable, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
-    from homeassistant.helpers import entity_registry as er
     from homeassistant.helpers.typing import ConfigType
 
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
-from .async_client import UniFiGatewayAsyncClient
+from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import (
     CONF_HOST,
     CONF_PASSWORD,
     CONF_PORT,
     CONF_SITE_ID,
+    CONF_SPEEDTEST_INTERVAL,
     CONF_TIMEOUT,
     CONF_USE_PROXY_PREFIX,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
-    CONF_SPEEDTEST_ENTITIES,
-    CONF_SPEEDTEST_INTERVAL,
-    CONF_WIFI_GUEST,
-    CONF_WIFI_IOT,
-    DATA_RUNNER,
-    DATA_UNDO_TIMER,
     DEFAULT_PORT,
     DEFAULT_SITE,
     DEFAULT_SPEEDTEST_ENTITIES,
@@ -46,9 +37,7 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
-from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
-from .async_wrapper import UniFiGatewayAsyncWrapper
-from .monitor import SpeedtestRunner
+from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -75,7 +64,6 @@ _DEFAULT_SPEEDTEST_ENTITY_IDS: tuple[str, ...] = tuple(
 
 def _normalize_speedtest_entity_ids(raw: Any) -> list[str]:
     """Normalize speedtest entity identifiers from options/data into a stable list."""
-
     normalized: dict[str, None] = {}
 
     def _add_from_text(text: str) -> None:
@@ -179,6 +167,7 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
         except Exception as err:
             _LOGGER.debug("Error closing existing client: %s", err)
 
+    client: UniFiOSClient | None = None
     try:
         client = UniFiOSClient(
             host=data[CONF_HOST],
@@ -191,19 +180,18 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
             timeout=data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
         )
 
-        # Test connection with retries
         for attempt in range(3):
             try:
-                if not await hass.async_add_executor_job(client.ping):
-                    raise ConnectivityError("Connection test failed")
-                break
+                if await hass.async_add_executor_job(client.ping):
+                    break
+                raise ConnectivityError("Connection test failed")
             except (ConnectivityError, APIError) as err:
                 if attempt == 2:  # Last attempt
-                    raise ConfigEntryNotReady(f"Connection failed: {err}")
+                    raise ConfigEntryNotReady(f"Connection failed: {err}") from err
                 _LOGGER.warning(
                     "Connection attempt %d failed: %s, retrying...",
-                    attempt + 1, 
-                    err
+                    attempt + 1,
+                    err,
                 )
                 await asyncio.sleep(2 * (attempt + 1))
 
@@ -219,49 +207,20 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
         except Exception as err:
             await hass.async_add_executor_job(client.close)
             raise ConfigEntryNotReady(f"Data refresh failed: {err}") from err
-        
+
         hass.data[DOMAIN][entry.entry_id] = {
             "client": client,
             "coordinator": coordinator,
         }
-        
+
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         return True
-        
+
     except Exception as err:
         _LOGGER.error("Failed to set up %s: %s", entry.entry_id, err)
-        if 'client' in locals():
+        if client is not None:
             await hass.async_add_executor_job(client.close)
         raise ConfigEntryNotReady(f"Setup failed: {err}") from err
-        async_client = UniFiGatewayAsyncClient(hass, client)
-
-        # Verify connection
-        if not await async_client.async_ping():
-            raise ConnectivityError("Failed to connect")
-
-        speedtest_interval = _resolve_speedtest_interval_seconds(options, data)
-        
-        coordinator = UniFiGatewayDataUpdateCoordinator(
-            hass,
-            client,
-            speedtest_interval=speedtest_interval,
-        )
-
-        await coordinator.async_config_entry_first_refresh()
-
-        hass.data.setdefault(DOMAIN, {})
-        hass.data[DOMAIN][entry.entry_id] = {
-            "client": async_client,
-            "coordinator": coordinator,
-        }
-
-        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-        return True
-
-    except Exception as err:
-        if 'client' in locals():
-            await hass.async_add_executor_job(client.close)
-        raise ConfigEntryNotReady(f"Failed to set up: {err}") from err
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -276,7 +235,6 @@ async def _async_migrate_speedtest_button_unique_id(
     hass: "HomeAssistant", entry: "ConfigEntry"
 ) -> None:
     """Ensure the Run Speedtest button unique ID is namespaced per config entry."""
-
     from homeassistant.helpers import entity_registry as er
 
     try:
@@ -316,8 +274,8 @@ async def _async_migrate_interface_unique_ids(
     data: UniFiGatewayData | None,
 ) -> None:
     """Normalize WAN/LAN/WLAN sensor unique IDs."""
-
     from homeassistant.helpers import entity_registry as er
+
     from .sensor import (
         _wan_identifier_candidates,
         build_lan_unique_id,
@@ -403,7 +361,7 @@ async def _validate_connection(hass: HomeAssistant, data: dict) -> None:
                     timeout=max(data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT), 30),
                 ).ping()
             )
-        except (ConnectivityError, APIError) as err:
+        except (ConnectivityError, APIError):
             if attempt == 2:
                 raise
             await asyncio.sleep(2 * (attempt + 1))

@@ -4,7 +4,7 @@ DOMAIN = "unifi_gateway_refactored"
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
 
 CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
+CONF_PASSWORD = "password"  # nosec B105 - configuration key name, not secret
 CONF_HOST = "host"
 CONF_PORT = "port"
 CONF_SITE_ID = "site_id"
