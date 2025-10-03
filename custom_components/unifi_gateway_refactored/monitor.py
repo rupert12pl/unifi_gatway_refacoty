@@ -25,12 +25,12 @@ from .unifi_client import APIError, UniFiOSClient
 _LOGGER = logging.getLogger(__name__)
 
 
-
 class ResultCallback(Protocol):
     async def __call__(
         self, *, success: bool, duration_ms: int, error: str | None, trace_id: str
     ) -> None:
         ...
+
 
 DEFAULT_MAX_WAIT_S = 600
 DEFAULT_POLL_INTERVAL = 5.0

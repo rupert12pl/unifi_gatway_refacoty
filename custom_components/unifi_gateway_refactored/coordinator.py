@@ -236,7 +236,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         if interval > 0:
             last_ts = self._speedtest_last_timestamp(speedtest)
             now_ts = time.time()
-            
+
             should_trigger = False
             if not speedtest:
                 should_trigger = True
@@ -244,19 +244,19 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             elif last_ts and (now_ts - last_ts) >= interval:
                 should_trigger = True
                 reason = f"stale ({int(now_ts - last_ts)}s old)"
-                
-            if should_trigger:
-                cooldown = max(interval, 60)
-                try:
-                    self._client.maybe_start_speedtest(cooldown_sec=cooldown)
-                    _LOGGER.info(
-                        "Triggered speedtest (reason=%s, interval=%ss, cooldown=%ss)",
-                        reason,
-                        interval,
-                        cooldown
-                    )
-                except APIError as err:
-                    _LOGGER.warning("Failed to trigger speedtest: %s", err)
+
+        if should_trigger:
+            cooldown = max(interval, 60)
+            try:
+                self._client.maybe_start_speedtest(cooldown_sec=cooldown)
+                _LOGGER.info(
+                    "Triggered speedtest (reason=%s, interval=%ss, cooldown=%ss)",
+                    reason,
+                    interval,
+                    cooldown
+                )
+            except APIError as err:
+                _LOGGER.warning("Failed to trigger speedtest: %s", err)
 
         data = UniFiGatewayData(
             controller=controller_info,
