@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Generator
 from pathlib import Path
 from typing import TypeVar
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,7 +25,7 @@ _T = TypeVar("_T")
 
 
 @pytest.fixture(scope="session")
-def event_loop() -> asyncio.AbstractEventLoop:
+def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
     """Provide a dedicated event loop for tests."""
     loop = asyncio.new_event_loop()
     try:
@@ -36,7 +36,9 @@ def event_loop() -> asyncio.AbstractEventLoop:
 
 
 @pytest.fixture
-def hass(event_loop: asyncio.AbstractEventLoop) -> HomeAssistant:
+def hass(
+    event_loop: asyncio.AbstractEventLoop,
+) -> Generator[HomeAssistant, None, None]:
     """Provide a stubbed HomeAssistant instance for tests."""
     instance = HomeAssistant(str(PROJECT_ROOT / "config"))
     import json

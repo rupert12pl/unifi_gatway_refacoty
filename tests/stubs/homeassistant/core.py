@@ -10,6 +10,10 @@ from typing import Any, Callable, Coroutine
 class _ConfigEntriesManager:
     """Extremely small stub of Home Assistant's config entries manager."""
 
+    async def async_setup(self, entry_id: Any) -> bool:
+        """Pretend to set up a config entry."""
+        return True
+
     async def async_forward_entry_setups(self, entry: Any, platforms: Any) -> bool:
         return True
 
@@ -50,8 +54,9 @@ class HomeAssistant:
         self.bus = EventBus()
         self.data: dict[str, Any] = {}
         self.config = _Config()
-        self.config_entries = _ConfigEntriesManager()
+        self.config_entries: Any = _ConfigEntriesManager()
         self._tasks: set[asyncio.Task[Any]] = set()
+        self.loop: asyncio.AbstractEventLoop | None = None
 
     async def async_start(self) -> None:
         """Start the Home Assistant instance."""
