@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -18,7 +19,7 @@ if str(STUBS_PATH) not in sys.path:
 
 
 @pytest.fixture
-async def hass() -> HomeAssistant:
+async def hass() -> AsyncGenerator[HomeAssistant, None]:
     """Provide a stubbed HomeAssistant instance for tests."""
     instance = HomeAssistant(str(PROJECT_ROOT / "config"))
     import json

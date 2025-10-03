@@ -20,8 +20,8 @@ from custom_components.unifi_gateway_refactored.const import (
     CONF_WIFI_IOT,
     DEFAULT_SITE,
 )
-from tests.stubs.homeassistant.config_entries import ConfigEntry
-from tests.stubs.homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
 
 
 @pytest.mark.asyncio
