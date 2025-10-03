@@ -3220,10 +3220,10 @@ def _extract_ip_from_value(value: Any, *, version: Optional[int] = None) -> Opti
             if "/" in cleaned:
                 try:
                     interface = ipaddress.ip_interface(cleaned)
-                    address = interface.ip
                 except ValueError:
-                    address = None
+                    pass
                 else:
+                    address = interface.ip
                     if version and address.version != version:
                         return None
                     if isinstance(address, ipaddress.IPv6Address) and address.is_link_local:
