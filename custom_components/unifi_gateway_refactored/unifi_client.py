@@ -401,7 +401,9 @@ class UniFiOSClient:
             )
         if status >= 400:
             is_expected = status == 404 or (
-                status == 400 and "api.err.Invalid" in body_preview
+                status == 400
+                and body_preview is not None
+                and "api.err.Invalid" in body_preview
             )
             log_func = _LOGGER.debug if is_expected else _LOGGER.error
             log_func(
