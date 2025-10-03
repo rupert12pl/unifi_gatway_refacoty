@@ -216,13 +216,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(title=f"UniFi {data[CONF_HOST]}", data=data)
             except AuthError:
                 errors["base"] = "invalid_auth"
-            except ConnectivityError as err:
-                _LOGGER.error(
-                    "Connectivity issue while validating UniFi controller %s:%s: %s",
-                    data.get(CONF_HOST),
-                    data.get(CONF_PORT, DEFAULT_PORT),
-                    err,
-                )
+            except ConnectivityError:
                 errors["base"] = "cannot_connect"
             except APIError as err:
                 _LOGGER.error(
