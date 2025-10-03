@@ -38,7 +38,7 @@ class UniFiGatewayData:
 
 
 class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData]):
-    """Coordinate UniFi Gateway data retrieval for Home Assistant entities with robust error handling."""
+    """Coordinate UniFi Gateway data retrieval for Home Assistant entities."""
 
     def __init__(
         self,
@@ -105,38 +105,12 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         return None
 
     async def _async_update_data(self) -> UniFiGatewayData:
-        """Fetch data with improved error handling and retry logic."""
-        for attempt in range(3):  # Try up to 3 times
-            try:
-                # Check connectivity first
-                ping_success = await self.hass.async_add_executor_job(self._client.ping)
-                if not ping_success:
-                    raise ConnectivityError("Controller ping failed")
-                    
-                return await self.hass.async_add_executor_job(
-                    self._fetch_data,
-                )
-            except AuthError as err:
-                _LOGGER.error("Authentication failed during update: %s", err)
-                raise UpdateFailed("Authentication error") from err
-            except ConnectivityError as err:
-                if attempt == 2:  # Last attempt
-                    _LOGGER.error("Connection failed after 3 attempts: %s", err)
-                    raise UpdateFailed(f"Connection failed: {err}") from err
-                _LOGGER.warning("Connection attempt %d failed: %s", attempt + 1, err)
-                await asyncio.sleep(2 * (attempt + 1))  # Exponential backoff
-            except APIError as err:
-                if getattr(err, 'expected', False):
-                    _LOGGER.debug("Expected API error: %s", err)
-                    raise UpdateFailed(str(err)) from err
-                if attempt == 2:  # Last attempt
-                    _LOGGER.error("API error after 3 attempts: %s", err)
-                    raise UpdateFailed(f"API error: {err}") from err
-                _LOGGER.warning("API attempt %d failed: %s", attempt + 1, err)
-                await asyncio.sleep(2 * (attempt + 1))
-            except Exception as err:
-                _LOGGER.error("Unexpected error during update: %s", err)
-                raise UpdateFailed(f"Unexpected error: {err}") from err
+        try:
+            return await self.hass.async_add_executor_job(
+                self._fetch_data,
+            )
+        except (ConnectivityError, APIError) as err:
+            raise UpdateFailed(str(err)) from err
 
     def _fetch_data(self) -> UniFiGatewayData:
         """Fetch data with improved VPN and speedtest handling."""
