@@ -2625,27 +2625,11 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
     def _wan_health_record(self) -> Optional[Dict[str, Any]]:
         return _find_wan_health_record(self.coordinator.data, self._identifiers)
 
-    def _ipv6_enabled(self) -> bool:
-        data = self.coordinator.data
-        if not data:
-            return False
-        for network in data.networks:
-            if not isinstance(network, Mapping):
-                continue
-            name = str(network.get("name") or "").strip().lower()
-            if name != "wan":
-                continue
-            mode = str(network.get("ipv6_interface_type") or "").strip().lower()
-            if mode and mode != "disabled":
-                return True
-        return False
-
     def _select_wan_last_ip(
         self,
         link: Optional[Mapping[str, Any]],
         health: Optional[Mapping[str, Any]],
     ) -> str:
-        ipv6_enabled = self._ipv6_enabled()
         ipv4: Optional[str] = None
         ipv6: Optional[str] = None
 
@@ -2656,7 +2640,7 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
         if not ipv6 and isinstance(health, Mapping):
             ipv6 = _extract_ip_from_value(health.get("last_ipv6"), version=6)
 
-        if ipv6_enabled and ipv6:
+        if ipv6:
             return ipv6
         if ipv4:
             return ipv4
@@ -2668,6 +2652,16 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
     def native_value(self) -> Optional[str]:
         link = self._link()
         health = self._wan_health_record()
+        ipv6, source6 = _extract_wan_value_with_source(
+            link, health, _WAN_IPV6_KEYS, version=6
+        )
+        if ipv6:
+            if isinstance(link, Mapping) and not link.get("last_ipv6"):
+                link.setdefault("last_ipv6", ipv6)
+            self._last_ip = ipv6
+            self._last_source = source6 or "unknown"
+            return ipv6
+
         ip, source = _extract_wan_value_with_source(
             link, health, _WAN_IPV4_KEYS, version=4
         )

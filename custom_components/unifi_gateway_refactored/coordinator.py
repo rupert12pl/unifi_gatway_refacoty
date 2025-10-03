@@ -185,19 +185,25 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 "WAN link discovery required fallback derivation; derived=%s",
                 len(wan_links_raw),
             )
-            try:
-                ipv4, ipv6 = self._client.get_wan_ips_from_devices()
-            except APIError as err:
-                _LOGGER.debug("Failed to fetch WAN IPs from devices: %s", err)
-                ipv4 = ipv6 = None
-            if ipv4 or ipv6:
-                for wan in wan_links_raw:
-                    if not isinstance(wan, dict):
-                        continue
+
+        try:
+            ipv4, ipv6 = self._client.get_wan_ips_from_devices()
+        except Exception as err:  # pragma: no cover - defensive guard for API quirks
+            ipv4 = ipv6 = None
+            _LOGGER.debug("WAN IPs from devices unavailable: %s", err)
+
+        if wan_links_raw and (ipv4 or ipv6):
+            for wan in wan_links_raw:
+                if isinstance(wan, dict):
                     if ipv4 and not wan.get("last_ipv4"):
                         wan["last_ipv4"] = ipv4
                     if ipv6 and not wan.get("last_ipv6"):
                         wan["last_ipv6"] = ipv6
+                else:
+                    if ipv4 and not getattr(wan, "last_ipv4", None):
+                        setattr(wan, "last_ipv4", ipv4)
+                    if ipv6 and not getattr(wan, "last_ipv6", None):
+                        setattr(wan, "last_ipv6", ipv6)
         wan_links: List[Dict[str, Any]] = []
         for link in wan_links_raw:
             link_id = link.get("id") or link.get("_id") or link.get("ifname")
@@ -209,6 +215,11 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             normalized = dict(link)
             normalized["id"] = str(link_id)
             normalized["name"] = link_name
+            _LOGGER.debug(
+                "WAN LastIP candidates: v4=%s v6=%s (after device-scan)",
+                normalized.get("last_ipv4"),
+                normalized.get("last_ipv6"),
+            )
             wan_links.append(normalized)
         _LOGGER.debug("Processed %s WAN link records", len(wan_links))
 
