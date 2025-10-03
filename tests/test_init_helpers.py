@@ -1,3 +1,5 @@
+"""Test initialization helper functions."""
+
 import custom_components.unifi_gateway_refactored as gw_init
 from custom_components.unifi_gateway_refactored.const import (
     CONF_SPEEDTEST_INTERVAL,
@@ -5,34 +7,39 @@ from custom_components.unifi_gateway_refactored.const import (
     DEFAULT_SPEEDTEST_INTERVAL_MINUTES,
     LEGACY_CONF_SPEEDTEST_INTERVAL_MIN,
 )
+from custom_components.unifi_gateway_refactored.monitor import SpeedtestRunner
 from custom_components.unifi_gateway_refactored.utils import (
     build_speedtest_button_unique_id,
 )
-from custom_components.unifi_gateway_refactored.monitor import SpeedtestRunner
 
 
 def test_normalize_speedtest_entity_ids_from_string():
+    """Test normalizing speedtest entity IDs from string input."""
     raw = " sensor.one ,sensor.two\n,sensor.one,,"
     result = gw_init._normalize_speedtest_entity_ids(raw)
     assert result == ["sensor.one", "sensor.two"]
 
 
 def test_normalize_speedtest_entity_ids_from_iterable():
+    """Test normalizing speedtest entity IDs from iterable input."""
     raw = ["sensor.one", "  sensor.two  ", "sensor.one", "sensor.three", None, ""]
     result = gw_init._normalize_speedtest_entity_ids(raw)
     assert result == ["sensor.one", "sensor.two", "sensor.three"]
 
 
 def test_normalize_speedtest_entity_ids_fallback():
+    """Test normalizing speedtest entity IDs with fallback to defaults."""
     result = gw_init._normalize_speedtest_entity_ids(object())
     assert result == list(gw_init._DEFAULT_SPEEDTEST_ENTITY_IDS)
 
 
 def test_build_speedtest_button_unique_id_namespaced():
+    """Test building namespaced unique ID for speedtest button."""
     assert build_speedtest_button_unique_id("entry123") == "entry123_run_speedtest"
 
 
 def test_speedtest_runner_normalizes_entity_ids():
+    """Test SpeedtestRunner's entity ID normalization."""
     source = ["sensor.one", " sensor.one ", "sensor.two", "", None, "sensor.two"]
     assert SpeedtestRunner._normalize_entity_ids(source) == [
         "sensor.one",
@@ -41,6 +48,7 @@ def test_speedtest_runner_normalizes_entity_ids():
 
 
 def test_resolve_speedtest_interval_prefers_legacy_minutes_when_custom():
+    """Test speedtest interval resolution prefers legacy minutes when custom value set."""
     options = {LEGACY_CONF_SPEEDTEST_INTERVAL_MIN: 15}
     data = {CONF_SPEEDTEST_INTERVAL: DEFAULT_SPEEDTEST_INTERVAL}
 
@@ -51,6 +59,7 @@ def test_resolve_speedtest_interval_prefers_legacy_minutes_when_custom():
 
 
 def test_resolve_speedtest_interval_uses_seconds_when_minutes_default():
+    """Test speedtest interval resolution uses seconds when minutes are default."""
     options = {CONF_SPEEDTEST_INTERVAL: 1800}
     data = {LEGACY_CONF_SPEEDTEST_INTERVAL_MIN: DEFAULT_SPEEDTEST_INTERVAL_MINUTES}
 
@@ -58,6 +67,7 @@ def test_resolve_speedtest_interval_uses_seconds_when_minutes_default():
 
 
 def test_resolve_speedtest_interval_defaults_when_missing():
+    """Test speedtest interval resolution uses defaults when settings missing."""
     options = {}
     data = {}
 
