@@ -61,14 +61,17 @@ class MockConfigEntry:
     def as_dict(self) -> Dict[str, Any]:
         """Return a dictionary representation used by some tests."""
 
+        data: Dict[str, Any] = dict(self.data or {})
+        options: Dict[str, Any] = dict(self.options or {})
+
         return {
             "entry_id": self.entry_id,
             "version": self.version,
             "minor_version": self.minor_version,
             "domain": self.domain,
             "title": self.title,
-            "data": dict(self.data),
-            "options": dict(self.options),
+            "data": data,
+            "options": options,
             "pref_disable_new_entities": self.pref_disable_new_entities,
             "pref_disable_polling": self.pref_disable_polling,
             "source": self.source,
