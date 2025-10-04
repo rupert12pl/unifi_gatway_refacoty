@@ -458,50 +458,71 @@ class OptionsFlow(config_entries.OptionsFlow):
             )
         if not entities_default:
             entities_default = DEFAULT_SPEEDTEST_ENTITIES
-        schema = vol.Schema(
-            {
-                vol.Optional(CONF_HOST, default=current.get(CONF_HOST)): str,
-                vol.Optional(
-                    CONF_PORT,
-                    default=current.get(CONF_PORT, DEFAULT_PORT),
-                ): vol.All(vol.Coerce(int), vol.Clamp(min=1, max=65535)),
-                vol.Optional(CONF_USERNAME, default=current.get(CONF_USERNAME)): str,
-                vol.Optional(CONF_PASSWORD, default=current.get(CONF_PASSWORD)): str,
-                vol.Optional(CONF_SITE_ID, default=current.get(CONF_SITE_ID, DEFAULT_SITE)): str,
-                vol.Optional(
-                    CONF_VERIFY_SSL,
-                    default=current.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
-                ): bool,
-                vol.Optional(
-                    CONF_USE_PROXY_PREFIX,
-                    default=current.get(
-                        CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX
-                    ),
-                ): bool,
-                vol.Optional(
-                    CONF_TIMEOUT,
-                    default=current.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
-                ): vol.All(vol.Coerce(int), vol.Clamp(min=1)),
-                vol.Optional(
-                    CONF_SPEEDTEST_INTERVAL,
-                    default=interval_default,
-                ): vol.All(vol.Coerce(int), vol.Clamp(min=5)),
-                vol.Optional(
-                    CONF_SPEEDTEST_ENTITIES,
-                    default=entities_default,
-                ): str,
-                vol.Optional(
-                    CONF_UI_API_KEY,
-                    default=current.get(CONF_UI_API_KEY, ""),
-                ): vol.Any(str, None),
-                vol.Optional(
-                    CONF_WIFI_GUEST,
-                    default=current.get(CONF_WIFI_GUEST),
-                ): vol.Any(str, None),
-                vol.Optional(
-                    CONF_WIFI_IOT,
-                    default=current.get(CONF_WIFI_IOT),
-                ): vol.Any(str, None),
-            }
-        )
+        schema_fields: Dict[Any, Any] = {}
+
+        host_default = current.get(CONF_HOST)
+        if host_default is None:
+            schema_fields[vol.Optional(CONF_HOST)] = str
+        else:
+            schema_fields[vol.Optional(CONF_HOST, default=host_default)] = str
+
+        schema_fields[vol.Optional(
+            CONF_PORT,
+            default=current.get(CONF_PORT, DEFAULT_PORT),
+        )] = vol.All(vol.Coerce(int), vol.Clamp(min=1, max=65535))
+
+        username_default = current.get(CONF_USERNAME)
+        if username_default is None:
+            schema_fields[vol.Optional(CONF_USERNAME)] = str
+        else:
+            schema_fields[vol.Optional(CONF_USERNAME, default=username_default)] = str
+
+        password_default = current.get(CONF_PASSWORD)
+        if password_default is None:
+            schema_fields[vol.Optional(CONF_PASSWORD)] = str
+        else:
+            schema_fields[vol.Optional(CONF_PASSWORD, default=password_default)] = str
+
+        site_default = current.get(CONF_SITE_ID)
+        if site_default is None and CONF_SITE_ID not in current:
+            site_default = DEFAULT_SITE
+        if site_default is None:
+            schema_fields[vol.Optional(CONF_SITE_ID)] = str
+        else:
+            schema_fields[vol.Optional(CONF_SITE_ID, default=site_default)] = str
+
+        schema_fields[vol.Optional(
+            CONF_VERIFY_SSL,
+            default=current.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
+        )] = bool
+        schema_fields[vol.Optional(
+            CONF_USE_PROXY_PREFIX,
+            default=current.get(CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX),
+        )] = bool
+        schema_fields[vol.Optional(
+            CONF_TIMEOUT,
+            default=current.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
+        )] = vol.All(vol.Coerce(int), vol.Clamp(min=1))
+        schema_fields[vol.Optional(
+            CONF_SPEEDTEST_INTERVAL,
+            default=interval_default,
+        )] = vol.All(vol.Coerce(int), vol.Clamp(min=5))
+        schema_fields[vol.Optional(
+            CONF_SPEEDTEST_ENTITIES,
+            default=entities_default,
+        )] = str
+        schema_fields[vol.Optional(
+            CONF_UI_API_KEY,
+            default=current.get(CONF_UI_API_KEY, ""),
+        )] = vol.Any(str, None)
+        schema_fields[vol.Optional(
+            CONF_WIFI_GUEST,
+            default=current.get(CONF_WIFI_GUEST),
+        )] = vol.Any(str, None)
+        schema_fields[vol.Optional(
+            CONF_WIFI_IOT,
+            default=current.get(CONF_WIFI_IOT),
+        )] = vol.Any(str, None)
+
+        schema = vol.Schema(schema_fields)
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
