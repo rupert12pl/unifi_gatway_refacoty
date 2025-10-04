@@ -1,7 +1,10 @@
 
 from __future__ import annotations
+
 import logging
 from typing import Any, Dict, Optional, TYPE_CHECKING
+
+import aiohttp
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import AbortFlow
@@ -27,6 +30,7 @@ from .const import (
     CONF_SPEEDTEST_ENTITIES,
     CONF_WIFI_GUEST,
     CONF_WIFI_IOT,
+    CONF_UI_API_KEY,
     DEFAULT_PORT,
     DEFAULT_SITE,
     DEFAULT_VERIFY_SSL,
@@ -36,6 +40,12 @@ from .const import (
     DEFAULT_SPEEDTEST_INTERVAL_MINUTES,
     DEFAULT_SPEEDTEST_ENTITIES,
     LEGACY_CONF_SPEEDTEST_INTERVAL_MIN,
+)
+from .cloud_client import (
+    UiCloudAuthError,
+    UiCloudClient,
+    UiCloudError,
+    UiCloudRateLimitError,
 )
 from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 
@@ -60,6 +70,15 @@ async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]
             client.close()
         return {"health": health}
     return await hass.async_add_executor_job(_sync)
+
+
+async def _validate_ui_api_key(api_key: Optional[str]) -> None:
+    if not api_key:
+        return
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        client = UiCloudClient(session, api_key)
+        await client.fetch_hosts()
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -152,6 +171,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         cleaned = str(value).strip()
         return cleaned or None
 
+    @staticmethod
+    def _normalize_api_key(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, str):
+            cleaned = value.strip()
+            return cleaned or None
+        cleaned = str(value).strip()
+        return cleaned or None
+
     async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         if user_input is not None:
@@ -204,10 +233,19 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     else:
                         data[key] = normalized
                         self._cached[key] = normalized
+            if CONF_UI_API_KEY in data:
+                normalized_key = self._normalize_api_key(data[CONF_UI_API_KEY])
+                if normalized_key is None:
+                    data.pop(CONF_UI_API_KEY, None)
+                    self._cached.pop(CONF_UI_API_KEY, None)
+                else:
+                    data[CONF_UI_API_KEY] = normalized_key
+                    self._cached[CONF_UI_API_KEY] = normalized_key
             try:
                 # Ensure Home Assistant context is available before validation.
                 assert self.hass is not None  # nosec B101
                 await _validate(self.hass, data)
+                await _validate_ui_api_key(data.get(CONF_UI_API_KEY))
                 await self.async_set_unique_id(
                     f"{data[CONF_HOST]}:{data.get(CONF_PORT, DEFAULT_PORT)}"
                 )
@@ -217,6 +255,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_auth"
             except ConnectivityError:
                 errors["base"] = "cannot_connect"
+            except UiCloudAuthError:
+                errors["base"] = "invalid_api_key"
+            except UiCloudRateLimitError:
+                errors["base"] = "api_rate_limited"
+            except UiCloudError:
+                errors["base"] = "api_unavailable"
             except APIError as err:
                 _LOGGER.error(
                     "UniFi API error while validating controller %s:%s: %s",
@@ -284,6 +328,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     default=entities_default,
                 ): str,
                 vol.Optional(
+                    CONF_UI_API_KEY,
+                    default=self._cached.get(CONF_UI_API_KEY, ""),
+                ): str,
+                vol.Optional(
                     CONF_WIFI_GUEST,
                     default=self._cached.get(CONF_WIFI_GUEST, ""),
                 ): str,
@@ -336,6 +384,10 @@ class OptionsFlow(config_entries.OptionsFlow):
             for key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
                 if key in cleaned:
                     cleaned[key] = ConfigFlow._normalize_optional_text(cleaned[key])
+            if CONF_UI_API_KEY in cleaned:
+                cleaned[CONF_UI_API_KEY] = ConfigFlow._normalize_api_key(
+                    cleaned[CONF_UI_API_KEY]
+                )
             merged = {**self._entry.data, **self._entry.options, **cleaned}
             if not ConfigFlow._has_auth(merged):
                 errors["base"] = "missing_auth"
@@ -344,6 +396,19 @@ class OptionsFlow(config_entries.OptionsFlow):
                     # Ensure Home Assistant context is available before validation.
                     assert self.hass is not None  # nosec B101
                     await _validate(self.hass, merged)
+                    await _validate_ui_api_key(merged.get(CONF_UI_API_KEY))
+                    if CONF_UI_API_KEY in cleaned:
+                        current_data = dict(self._entry.data)
+                        normalized_key = cleaned[CONF_UI_API_KEY]
+                        if normalized_key is None:
+                            current_data.pop(CONF_UI_API_KEY, None)
+                        else:
+                            current_data[CONF_UI_API_KEY] = normalized_key
+                        cleaned.pop(CONF_UI_API_KEY, None)
+                        await self.hass.config_entries.async_update_entry(
+                            self._entry,
+                            data=current_data,
+                        )
                     return self.async_create_entry(title="", data=cleaned)
                 except AuthError:
                     errors["base"] = "invalid_auth"
@@ -355,6 +420,12 @@ class OptionsFlow(config_entries.OptionsFlow):
                         err,
                     )
                     errors["base"] = "cannot_connect"
+                except UiCloudAuthError:
+                    errors["base"] = "invalid_api_key"
+                except UiCloudRateLimitError:
+                    errors["base"] = "api_rate_limited"
+                except UiCloudError:
+                    errors["base"] = "api_unavailable"
                 except APIError as err:
                     _LOGGER.error(
                         "UniFi API error while validating controller %s:%s during options flow: %s",
@@ -419,6 +490,10 @@ class OptionsFlow(config_entries.OptionsFlow):
                     CONF_SPEEDTEST_ENTITIES,
                     default=entities_default,
                 ): str,
+                vol.Optional(
+                    CONF_UI_API_KEY,
+                    default=current.get(CONF_UI_API_KEY, ""),
+                ): vol.Any(str, None),
                 vol.Optional(
                     CONF_WIFI_GUEST,
                     default=current.get(CONF_WIFI_GUEST),
