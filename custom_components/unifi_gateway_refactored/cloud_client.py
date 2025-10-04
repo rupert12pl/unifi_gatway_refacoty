@@ -6,7 +6,12 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from urllib.parse import urlsplit
+
 import aiohttp
+
+
+from .const import UI_HOSTS_URL
 
 
 class UiCloudError(Exception):
@@ -42,16 +47,23 @@ class UiCloudClient:
 
     session: aiohttp.ClientSession
     api_key: str
-    base_url: str = "https://api.ui.com"
-    _base: str = field(init=False, repr=False)
+    hosts_url: str = UI_HOSTS_URL
+    _hosts_url: str = field(init=False, repr=False)
+    _strict_ssl: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._base = self.base_url.rstrip("/")
+        self._hosts_url = self._normalize_hosts_url(self.hosts_url)
+        parsed = urlsplit(self._hosts_url)
+        self._strict_ssl = (
+            parsed.scheme == "https"
+            and parsed.netloc == "api.ui.com"
+            and parsed.path.startswith("/v1/")
+        )
 
     async def fetch_hosts(self) -> Dict[str, Any]:
         """Return the raw hosts payload from the UI Cloud API."""
 
-        url = f"{self._base}/v1/hosts"
+        url = self._hosts_url
         headers = {"Accept": "application/json", "X-API-Key": self.api_key}
         timeouts = aiohttp.ClientTimeout(total=10)
         backoffs = (0.0, 0.5, 1.0, 2.0)
@@ -61,7 +73,10 @@ class UiCloudClient:
             if delay:
                 await asyncio.sleep(delay)
             try:
-                resp = await self.session.get(url, headers=headers, timeout=timeouts)
+                kwargs: dict[str, Any] = {"headers": headers, "timeout": timeouts}
+                if self._strict_ssl:
+                    kwargs["ssl"] = True
+                resp = await self.session.get(url, **kwargs)
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
                 last_error = UiCloudRequestError("Error communicating with UI Cloud API")
                 last_error.__cause__ = err
@@ -107,6 +122,21 @@ class UiCloudClient:
         except (TypeError, ValueError):
             return None
         return max(0.0, parsed)
+
+    @staticmethod
+    def _normalize_hosts_url(value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return UI_HOSTS_URL
+
+        cleaned = cleaned.rstrip("/")
+        if cleaned.endswith("/v1/hosts"):
+            return cleaned
+        if cleaned.endswith("/v1"):
+            return f"{cleaned}/hosts"
+        if cleaned.endswith("/hosts"):
+            return f"{cleaned[:-len('/hosts')]}/v1/hosts"
+        return f"{cleaned}/v1/hosts"
 
     async def fetch_ipv6_for_mac(self, target_mac: str) -> Optional[str]:
         """Return the IPv6 address for the provided WAN MAC."""

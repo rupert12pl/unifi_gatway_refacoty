@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, List, cast
+from typing import Any, Dict, List, cast
 
 import pytest
 
@@ -38,8 +38,19 @@ class DummySession:
         self._responses = list(responses)
         self.requests: list[str] = []
 
-    async def get(self, url: str, *, headers: dict[str, str] | None = None, timeout=None) -> DummyResponse:
+        # capture keyword arguments for assertions (e.g. SSL enforcement)
+        self.kwargs: list[Dict[str, Any]] = []
+
+    async def get(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout=None,
+        ssl=None,
+    ) -> DummyResponse:
         self.requests.append(url)
+        self.kwargs.append({"headers": headers, "timeout": timeout, "ssl": ssl})
         if not self._responses:
             raise RuntimeError("No more responses queued")
         return self._responses.pop(0)
@@ -50,7 +61,14 @@ class FailingSession:
         self._error = error
         self.calls = 0
 
-    async def get(self, url: str, *, headers: dict[str, str] | None = None, timeout=None) -> DummyResponse:
+    async def get(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout=None,
+        ssl=None,
+    ) -> DummyResponse:
         self.calls += 1
         raise self._error
 
@@ -83,6 +101,8 @@ def test_fetch_ipv6_for_mac_success(monkeypatch: pytest.MonkeyPatch) -> None:
     ipv6 = asyncio.run(client.fetch_ipv6_for_mac("78:45:58:D0:95:75"))
 
     assert ipv6 == "2a00:c020:40fe:37f1:4402:b7a2:4cd3:e8fe"
+    assert session.requests == ["https://api.ui.com/v1/hosts"]
+    assert session.kwargs[0]["ssl"] is True
 
 
 def test_fetch_ipv6_for_mac_returns_none_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,6 +129,8 @@ def test_fetch_ipv6_for_mac_returns_none_when_missing(monkeypatch: pytest.Monkey
     ipv6 = asyncio.run(client.fetch_ipv6_for_mac("00:00:00:00:00:00"))
 
     assert ipv6 is None
+    assert session.requests == ["https://api.ui.com/v1/hosts"]
+    assert session.kwargs[0]["ssl"] is True
 
 
 def test_fetch_hosts_auth_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -152,6 +174,7 @@ def test_fetch_hosts_retries_server_error(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert result == payload
     assert len(session.requests) == 2
+    assert all(kwargs["ssl"] is True for kwargs in session.kwargs)
 
 
 def test_fetch_hosts_unexpected_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -180,3 +203,20 @@ def test_fetch_hosts_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
         asyncio.run(client.fetch_hosts())
 
     assert session.calls == 4
+
+
+def test_fetch_hosts_does_not_force_ssl_for_custom_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    payload: dict[str, Any] = {"data": []}
+    session = DummySession([DummyResponse(200, payload)])
+    client = UiCloudClient(
+        cast(ClientSession, session),
+        "secret",
+        hosts_url="https://example.invalid/custom",
+    )
+
+    result = asyncio.run(client.fetch_hosts())
+
+    assert result == payload
+    assert session.requests == ["https://example.invalid/custom/v1/hosts"]
+    assert session.kwargs[0]["ssl"] is None
