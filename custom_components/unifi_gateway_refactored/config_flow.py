@@ -66,9 +66,9 @@ async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]
         )
         try:
             health = client.get_healthinfo()
+            return {"health": health, "port": client.port}
         finally:
             client.close()
-        return {"health": health}
     return await hass.async_add_executor_job(_sync)
 
 
@@ -244,7 +244,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 # Ensure Home Assistant context is available before validation.
                 assert self.hass is not None  # nosec B101
-                await _validate(self.hass, data)
+                validation = await _validate(self.hass, data)
+                resolved_port = validation.get("port")
+                if resolved_port and resolved_port != data.get(CONF_PORT, DEFAULT_PORT):
+                    data[CONF_PORT] = resolved_port
+                    self._cached[CONF_PORT] = resolved_port
                 await _validate_ui_api_key(data.get(CONF_UI_API_KEY))
                 await self.async_set_unique_id(
                     f"{data[CONF_HOST]}:{data.get(CONF_PORT, DEFAULT_PORT)}"
