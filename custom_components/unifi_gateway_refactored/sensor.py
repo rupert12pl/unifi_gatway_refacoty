@@ -1785,9 +1785,18 @@ class UniFiGatewayWanSensorBase(UniFiGatewaySensorBase):
     def _wan_common_attributes(self) -> Dict[str, Any]:
         data = self.coordinator.data
         gw_mac = None
+        gw_name = None
         if data:
             gw_mac = data.wan.get(ATTR_GW_MAC)
-        return {ATTR_GW_MAC: gw_mac}
+            gw_name = (
+                data.wan.get("name")
+                or data.wan.get("hostname")
+                or data.wan_attrs.get("gw_name")
+            )
+        attrs: Dict[str, Any] = {ATTR_GW_MAC: gw_mac}
+        if gw_name:
+            attrs["gw_name"] = gw_name
+        return attrs
 
 
 class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
@@ -2124,19 +2133,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
 
     @property
     def icon(self) -> str:
-        proto = str(self._attrs.get("protocol_type") or "").lower()
-        mapping = {
-            "openvpn": "selfhst:openvpn",
-            "wireguard": "selfhst:wireguard",
-            "ipsec": "selfhst:ipsec",
-            "ikev2": "selfhst:ipsec",
-            "l2tp": "selfhst:ipsec",
-            "l2tp-ipsec": "selfhst:ipsec",
-            "pptp": "selfhst:pptp",
-            "sstp": "selfhst:sstp",
-            "gre": "mdi:lock",
-        }
-        return mapping.get(proto, "mdi:lock")
+        return "mdi:vpn"
 
     @property
     def native_value(self) -> Optional[int]:
@@ -2603,6 +2600,30 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
         attrs["status_normalized"] = self._last_status
         attrs.update(self._controller_attrs())
         attrs.update(self._wan_common_attributes())
+        data = self.coordinator.data
+        if data:
+            fallback = data.wan_attrs
+            if isinstance(fallback, Mapping):
+                for key in (
+                    "ip",
+                    "ip_source",
+                    "ipv6",
+                    "ipv6_source",
+                    "gateway_ip",
+                    "last_update",
+                    "last_update_raw",
+                    "uptime",
+                ):
+                    if attrs.get(key) in (None, ""):
+                        value = fallback.get(key)
+                        if value not in (None, ""):
+                            attrs[key] = value
+                if "adress_ipv6" in fallback and fallback.get("adress_ipv6") not in (None, ""):
+                    attrs.setdefault("adress_ipv6", fallback.get("adress_ipv6"))
+                if fallback.get("gw_name") and not attrs.get("gw_name"):
+                    attrs["gw_name"] = fallback["gw_name"]
+        if data and data.wan_ipv6 and not attrs.get("adress_ipv6"):
+            attrs["adress_ipv6"] = data.wan_ipv6
         return attrs
 
 
@@ -2872,6 +2893,10 @@ class UniFiGatewayWanIpv6Sensor(UniFiGatewayWanSensorBase):
         attrs.setdefault(
             "prefix", _extract_wan_value(link, health, _WAN_IPV6_PREFIX_KEYS)
         )
+        if data and data.wan_ipv6 and not attrs.get("adress_ipv6"):
+            attrs["adress_ipv6"] = data.wan_ipv6
+        elif "ipv6" in attrs and attrs.get("ipv6") and not attrs.get("adress_ipv6"):
+            attrs["adress_ipv6"] = attrs.get("ipv6")
         attrs.update(self._wan_common_attributes())
         attrs.update(self._controller_attrs())
         return attrs
