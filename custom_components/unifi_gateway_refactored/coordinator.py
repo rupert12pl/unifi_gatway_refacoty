@@ -28,6 +28,24 @@ from .utils import normalize_mac
 _LOGGER = logging.getLogger(__name__)
 
 
+_LOCAL_IPV6_KEYS: tuple[str, ...] = (
+    "last_ipv6",
+    "ipv6",
+    "wan_ipv6",
+    "internet_ipv6",
+    "public_ipv6",
+    "external_ipv6",
+    "ip6",
+    "ip_v6",
+    "wan_ip6",
+    "wan_ipv6_address",
+    "wan_ipv6_ip",
+    "ipv6_address",
+    "global_ipv6",
+    "public_ip6",
+)
+
+
 @dataclass(slots=True)
 class UniFiGatewayData:
     """Container describing the data returned by the coordinator."""
@@ -365,7 +383,13 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             data.wan_ipv6 = None
 
         if self._ui_cloud_client is None or not self._ui_cloud_client.api_key:
-            attrs[ATTR_REASON] = "missing_api_key"
+            if not self._apply_local_ipv6_fallback(
+                data,
+                primary_link,
+                health_record,
+                attrs,
+            ):
+                attrs[ATTR_REASON] = "missing_api_key"
             return
 
         if normalized_mac is None:
@@ -378,6 +402,12 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                     )
                 )
                 self._warned_missing_gw_mac = True
+            self._apply_local_ipv6_fallback(
+                data,
+                primary_link,
+                health_record,
+                attrs,
+            )
             return
 
         if cached_entry and (now - self._cloud_last_fetch) < self._cloud_fetch_interval:
@@ -396,6 +426,13 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             else:
                 attrs[ATTR_REASON] = "cloud_backoff_active"
                 attrs["available"] = False
+                if self._apply_local_ipv6_fallback(
+                    data,
+                    primary_link,
+                    health_record,
+                    attrs,
+                ):
+                    attrs[ATTR_REASON] = "cloud_backoff_active"
             return
 
         try:
@@ -404,6 +441,12 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             attrs[ATTR_REASON] = "invalid_api_key"
             attrs["available"] = False
             attrs["error"] = str(err)
+            self._apply_local_ipv6_fallback(
+                data,
+                primary_link,
+                health_record,
+                attrs,
+            )
             return
         except UiCloudRateLimitError as err:
             delay = err.retry_after if err.retry_after is not None else 5.0
@@ -420,6 +463,13 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                     health_record.setdefault("wan_ipv6", cached_entry[1])
             else:
                 attrs["available"] = False
+                if self._apply_local_ipv6_fallback(
+                    data,
+                    primary_link,
+                    health_record,
+                    attrs,
+                ):
+                    attrs[ATTR_REASON] = "cloud_rate_limited"
             return
         except (UiCloudRequestError, UiCloudError) as err:
             self._cloud_retry_attempts = min(self._cloud_retry_attempts + 1, 6)
@@ -437,6 +487,13 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                     health_record.setdefault("wan_ipv6", cached_entry[1])
             else:
                 attrs["available"] = False
+                if self._apply_local_ipv6_fallback(
+                    data,
+                    primary_link,
+                    health_record,
+                    attrs,
+                ):
+                    attrs[ATTR_REASON] = "cloud_fetch_error"
             return
 
         self._cloud_last_fetch = time.monotonic()
@@ -447,6 +504,13 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         if status != 200:
             attrs[ATTR_REASON] = f"cloud_status_{status}"
             attrs["available"] = False
+            if self._apply_local_ipv6_fallback(
+                data,
+                primary_link,
+                health_record,
+                attrs,
+            ):
+                attrs[ATTR_REASON] = f"cloud_status_{status}"
             return
 
         data_list = hosts.get("data") or []
@@ -477,6 +541,80 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             data.wan_ipv6 = None
             attrs[ATTR_REASON] = "no_ipv6_for_gw"
             self._wan_ipv6_cache.pop(normalized_mac, None)
+
+    def _apply_local_ipv6_fallback(
+        self,
+        data: UniFiGatewayData,
+        primary_link: Optional[Dict[str, Any]],
+        health_record: Optional[Dict[str, Any]],
+        attrs: Dict[str, Any],
+    ) -> bool:
+        ipv6 = self._extract_local_ipv6(primary_link, health_record)
+        if not ipv6:
+            return False
+        data.wan_ipv6 = ipv6
+        attrs["last_ipv6"] = ipv6
+        attrs["source"] = "controller"
+        attrs["available"] = True
+        if primary_link is not None:
+            primary_link.setdefault("last_ipv6", ipv6)
+            primary_link.setdefault("wan_ipv6", ipv6)
+        if health_record is not None:
+            health_record.setdefault("last_ipv6", ipv6)
+            health_record.setdefault("wan_ipv6", ipv6)
+        return True
+
+    @staticmethod
+    def _extract_local_ipv6(
+        primary_link: Optional[Mapping[str, Any]],
+        health_record: Optional[Mapping[str, Any]],
+    ) -> Optional[str]:
+        for candidate in (
+            primary_link,
+            health_record,
+        ):
+            value = UniFiGatewayDataUpdateCoordinator._extract_ipv6_from_mapping(
+                candidate
+            )
+            if value:
+                return value
+        return None
+
+    @staticmethod
+    def _extract_ipv6_from_mapping(
+        mapping: Optional[Mapping[str, Any]]
+    ) -> Optional[str]:
+        if not isinstance(mapping, Mapping):
+            return None
+
+        for key in _LOCAL_IPV6_KEYS:
+            if key not in mapping:
+                continue
+            candidate_value = mapping.get(key)
+            if isinstance(candidate_value, str):
+                cleaned = candidate_value.strip()
+                if cleaned:
+                    return cleaned
+            elif isinstance(candidate_value, (list, tuple)):
+                for item in candidate_value:
+                    if isinstance(item, str):
+                        cleaned = item.strip()
+                        if cleaned:
+                            return cleaned
+                    elif isinstance(item, Mapping):
+                        nested = UniFiGatewayDataUpdateCoordinator._extract_ipv6_from_mapping(
+                            item
+                        )
+                        if nested:
+                            return nested
+            elif isinstance(candidate_value, Mapping):
+                nested = UniFiGatewayDataUpdateCoordinator._extract_ipv6_from_mapping(
+                    candidate_value
+                )
+                if nested:
+                    return nested
+
+        return None
 
     @staticmethod
     def _extract_ipv6_for_gw_mac(

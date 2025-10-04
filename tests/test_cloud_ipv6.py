@@ -244,6 +244,28 @@ def test_rate_limit_retry_uses_cache(hass) -> None:
     assert attrs[ATTR_REASON] == "cloud_rate_limited"
 
 
+def test_missing_api_key_uses_local_ipv6(hass) -> None:
+    mac = "78:45:58:d0:95:75"
+    data = _make_data(mac)
+    data.wan_links[0]["last_ipv6"] = "2001:db8::10"
+    data.wan_health[0]["wan_ipv6"] = ["fe80::1", "2001:db8::10"]
+
+    client = cast(UniFiOSClient, DummyClient(mac))
+    cloud = DummyCloudClient({"httpStatusCode": 200, "data": []})
+    cloud.api_key = ""
+    coordinator = DummyCoordinator(hass, data, client, cloud, stored_gw_mac=mac)
+
+    asyncio.run(coordinator.async_config_entry_first_refresh())
+
+    assert coordinator.data is not None
+    result = coordinator.data
+    assert result.wan_ipv6 == "2001:db8::10"
+    attrs = result.wan_attrs
+    assert attrs["last_ipv6"] == "2001:db8::10"
+    assert attrs["source"] == "controller"
+    assert attrs.get(ATTR_REASON) is None
+
+
 def test_options_flow_saves_api_key_and_reload(hass, monkeypatch: pytest.MonkeyPatch) -> None:
     entry = SimpleNamespace(
         entry_id="1234",
