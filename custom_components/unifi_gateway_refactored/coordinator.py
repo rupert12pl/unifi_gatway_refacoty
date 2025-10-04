@@ -592,6 +592,23 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         if not isinstance(data_list, list):
             data_list = []
 
+        discovered_mac = self._extract_wan_mac_for_ip(
+            data_list,
+            ip_norm,
+            normalized_mac,
+            hardware_mac,
+        )
+
+        if discovered_mac and discovered_mac != normalized_mac:
+            normalized_mac = discovered_mac
+            data.wan[ATTR_GW_MAC] = discovered_mac
+            if primary_link is not None:
+                primary_link[ATTR_GW_MAC] = discovered_mac
+            if health_record is not None:
+                health_record.setdefault(ATTR_GW_MAC, discovered_mac)
+            await self._async_persist_gw_mac(discovered_mac)
+            self._warned_missing_gw_mac = False
+
         ipv6 = self._extract_ipv6_for_gw_mac(
             data_list,
             normalized_mac,
@@ -710,6 +727,67 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         return None
 
     @staticmethod
+    def _extract_wan_mac_for_ip(
+        items: List[HostItem],
+        ip_address: Optional[str],
+        current_mac: Optional[str],
+        hardware_mac: Optional[str],
+    ) -> Optional[str]:
+        if not items:
+            return None
+
+        ip_norm = (ip_address or "").strip()
+        current_norm = normalize_mac(current_mac)
+        hardware_norm = normalize_mac(hardware_mac)
+
+        def _mac_from_item(item: Mapping[str, Any]) -> Optional[str]:
+            reported = item.get("reportedState") or {}
+            candidates = reported.get("wans") or []
+            for wan in candidates:
+                if not isinstance(wan, Mapping):
+                    continue
+                ipv4 = (wan.get("ipv4") or "").strip()
+                mac = normalize_mac(wan.get("mac"))
+                if ip_norm:
+                    if ipv4 and ipv4 != ip_norm:
+                        continue
+                    if not ipv4 and mac and current_norm and mac != current_norm:
+                        continue
+                elif current_norm and mac != current_norm:
+                    continue
+                elif hardware_norm and mac != hardware_norm:
+                    continue
+                if mac:
+                    return mac
+            return None
+
+        matched: List[Mapping[str, Any]] = []
+        if ip_norm:
+            for item in items:
+                if not isinstance(item, Mapping):
+                    continue
+                reported = item.get("reportedState") or {}
+                reported_ip = (reported.get("ip") or "").strip()
+                if reported_ip == ip_norm:
+                    matched.append(item)
+                    continue
+                wans = reported.get("wans") or []
+                for wan in wans:
+                    if not isinstance(wan, Mapping):
+                        continue
+                    ipv4 = (wan.get("ipv4") or "").strip()
+                    if ipv4 == ip_norm:
+                        matched.append(item)
+                        break
+
+        search_pool = matched or [item for item in items if isinstance(item, Mapping)]
+        for candidate in search_pool:
+            mac = _mac_from_item(candidate)
+            if mac:
+                return mac
+        return None
+
+    @staticmethod
     def _extract_ipv6_for_gw_mac(
         items: List[HostItem],
         gw_mac: Optional[str],
@@ -766,7 +844,17 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 if not isinstance(wan, Mapping):
                     continue
                 mac = normalize_mac(wan.get("mac"))
-                if target_mac and mac != target_mac:
+                ipv4 = (wan.get("ipv4") or "").strip()
+                if ip_norm:
+                    if ipv4 and ipv4 != ip_norm:
+                        continue
+                    if not ipv4 and target_mac and mac != target_mac:
+                        continue
+                    if not ipv4 and not target_mac and hardware_mac_norm and mac != hardware_mac_norm:
+                        continue
+                elif target_mac and mac != target_mac:
+                    continue
+                elif not target_mac and hardware_mac_norm and mac != hardware_mac_norm:
                     continue
                 ipv6 = wan.get("ipv6")
                 if isinstance(ipv6, str):
