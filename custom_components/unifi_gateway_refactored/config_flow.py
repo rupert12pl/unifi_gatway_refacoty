@@ -48,6 +48,7 @@ from .cloud_client import (
     UiCloudRateLimitError,
 )
 from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
+from .utils import normalize_host_port
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -101,6 +102,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     cleaned[key] = stripped
                     continue
             cleaned[key] = value
+        if CONF_HOST in cleaned:
+            host, derived_port = normalize_host_port(
+                cleaned[CONF_HOST], cleaned.get(CONF_PORT)
+            )
+            if host is None:
+                cleaned.pop(CONF_HOST, None)
+            else:
+                cleaned[CONF_HOST] = host
+                if derived_port is not None:
+                    cleaned[CONF_PORT] = derived_port
         return cleaned
 
     @staticmethod

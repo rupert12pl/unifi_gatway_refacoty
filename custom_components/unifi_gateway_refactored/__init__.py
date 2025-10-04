@@ -50,6 +50,7 @@ from .cloud_client import UiCloudClient
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
 from .monitor import SpeedtestRunner
+from .utils import normalize_host_port
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -171,9 +172,17 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
 
     from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
+    raw_host = entry.data.get(CONF_HOST)
+    if not raw_host:
+        raise ConfigEntryNotReady("Controller host is not configured")
+
+    normalized_host, normalized_port = normalize_host_port(
+        raw_host, entry.data.get(CONF_PORT, DEFAULT_PORT)
+    )
+
     client_kwargs: dict[str, Any] = {
-        "host": entry.data[CONF_HOST],
-        "port": entry.data.get(CONF_PORT, DEFAULT_PORT),
+        "host": normalized_host or raw_host,
+        "port": normalized_port or entry.data.get(CONF_PORT, DEFAULT_PORT),
         "site_id": entry.data.get(CONF_SITE_ID, DEFAULT_SITE),
         "ssl_verify": entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
         "use_proxy_prefix": entry.data.get(
