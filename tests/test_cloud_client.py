@@ -61,7 +61,7 @@ class DummySession:
         *,
         headers: Optional[dict[str, str]] = None,
         timeout=None,
-    ) -> DummyResponse:
+    ) -> DummyResponseContext:
         self.requests.append(url)
         self.kwargs.append({"headers": headers, "timeout": timeout})
         if not self._responses:

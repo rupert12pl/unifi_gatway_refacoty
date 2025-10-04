@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import time
 from types import SimpleNamespace
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 import pytest
 
 from custom_components.unifi_gateway_refactored.cloud_client import (
+    HostItem,
+    UiCloudClient,
     UiCloudRateLimitError,
 )
 from custom_components.unifi_gateway_refactored.config_flow import OptionsFlow
@@ -29,6 +31,8 @@ from custom_components.unifi_gateway_refactored.sensor import (
     UniFiGatewayWanIpv6Sensor,
 )
 from custom_components.unifi_gateway_refactored.utils import normalize_mac
+from custom_components.unifi_gateway_refactored.unifi_client import UniFiOSClient
+from homeassistant import config_entries
 
 
 class DummyClient:
@@ -69,7 +73,7 @@ class DummyCoordinator(UniFiGatewayDataUpdateCoordinator):
         self,
         hass,
         data: UniFiGatewayData,
-        client: DummyClient,
+        client: UniFiOSClient,
         cloud_client: DummyCloudClient,
         stored_gw_mac: str | None = None,
     ) -> None:
@@ -77,7 +81,7 @@ class DummyCoordinator(UniFiGatewayDataUpdateCoordinator):
         super().__init__(
             hass,
             client,
-            ui_cloud_client=cloud_client,
+            ui_cloud_client=cast(UiCloudClient, cloud_client),
             config_entry=None,
             stored_gw_mac=stored_gw_mac,
         )
@@ -110,22 +114,25 @@ def test_normalize_mac_variants() -> None:
 
 
 def test_extract_ipv6_by_exact_gw_mac() -> None:
-    items = [
-        {
-            "reportedState": {
-                "wans": [
-                    {"mac": "78:45:58:D0:95:75", "ipv6": "2001:db8::1"}
-                ]
-            }
-        },
-        {
-            "reportedState": {
-                "wans": [
-                    {"mac": "00:11:22:33:44:55", "ipv6": "2001:db8::2"}
-                ]
-            }
-        },
-    ]
+    items = cast(
+        list[HostItem],
+        [
+            {
+                "reportedState": {
+                    "wans": [
+                        {"mac": "78:45:58:D0:95:75", "ipv6": "2001:db8::1"}
+                    ]
+                }
+            },
+            {
+                "reportedState": {
+                    "wans": [
+                        {"mac": "00:11:22:33:44:55", "ipv6": "2001:db8::2"}
+                    ]
+                }
+            },
+        ],
+    )
 
     ipv6 = UniFiGatewayDataUpdateCoordinator._extract_ipv6_for_gw_mac(
         items,
@@ -139,26 +146,29 @@ def test_extract_ipv6_by_exact_gw_mac() -> None:
 
 
 def test_extract_ipv6_prefers_hw_mac_console() -> None:
-    items = [
-        {
-            "hardware": {"mac": "11:11:11:11:11:11"},
-            "reportedState": {
-                "hostname": "console-a",
-                "wans": [
-                    {"mac": "78:45:58:d0:95:75", "ipv6": "2001:db8::a"}
-                ],
+    items = cast(
+        list[HostItem],
+        [
+            {
+                "hardware": {"mac": "11:11:11:11:11:11"},
+                "reportedState": {
+                    "hostname": "console-a",
+                    "wans": [
+                        {"mac": "78:45:58:d0:95:75", "ipv6": "2001:db8::a"}
+                    ],
+                },
             },
-        },
-        {
-            "hardware": {"mac": "22:22:22:22:22:22"},
-            "reportedState": {
-                "hostname": "console-b",
-                "wans": [
-                    {"mac": "78:45:58:d0:95:75", "ipv6": "2001:db8::b"}
-                ],
+            {
+                "hardware": {"mac": "22:22:22:22:22:22"},
+                "reportedState": {
+                    "hostname": "console-b",
+                    "wans": [
+                        {"mac": "78:45:58:d0:95:75", "ipv6": "2001:db8::b"}
+                    ],
+                },
             },
-        },
-    ]
+        ],
+    )
 
     ipv6 = UniFiGatewayDataUpdateCoordinator._extract_ipv6_for_gw_mac(
         items,
@@ -180,13 +190,15 @@ def test_no_ipv6_sets_unknown_reason(hass) -> None:
             {"reportedState": {"wans": [{"mac": mac, "ipv6": ""}]}}
         ],
     }
-    client = DummyClient(mac)
+    client = cast(UniFiOSClient, DummyClient(mac))
     cloud = DummyCloudClient(cloud_payload)
     coordinator = DummyCoordinator(hass, data, client, cloud, stored_gw_mac=mac)
 
     asyncio.run(coordinator.async_config_entry_first_refresh())
 
-    sensor = UniFiGatewayWanIpv6Sensor(coordinator, client, "entry", data.wan_links[0])
+    sensor = UniFiGatewayWanIpv6Sensor(
+        coordinator, client, "entry", data.wan_links[0]
+    )
     assert sensor.native_value is None
     attrs = sensor.extra_state_attributes
     assert attrs[ATTR_REASON] == "no_ipv6_for_gw"
@@ -198,13 +210,15 @@ def test_http_error_sets_unavailable_with_reason(hass) -> None:
     mac = "78:45:58:d0:95:75"
     data = _make_data(mac)
     cloud_payload = {"httpStatusCode": 500, "data": []}
-    client = DummyClient(mac)
+    client = cast(UniFiOSClient, DummyClient(mac))
     cloud = DummyCloudClient(cloud_payload)
     coordinator = DummyCoordinator(hass, data, client, cloud, stored_gw_mac=mac)
 
     asyncio.run(coordinator.async_config_entry_first_refresh())
 
-    sensor = UniFiGatewayWanIpv6Sensor(coordinator, client, "entry", data.wan_links[0])
+    sensor = UniFiGatewayWanIpv6Sensor(
+        coordinator, client, "entry", data.wan_links[0]
+    )
     attrs = sensor.extra_state_attributes
     assert attrs[ATTR_REASON] == "cloud_status_500"
     assert attrs["available"] is False
@@ -214,7 +228,7 @@ def test_http_error_sets_unavailable_with_reason(hass) -> None:
 def test_rate_limit_retry_uses_cache(hass) -> None:
     mac = "78:45:58:d0:95:75"
     data = _make_data(mac)
-    client = DummyClient(mac)
+    client = cast(UniFiOSClient, DummyClient(mac))
     cloud = DummyCloudClient(UiCloudRateLimitError(1.0))
     coordinator = DummyCoordinator(hass, data, client, cloud, stored_gw_mac=mac)
 
@@ -223,8 +237,10 @@ def test_rate_limit_retry_uses_cache(hass) -> None:
 
     asyncio.run(coordinator.async_config_entry_first_refresh())
 
-    assert coordinator.data.wan_ipv6 == "2001:db8::1"
-    attrs = coordinator.data.wan_attrs
+    assert coordinator.data is not None
+    data_after = coordinator.data
+    assert data_after.wan_ipv6 == "2001:db8::1"
+    attrs = data_after.wan_attrs
     assert attrs[ATTR_REASON] == "cloud_rate_limited"
 
 
@@ -267,7 +283,7 @@ def test_options_flow_saves_api_key_and_reload(hass, monkeypatch: pytest.MonkeyP
 
     hass.config_entries = DummyConfigEntries()  # type: ignore[attr-defined]
 
-    flow = OptionsFlow(entry)
+    flow = OptionsFlow(cast(config_entries.ConfigEntry, entry))
     flow.hass = hass  # type: ignore[assignment]
 
     asyncio.run(flow.async_step_init({CONF_API_KEY: "abc123"}))
