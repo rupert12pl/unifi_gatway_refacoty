@@ -41,6 +41,20 @@ fully UI-driven configuration flow.
 - Download **Diagnostics** from the integration's menu whenever you need a
   snapshot of controller data for troubleshooting.
 
+### Cloud WAN IPv6
+
+- Configure your UniFi **UI API Key** in the integration options to enable
+  fetching WAN IPv6 data from the UniFi Cloud `v1/hosts` endpoint. The key is
+  stored in the config entry options, so you can safely keep it in
+  `secrets.yaml`.
+- The **WAN Last IP (IPv6)** sensor now relies solely on the cloud payload. The
+  sensor exposes the resolved gateway MAC address as the `gw_mac` attribute and
+  reports the reason (`reason` attribute) whenever the IPv6 address is missing
+  or the cloud request fails.
+- IPv6 values retrieved from the cloud are cached and automatically propagated
+  to the WAN link attributes so that other dashboards continue to show the most
+  recent address.
+
 ## Przewodnik integracji (Polski)
 
 ### Co daje ta integracja
@@ -76,6 +90,17 @@ fully UI-driven configuration flow.
   urządzenia, adres publiczny oraz geolokalizację każdego tunelu.
 - W menu integracji wybierz **Pobierz diagnostykę**, aby zebrać migawkę danych do
   rozwiązywania problemów.
+
+### Chmura WAN IPv6
+
+- W opcjach integracji podaj **UI API Key**, aby umożliwić pobieranie adresu
+  IPv6 WAN z końcówki UniFi Cloud `v1/hosts`. Klucz zapisywany jest w opcjach
+  wpisu konfiguracyjnego, dzięki czemu można go przechowywać w `secrets.yaml`.
+- Sensor **WAN Last IP (IPv6)** bazuje wyłącznie na danych z chmury. W atrybucie
+  `gw_mac` prezentowany jest MAC interfejsu WAN, a w `reason` znajdziesz powód
+  braku adresu IPv6 lub błędu komunikacji z chmurą.
+- Otrzymane adresy IPv6 są buforowane i synchronizowane z atrybutami łącza WAN,
+  aby inne pulpity wciąż widziały ostatni znany adres.
 
 ## Repository layout required by HACS
 

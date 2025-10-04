@@ -18,7 +18,10 @@ LEGACY_CONF_SPEEDTEST_INTERVAL_MIN = "speedtest_interval_minutes"
 CONF_SPEEDTEST_ENTITIES = "speedtest_entities"
 CONF_WIFI_GUEST = "wifi_guest"
 CONF_WIFI_IOT = "wifi_iot"
-CONF_UI_API_KEY = "ui_api_key"
+CONF_API_KEY = "api_key"
+# Backwards compatibility alias for legacy option name
+CONF_UI_API_KEY = CONF_API_KEY
+CONF_GW_MAC = "gw_mac"
 
 DEFAULT_PORT = 443
 DEFAULT_SITE = "default"
@@ -40,9 +43,10 @@ EVT_RUN_END = f"{DOMAIN}.speedtest.end"
 EVT_RUN_ERROR = f"{DOMAIN}.speedtest.error"
 
 ATTR_TRACE_ID = "trace_id"
+ATTR_GW_MAC = "gw_mac"
 ATTR_REASON = "reason"
 ATTR_ENTITY_IDS = "entity_ids"
 ATTR_DURATION_MS = "duration_ms"
 ATTR_ERROR = "error"
 
-UI_HOSTS_URL = "https://api.ui.com/v1/hosts"
+API_CLOUD_HOSTS_URL = "https://api.ui.com/v1/hosts"
