@@ -14,6 +14,7 @@ from custom_components.unifi_gateway_refactored.cloud_client import (
 )
 from custom_components.unifi_gateway_refactored.config_flow import OptionsFlow
 from custom_components.unifi_gateway_refactored.const import (
+    ATTR_GW_MAC,
     ATTR_REASON,
     CONF_API_KEY,
     CONF_HOST,
@@ -242,6 +243,101 @@ def test_rate_limit_retry_uses_cache(hass) -> None:
     assert data_after.wan_ipv6 == "2001:db8::1"
     attrs = data_after.wan_attrs
     assert attrs[ATTR_REASON] == "cloud_rate_limited"
+
+
+def test_missing_mac_with_ipv4_fetches_ipv6(hass) -> None:
+    data = _make_data("")
+    data.wan_links[0].pop("mac", None)
+    data.wan_links[0]["hostname"] = "Gateway"
+    data.wan_links[0]["last_ip"] = "203.0.113.5"
+    data.wan_links[0]["name"] = "WAN"
+
+    cloud_payload = {
+        "httpStatusCode": 200,
+        "data": [
+            {
+                "reportedState": {
+                    "hostname": "Gateway",
+                    "ip": "198.51.100.10",
+                    "wans": [
+                        {
+                            "mac": "aa:aa:aa:aa:aa:aa",
+                            "ipv6": "2001:db8::dead",
+                        }
+                    ],
+                }
+            },
+            {
+                "reportedState": {
+                    "hostname": "Gateway",
+                    "ip": "203.0.113.5",
+                    "wans": [
+                        {
+                            "mac": "bb:bb:bb:bb:bb:bb",
+                            "ipv6": "2001:db8::123",
+                        }
+                    ],
+                }
+            },
+        ],
+    }
+
+    client = cast(UniFiOSClient, DummyClient(""))
+    cloud = DummyCloudClient(cloud_payload)
+    coordinator = DummyCoordinator(hass, data, client, cloud)
+
+    asyncio.run(coordinator.async_config_entry_first_refresh())
+
+    assert coordinator.data is not None
+    result = coordinator.data
+    assert result.wan[ATTR_GW_MAC] is None
+    assert result.wan_ipv6 == "2001:db8::123"
+    attrs = result.wan_attrs
+    assert attrs.get(ATTR_REASON) is None
+    assert attrs["adress_ipv6"] == "2001:db8::123"
+    assert attrs["source"] == "cloud"
+    assert attrs["ip"] == "203.0.113.5"
+    assert cloud.calls == 1
+    cache_entry = coordinator._wan_ipv6_cache.get("ip:203.0.113.5")
+    assert cache_entry is not None
+    assert cache_entry[1] == "2001:db8::123"
+
+
+def test_missing_mac_without_ipv4_sets_reason(hass) -> None:
+    data = _make_data("")
+    data.wan_links[0].pop("mac", None)
+    data.wan_links[0]["hostname"] = "Gateway"
+    data.wan_links[0]["name"] = "WAN"
+
+    cloud_payload = {
+        "httpStatusCode": 200,
+        "data": [
+            {
+                "reportedState": {
+                    "hostname": "Gateway",
+                    "wans": [
+                        {
+                            "mac": "bb:bb:bb:bb:bb:bb",
+                            "ipv6": "2001:db8::456",
+                        }
+                    ],
+                }
+            }
+        ],
+    }
+
+    client = cast(UniFiOSClient, DummyClient(""))
+    cloud = DummyCloudClient(cloud_payload)
+    coordinator = DummyCoordinator(hass, data, client, cloud)
+
+    asyncio.run(coordinator.async_config_entry_first_refresh())
+
+    assert coordinator.data is not None
+    result = coordinator.data
+    attrs = result.wan_attrs
+    assert attrs[ATTR_REASON] == "missing_gw_mac"
+    assert result.wan_ipv6 is None
+    assert cloud.calls == 0
 
 
 def test_missing_api_key_uses_local_ipv6(hass) -> None:
