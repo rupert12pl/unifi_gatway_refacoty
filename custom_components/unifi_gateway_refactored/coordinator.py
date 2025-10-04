@@ -384,9 +384,24 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             attrs["gw_name"] = hostname
         elif data.wan.get("name"):
             attrs.setdefault("gw_name", data.wan.get("name"))
-        if ip_address:
-            attrs.setdefault("gateway_ip", ip_address)
-            attrs.setdefault("ip", ip_address)
+        def _normalize_ip(value: Any) -> str | None:
+            if isinstance(value, str):
+                cleaned = value.strip()
+            elif value is None:
+                return None
+            else:
+                cleaned = str(value).strip()
+            return cleaned or None
+
+        ip_norm = _normalize_ip(ip_address)
+        if ip_norm:
+            data.wan["ip_address"] = ip_norm
+        else:
+            ip_norm = _normalize_ip(data.wan.get("ip_address"))
+
+        if ip_norm:
+            attrs.setdefault("gateway_ip", ip_norm)
+            attrs.setdefault("ip", ip_norm)
         elif data.wan.get("ip_address"):
             attrs.setdefault("gateway_ip", data.wan.get("ip_address"))
             attrs.setdefault("ip", data.wan.get("ip_address"))
@@ -402,11 +417,18 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 primary_link.setdefault(ATTR_GW_MAC, None)
 
         now = time.monotonic()
-        cached_entry = (
-            self._wan_ipv6_cache.get(normalized_mac)
-            if normalized_mac is not None
-            else None
-        )
+        ip_cache_key = f"ip:{ip_norm}" if ip_norm else None
+        cache_key = normalized_mac or ip_cache_key
+        cached_entry = self._wan_ipv6_cache.get(cache_key) if cache_key else None
+        if (
+            cached_entry is None
+            and normalized_mac is not None
+            and ip_cache_key is not None
+        ):
+            cached_entry = self._wan_ipv6_cache.get(ip_cache_key)
+            if cached_entry is not None:
+                self._wan_ipv6_cache[normalized_mac] = cached_entry
+                cache_key = normalized_mac
         if cached_entry and (now - cached_entry[0]) <= self._cloud_cache_ttl:
             data.wan_ipv6 = cached_entry[1]
             attrs.setdefault("ipv6", cached_entry[1])
@@ -425,16 +447,18 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 attrs[ATTR_REASON] = "missing_api_key"
             return
 
-        if normalized_mac is None:
-            attrs[ATTR_REASON] = "missing_gw_mac"
-            if not self._warned_missing_gw_mac:
-                _LOGGER.warning(
-                    (
-                        "WAN interface MAC address is unknown; set the gateway MAC in "
-                        "integration options or ensure the controller exposes it"
-                    )
+        missing_mac = normalized_mac is None
+        if missing_mac and not self._warned_missing_gw_mac:
+            _LOGGER.warning(
+                (
+                    "WAN interface MAC address is unknown; set the gateway MAC in "
+                    "integration options or ensure the controller exposes it"
                 )
-                self._warned_missing_gw_mac = True
+            )
+            self._warned_missing_gw_mac = True
+
+        if missing_mac and ip_norm is None:
+            attrs[ATTR_REASON] = "missing_gw_mac"
             self._apply_local_ipv6_fallback(
                 data,
                 primary_link,
@@ -443,7 +467,11 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             )
             return
 
-        if cached_entry and (now - self._cloud_last_fetch) < self._cloud_fetch_interval:
+        if (
+            cached_entry
+            and cache_key is not None
+            and (now - self._cloud_last_fetch) < self._cloud_fetch_interval
+        ):
             data.wan_ipv6 = cached_entry[1]
             attrs.setdefault("ipv6", cached_entry[1])
             attrs["adress_ipv6"] = cached_entry[1]
@@ -585,13 +613,25 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             if health_record is not None:
                 health_record["last_ipv6"] = ipv6
                 health_record.setdefault("wan_ipv6", ipv6)
-            self._wan_ipv6_cache[normalized_mac] = (self._cloud_last_fetch, ipv6)
+            if normalized_mac is not None:
+                self._wan_ipv6_cache[normalized_mac] = (
+                    self._cloud_last_fetch,
+                    ipv6,
+                )
+            if ip_cache_key is not None:
+                self._wan_ipv6_cache[ip_cache_key] = (
+                    self._cloud_last_fetch,
+                    ipv6,
+                )
         else:
             data.wan_ipv6 = None
             attrs[ATTR_REASON] = "no_ipv6_for_gw"
             attrs.pop("ipv6", None)
             attrs["adress_ipv6"] = None
-            self._wan_ipv6_cache.pop(normalized_mac, None)
+            if normalized_mac is not None:
+                self._wan_ipv6_cache.pop(normalized_mac, None)
+            if ip_cache_key is not None:
+                self._wan_ipv6_cache.pop(ip_cache_key, None)
 
     def _apply_local_ipv6_fallback(
         self,
