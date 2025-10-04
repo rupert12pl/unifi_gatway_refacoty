@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +18,7 @@ from custom_components.unifi_gateway_refactored.const import (
     CONF_TIMEOUT,
     CONF_USERNAME,
 )
+from homeassistant.config_entries import ConfigEntry
 
 
 def run(coro):
@@ -97,10 +98,13 @@ def test_options_flow_rejects_blank_host(
 ) -> None:
     """Options flow should surface an error when host is blank."""
 
-    entry = SimpleNamespace(
-        entry_id="1234",
-        data={CONF_HOST: "udm.local", CONF_USERNAME: "user", CONF_PASSWORD: "pass"},
-        options={CONF_HOST: "udm.local", CONF_USERNAME: "user", CONF_PASSWORD: "pass"},
+    entry = cast(
+        ConfigEntry,
+        SimpleNamespace(
+            entry_id="1234",
+            data={CONF_HOST: "udm.local", CONF_USERNAME: "user", CONF_PASSWORD: "pass"},
+            options={CONF_HOST: "udm.local", CONF_USERNAME: "user", CONF_PASSWORD: "pass"},
+        ),
     )
 
     captured: dict[str, Any] = {}
@@ -206,14 +210,17 @@ def test_options_flow_normalizes_existing_host(
 ) -> None:
     """Ensure stored host values are normalized even if unchanged in the form."""
 
-    entry = SimpleNamespace(
-        entry_id="host-fix",
-        data={
-            CONF_HOST: "  udm.local  ",
-            CONF_USERNAME: "user",
-            CONF_PASSWORD: "pass",
-        },
-        options={},
+    entry = cast(
+        ConfigEntry,
+        SimpleNamespace(
+            entry_id="host-fix",
+            data={
+                CONF_HOST: "  udm.local  ",
+                CONF_USERNAME: "user",
+                CONF_PASSWORD: "pass",
+            },
+            options={},
+        ),
     )
 
     async def fake_validate(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
