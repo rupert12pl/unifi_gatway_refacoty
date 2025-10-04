@@ -27,6 +27,7 @@ from .const import (
     CONF_SPEEDTEST_INTERVAL,
     CONF_WIFI_GUEST,
     CONF_WIFI_IOT,
+    CONF_UI_API_KEY,
     DATA_RUNNER,
     DATA_UNDO_TIMER,
     DEFAULT_PORT,
@@ -41,6 +42,9 @@ from .const import (
     LEGACY_CONF_SPEEDTEST_INTERVAL_MIN,
     PLATFORMS,
 )
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+from .cloud_client import UiCloudClient
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, AuthError, ConnectivityError, UniFiOSClient
 from .monitor import SpeedtestRunner
@@ -189,6 +193,14 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
 
     options = entry.options or {}
 
+    ui_api_key = entry.data.get(CONF_UI_API_KEY)
+    if not ui_api_key:
+        ui_api_key = options.get(CONF_UI_API_KEY)
+    ui_cloud_client: UiCloudClient | None = None
+    if ui_api_key:
+        session = async_get_clientsession(hass)
+        ui_cloud_client = UiCloudClient(session, ui_api_key)
+
     speedtest_interval_seconds = _resolve_speedtest_interval_seconds(options, entry.data)
 
     wifi_guest = _normalize_wifi_option(options.get(CONF_WIFI_GUEST))
@@ -214,6 +226,7 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
         hass,
         client,
         speedtest_interval=speedtest_interval_seconds,
+        ui_cloud_client=ui_cloud_client,
     )
     await coordinator.async_config_entry_first_refresh()
 

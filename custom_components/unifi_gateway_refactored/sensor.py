@@ -2625,38 +2625,117 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
     def _wan_health_record(self) -> Optional[Dict[str, Any]]:
         return _find_wan_health_record(self.coordinator.data, self._identifiers)
 
-    def _ipv6_enabled(self) -> bool:
+    def _wan_network_records(self) -> list[Mapping[str, Any]]:
         data = self.coordinator.data
         if not data:
-            return False
+            return []
+
+        identifiers = {value for value in self._identifiers}
+        identifiers.update({value.replace(" ", "") for value in list(identifiers)})
+
+        matches: list[Mapping[str, Any]] = []
         for network in data.networks:
             if not isinstance(network, Mapping):
                 continue
-            name = str(network.get("name") or "").strip().lower()
-            if name != "wan":
-                continue
-            mode = str(network.get("ipv6_interface_type") or "").strip().lower()
-            if mode and mode != "disabled":
+            for key in (
+                "_id",
+                "id",
+                "name",
+                "wan_name",
+                "display_name",
+                "ifname",
+                "wan_ifname",
+                "interface",
+                "port",
+                "wan_port",
+            ):
+                value = network.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, str):
+                    normalized = value.strip().lower()
+                else:
+                    normalized = str(value).strip().lower()
+                if not normalized:
+                    continue
+                if normalized in identifiers or normalized.replace(" ", "") in identifiers:
+                    matches.append(network)
+                    break
+        if not matches:
+            for network in data.networks:
+                if not isinstance(network, Mapping):
+                    continue
+                purpose = str(network.get("purpose") or network.get("role") or "").lower()
+                if "wan" in purpose or network.get("wan_network"):
+                    matches.append(network)
+        return matches
+
+    @staticmethod
+    def _network_ipv6_enabled(networks: Iterable[Mapping[str, Any]]) -> Optional[bool]:
+        def _interpret(value: Any) -> Optional[bool]:
+            if value in (None, ""):
+                return None
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            text = str(value).strip().lower()
+            if not text:
+                return None
+            if text in {"disabled", "off", "none", "false"}:
+                return False
+            if text in {
+                "enabled",
+                "on",
+                "auto",
+                "automatic",
+                "dhcp",
+                "dhcpv6",
+                "slaac",
+                "static",
+                "manual",
+                "pd",
+                "prefixdelegation",
+                "prefix delegation",
+            }:
                 return True
-        return False
+            return None
+
+        preference: Optional[bool] = None
+        for network in networks:
+            for key in (
+                "ipv6_interface_type",
+                "ipv6_type",
+                "ipv6_method",
+                "ipv6",  # assorted controller payloads
+                "enable_ipv6",
+                "ipv6_enabled",
+            ):
+                result = _interpret(network.get(key))
+                if result is False:
+                    return False
+                if result is True:
+                    preference = True
+        return preference
 
     def _select_wan_last_ip(
         self,
         link: Optional[Mapping[str, Any]],
         health: Optional[Mapping[str, Any]],
+        ipv6_allowed: Optional[bool],
     ) -> str:
-        ipv6_enabled = self._ipv6_enabled()
         ipv4: Optional[str] = None
         ipv6: Optional[str] = None
 
         if isinstance(link, Mapping):
             ipv4 = _extract_ip_from_value(link.get("last_ipv4"), version=4)
-            ipv6 = _extract_ip_from_value(link.get("last_ipv6"), version=6)
+            if ipv6_allowed is not False:
+                ipv6 = _extract_ip_from_value(link.get("last_ipv6"), version=6)
 
-        if not ipv6 and isinstance(health, Mapping):
+        if ipv6_allowed is not False and not ipv6 and isinstance(health, Mapping):
             ipv6 = _extract_ip_from_value(health.get("last_ipv6"), version=6)
 
-        if ipv6_enabled and ipv6:
+        if ipv6 and ipv6_allowed is not False:
             return ipv6
         if ipv4:
             return ipv4
@@ -2668,6 +2747,21 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
     def native_value(self) -> Optional[str]:
         link = self._link()
         health = self._wan_health_record()
+        networks = self._wan_network_records()
+        ipv6_allowed = self._network_ipv6_enabled(networks)
+        ipv6: Optional[str] = None
+        source6: Optional[str] = None
+        if ipv6_allowed is not False:
+            ipv6, source6 = _extract_wan_value_with_source(
+                link, health, _WAN_IPV6_KEYS, version=6
+            )
+        if ipv6 and ipv6_allowed is not False:
+            if isinstance(link, Mapping) and not link.get("last_ipv6"):
+                link.setdefault("last_ipv6", ipv6)
+            self._last_ip = ipv6
+            self._last_source = source6 or "unknown"
+            return ipv6
+
         ip, source = _extract_wan_value_with_source(
             link, health, _WAN_IPV4_KEYS, version=4
         )
@@ -2678,7 +2772,7 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
             self._last_source = source or "unknown"
             return ip
 
-        fallback = self._select_wan_last_ip(link, health)
+        fallback = self._select_wan_last_ip(link, health, ipv6_allowed)
         if fallback != STATE_UNKNOWN:
             self._last_ip = fallback
             if not self._last_source:

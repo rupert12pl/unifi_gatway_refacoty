@@ -1,7 +1,7 @@
 from homeassistant.const import Platform
 
 DOMAIN = "unifi_gateway_refactored"
-PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
+PLATFORMS = [Platform.SENSOR, Platform.BUTTON]
 
 CONF_USERNAME = "username"
 # Placeholder configuration keys for UI forms.
@@ -18,6 +18,7 @@ LEGACY_CONF_SPEEDTEST_INTERVAL_MIN = "speedtest_interval_minutes"
 CONF_SPEEDTEST_ENTITIES = "speedtest_entities"
 CONF_WIFI_GUEST = "wifi_guest"
 CONF_WIFI_IOT = "wifi_iot"
+CONF_UI_API_KEY = "ui_api_key"
 
 DEFAULT_PORT = 443
 DEFAULT_SITE = "default"
@@ -43,3 +44,5 @@ ATTR_REASON = "reason"
 ATTR_ENTITY_IDS = "entity_ids"
 ATTR_DURATION_MS = "duration_ms"
 ATTR_ERROR = "error"
+
+UI_HOSTS_URL = "https://api.ui.com/v1/hosts"

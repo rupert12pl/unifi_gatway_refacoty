@@ -35,13 +35,11 @@ async def async_get_config_entry_diagnostics(
 
         def _collect_existing() -> Dict[str, Any]:
             health = client.get_healthinfo()
-            sites = client.list_sites()
             return {
                 "controller_ui": client.get_controller_url(),
                 "controller_api": client.get_controller_api_url(),
                 "site": client.get_site(),
                 "health": health,
-                "sites": sites,
             }
 
         return await hass.async_add_executor_job(_collect_existing)
@@ -60,13 +58,11 @@ async def async_get_config_entry_diagnostics(
             timeout=entry.data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
         )
         health = client.get_healthinfo()
-        sites = client.list_sites()
         return {
             "controller_ui": client.get_controller_url(),
             "controller_api": client.get_controller_api_url(),
             "site": client.get_site(),
             "health": health,
-            "sites": sites,
         }
 
     return await hass.async_add_executor_job(_collect_fresh)
