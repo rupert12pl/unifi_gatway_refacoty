@@ -463,24 +463,25 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 len(wan_links_raw),
             )
 
+        ipv4: Optional[str] = None
         try:
-            ipv4, ipv6 = self._client.get_wan_ips_from_devices()
+            wan_ips = self._client.get_wan_ips_from_devices()
         except Exception as err:  # pragma: no cover - defensive guard for API quirks
-            ipv4 = ipv6 = None
             _LOGGER.debug("WAN IPs from devices unavailable: %s", err)
+        else:
+            if isinstance(wan_ips, (list, tuple)) and wan_ips:
+                ipv4_candidate = wan_ips[0]
+                if isinstance(ipv4_candidate, str) and ipv4_candidate:
+                    ipv4 = ipv4_candidate
 
-        if wan_links_raw and (ipv4 or ipv6):
+        if wan_links_raw and ipv4:
             for wan in wan_links_raw:
                 if isinstance(wan, dict):
                     if ipv4 and not wan.get("last_ipv4"):
                         wan["last_ipv4"] = ipv4
-                    if ipv6 and not wan.get("last_ipv6"):
-                        wan["last_ipv6"] = ipv6
                 else:
                     if ipv4 and not getattr(wan, "last_ipv4", None):
                         setattr(wan, "last_ipv4", ipv4)
-                    if ipv6 and not getattr(wan, "last_ipv6", None):
-                        setattr(wan, "last_ipv6", ipv6)
         wan_links: List[Dict[str, Any]] = []
         for link in wan_links_raw:
             link_id = link.get("id") or link.get("_id") or link.get("ifname")
