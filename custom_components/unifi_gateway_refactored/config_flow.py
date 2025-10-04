@@ -181,6 +181,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         cleaned = str(value).strip()
         return cleaned or None
 
+    @staticmethod
+    def _normalize_required_text(value: Any, default: str = "") -> str:
+        """Normalize required text fields for form defaults."""
+
+        normalized = ConfigFlow._normalize_optional_text(value)
+        if normalized is None:
+            return default
+        return normalized
+
     async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         if user_input is not None:
@@ -462,30 +471,67 @@ class OptionsFlow(config_entries.OptionsFlow):
             )
         if not entities_default:
             entities_default = DEFAULT_SPEEDTEST_ENTITIES
+        host_default = ConfigFlow._normalize_required_text(current.get(CONF_HOST), "")
+        username_default = ConfigFlow._normalize_required_text(
+            current.get(CONF_USERNAME), ""
+        )
+        password_default = ConfigFlow._normalize_required_text(
+            current.get(CONF_PASSWORD), ""
+        )
+        site_default = ConfigFlow._normalize_required_text(
+            current.get(CONF_SITE_ID, DEFAULT_SITE), DEFAULT_SITE
+        )
+
+        port_default_raw = current.get(CONF_PORT, DEFAULT_PORT)
+        try:
+            port_default = int(port_default_raw)
+        except (TypeError, ValueError):
+            port_default = DEFAULT_PORT
+        if not 1 <= port_default <= 65535:
+            port_default = DEFAULT_PORT
+
+        verify_ssl_value = current.get(CONF_VERIFY_SSL)
+        verify_ssl_default = (
+            verify_ssl_value if isinstance(verify_ssl_value, bool) else DEFAULT_VERIFY_SSL
+        )
+
+        use_proxy_value = current.get(CONF_USE_PROXY_PREFIX)
+        use_proxy_default = (
+            use_proxy_value
+            if isinstance(use_proxy_value, bool)
+            else DEFAULT_USE_PROXY_PREFIX
+        )
+
+        timeout_raw = current.get(CONF_TIMEOUT, DEFAULT_TIMEOUT)
+        try:
+            timeout_default = int(timeout_raw)
+        except (TypeError, ValueError):
+            timeout_default = DEFAULT_TIMEOUT
+        if timeout_default < 1:
+            timeout_default = DEFAULT_TIMEOUT
+
+        api_key_default = ConfigFlow._normalize_api_key(current.get(CONF_UI_API_KEY)) or ""
+        wifi_guest_default = (
+            ConfigFlow._normalize_optional_text(current.get(CONF_WIFI_GUEST)) or ""
+        )
+        wifi_iot_default = (
+            ConfigFlow._normalize_optional_text(current.get(CONF_WIFI_IOT)) or ""
+        )
+
         schema = vol.Schema(
             {
-                vol.Optional(CONF_HOST, default=current.get(CONF_HOST)): str,
-                vol.Optional(
-                    CONF_PORT,
-                    default=current.get(CONF_PORT, DEFAULT_PORT),
-                ): vol.All(vol.Coerce(int), vol.Clamp(min=1, max=65535)),
-                vol.Optional(CONF_USERNAME, default=current.get(CONF_USERNAME)): str,
-                vol.Optional(CONF_PASSWORD, default=current.get(CONF_PASSWORD)): str,
-                vol.Optional(CONF_SITE_ID, default=current.get(CONF_SITE_ID, DEFAULT_SITE)): str,
-                vol.Optional(
-                    CONF_VERIFY_SSL,
-                    default=current.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
-                ): bool,
-                vol.Optional(
-                    CONF_USE_PROXY_PREFIX,
-                    default=current.get(
-                        CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX
-                    ),
-                ): bool,
-                vol.Optional(
-                    CONF_TIMEOUT,
-                    default=current.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
-                ): vol.All(vol.Coerce(int), vol.Clamp(min=1)),
+                vol.Optional(CONF_HOST, default=host_default): str,
+                vol.Optional(CONF_PORT, default=port_default): vol.All(
+                    vol.Coerce(int), vol.Clamp(min=1, max=65535)
+                ),
+                vol.Optional(CONF_USERNAME, default=username_default): str,
+                vol.Optional(CONF_PASSWORD, default=password_default): str,
+                vol.Optional(CONF_SITE_ID, default=site_default): str,
+                vol.Optional(CONF_VERIFY_SSL, default=verify_ssl_default): bool,
+                vol.Optional(CONF_USE_PROXY_PREFIX, default=use_proxy_default): bool,
+                vol.Optional(CONF_TIMEOUT, default=timeout_default): vol.All(
+                    vol.Coerce(int), vol.Clamp(min=1)
+                ),
                 vol.Optional(
                     CONF_SPEEDTEST_INTERVAL,
                     default=interval_default,
@@ -494,18 +540,9 @@ class OptionsFlow(config_entries.OptionsFlow):
                     CONF_SPEEDTEST_ENTITIES,
                     default=entities_default,
                 ): str,
-                vol.Optional(
-                    CONF_UI_API_KEY,
-                    default=current.get(CONF_UI_API_KEY, ""),
-                ): vol.Any(str, None),
-                vol.Optional(
-                    CONF_WIFI_GUEST,
-                    default=current.get(CONF_WIFI_GUEST),
-                ): vol.Any(str, None),
-                vol.Optional(
-                    CONF_WIFI_IOT,
-                    default=current.get(CONF_WIFI_IOT),
-                ): vol.Any(str, None),
+                vol.Optional(CONF_UI_API_KEY, default=api_key_default): str,
+                vol.Optional(CONF_WIFI_GUEST, default=wifi_guest_default): str,
+                vol.Optional(CONF_WIFI_IOT, default=wifi_iot_default): str,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
