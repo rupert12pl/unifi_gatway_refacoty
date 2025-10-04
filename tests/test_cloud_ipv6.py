@@ -18,11 +18,17 @@ from custom_components.unifi_gateway_refactored.const import (
     ATTR_REASON,
     CONF_API_KEY,
     CONF_HOST,
+    CONF_SPEEDTEST_ENTITIES,
+    CONF_SPEEDTEST_INTERVAL,
     CONF_PASSWORD,
     CONF_PORT,
     CONF_SITE_ID,
+    CONF_UI_API_KEY,
     CONF_TIMEOUT,
+    CONF_USE_PROXY_PREFIX,
     CONF_VERIFY_SSL,
+    CONF_WIFI_GUEST,
+    CONF_WIFI_IOT,
     CONF_USERNAME,
 )
 from custom_components.unifi_gateway_refactored.coordinator import (
@@ -394,22 +400,138 @@ def test_options_flow_saves_api_key_and_reload(hass, monkeypatch: pytest.MonkeyP
         fake_validate_key,
     )
 
-    updated_options: Dict[str, Any] = {}
-
     class DummyConfigEntries:
+        def __init__(self) -> None:
+            self._entries: Dict[str, Any] = {entry.entry_id: entry}
+            self.data_updates: list[Dict[str, Any]] = []
+
         def async_update_entry(self, entry_to_update, *, data=None, options=None):
+            if data is not None:
+                data_copy = dict(data)
+                entry_to_update.data = data_copy
+                self.data_updates.append(data_copy)
             if options is not None:
                 entry_to_update.options = dict(options)
-                updated_options.update(options)
+            self._entries[entry_to_update.entry_id] = entry_to_update
+
+        def async_get_entry(self, entry_id: str):
+            return self._entries.get(entry_id)
 
     hass.config_entries = DummyConfigEntries()  # type: ignore[attr-defined]
 
     flow = OptionsFlow(cast(config_entries.ConfigEntry, entry))
     flow.hass = hass  # type: ignore[assignment]
 
-    asyncio.run(flow.async_step_init({CONF_API_KEY: "abc123"}))
-    assert entry.options[CONF_API_KEY] == "abc123"
-    assert updated_options[CONF_API_KEY] == "abc123"
+    result = asyncio.run(flow.async_step_init({CONF_API_KEY: "abc123"}))
+    assert result["type"] == "create_entry"
+    assert result["data"][CONF_API_KEY] == "abc123"
+    assert hass.config_entries.data_updates[-1][CONF_API_KEY] == "abc123"
+
+
+def test_options_flow_updates_entry_data_and_options(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = SimpleNamespace(
+        entry_id="5678",
+        data={
+            CONF_HOST: "udm.local",
+            CONF_USERNAME: "user",
+            CONF_PASSWORD: "pass",
+            CONF_PORT: 443,
+            CONF_TIMEOUT: 10,
+            CONF_SITE_ID: "default",
+            CONF_VERIFY_SSL: False,
+            CONF_USE_PROXY_PREFIX: True,
+            CONF_SPEEDTEST_INTERVAL: 3600,
+            CONF_SPEEDTEST_ENTITIES: "sensor.speedtest_download",
+            CONF_WIFI_GUEST: "Guest",
+            CONF_WIFI_IOT: None,
+        },
+        options={
+            CONF_SPEEDTEST_INTERVAL: 1200,
+            CONF_WIFI_GUEST: "Guest",
+        },
+    )
+
+    async def fake_validate(*_args: Any, **_kwargs: Any) -> Dict[str, Any]:
+        return {}
+
+    async def fake_validate_key(_api_key: Optional[str]) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "custom_components.unifi_gateway_refactored.config_flow._validate",
+        fake_validate,
+    )
+    monkeypatch.setattr(
+        "custom_components.unifi_gateway_refactored.config_flow._validate_ui_api_key",
+        fake_validate_key,
+    )
+
+    class DummyConfigEntries:
+        def __init__(self) -> None:
+            self._entries: Dict[str, Any] = {entry.entry_id: entry}
+            self.data_updates: list[Dict[str, Any]] = []
+
+        def async_update_entry(self, entry_to_update, *, data=None, options=None):
+            if data is not None:
+                data_copy = dict(data)
+                entry_to_update.data = data_copy
+                self.data_updates.append(data_copy)
+            if options is not None:
+                entry_to_update.options = dict(options)
+            self._entries[entry_to_update.entry_id] = entry_to_update
+
+        def async_get_entry(self, entry_id: str):
+            return self._entries.get(entry_id)
+
+    hass.config_entries = DummyConfigEntries()  # type: ignore[attr-defined]
+
+    flow = OptionsFlow(cast(config_entries.ConfigEntry, entry))
+    flow.hass = hass  # type: ignore[assignment]
+
+    user_input = {
+        CONF_HOST: "new.udm.local",
+        CONF_USERNAME: "new-user",
+        CONF_PASSWORD: "new-pass",
+        CONF_PORT: 8443,
+        CONF_SITE_ID: "home",
+        CONF_VERIFY_SSL: True,
+        CONF_USE_PROXY_PREFIX: False,
+        CONF_TIMEOUT: 20,
+        CONF_SPEEDTEST_INTERVAL: 45,
+        CONF_SPEEDTEST_ENTITIES: "sensor.a, sensor.b",
+        CONF_UI_API_KEY: "newkey",
+        CONF_WIFI_GUEST: "",  # removal
+        CONF_WIFI_IOT: "IOT",
+    }
+
+    result = asyncio.run(flow.async_step_init(user_input))
+
+    assert result["type"] == "create_entry"
+    options_payload = result["data"]
+    assert options_payload[CONF_HOST] == "new.udm.local"
+    assert options_payload[CONF_PORT] == 8443
+    assert options_payload[CONF_SPEEDTEST_INTERVAL] == 2700
+    assert options_payload[CONF_SPEEDTEST_ENTITIES] == "sensor.a,sensor.b"
+    assert options_payload[CONF_UI_API_KEY] == "newkey"
+    assert CONF_WIFI_GUEST not in options_payload
+    assert options_payload[CONF_WIFI_IOT] == "IOT"
+
+    updated_data = hass.config_entries.data_updates[-1]
+    assert updated_data[CONF_HOST] == "new.udm.local"
+    assert updated_data[CONF_USERNAME] == "new-user"
+    assert updated_data[CONF_PASSWORD] == "new-pass"
+    assert updated_data[CONF_PORT] == 8443
+    assert updated_data[CONF_SITE_ID] == "home"
+    assert updated_data[CONF_VERIFY_SSL] is True
+    assert updated_data[CONF_USE_PROXY_PREFIX] is False
+    assert updated_data[CONF_TIMEOUT] == 20
+    assert updated_data[CONF_SPEEDTEST_INTERVAL] == 2700
+    assert updated_data[CONF_SPEEDTEST_ENTITIES] == "sensor.a,sensor.b"
+    assert updated_data[CONF_UI_API_KEY] == "newkey"
+    assert CONF_WIFI_GUEST not in updated_data
+    assert updated_data[CONF_WIFI_IOT] == "IOT"
 
 
 def test_options_flow_handles_missing_string_defaults(hass) -> None:
