@@ -168,6 +168,8 @@ class UniFiOSClient:
         self._vpn_sessions_cache: Optional[Tuple[float, Dict[str, Dict[str, int]]]] = None
         self._st_cache: Optional[tuple[float, Dict[str, Any] | None]] = None
         self._unavailable_paths: dict[str, float] = {}
+        self._supports_stat_alert: Optional[bool] = None
+        self._internet_api_supported: Optional[bool] = None
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
@@ -715,10 +717,24 @@ class UniFiOSClient:
         return self._get_list(self._site_path("stat/health"))
 
     def get_alerts(self) -> List[Dict[str, Any]]:
-        for path in ("stat/alert", "list/alarm", "stat/alarm"):
+        candidate_paths: List[str] = ["list/alarm", "stat/alarm"]
+        if self._supports_stat_alert is not False:
+            candidate_paths.append("stat/alert")
+
+        attempted_stat_alert = False
+        for path in candidate_paths:
             alerts = self._get_list(self._site_path(path))
             if alerts:
+                if path == "stat/alert":
+                    self._supports_stat_alert = True
                 return alerts
+            if path == "stat/alert":
+                attempted_stat_alert = True
+
+        if attempted_stat_alert and self._supports_stat_alert is None:
+            stat_alert_path = self._site_path("stat/alert")
+            if self._is_path_unavailable(stat_alert_path):
+                self._supports_stat_alert = False
         return []
 
     def get_devices(self) -> List[Dict[str, Any]]:
@@ -1112,12 +1128,21 @@ class UniFiOSClient:
         return result
 
     def get_wan_links(self) -> List[Dict[str, Any]]:
-        for path in (
-            "internet/wan",
-            "stat/waninfo",
-            "stat/wan",
-            "rest/internet",
-        ):
+        primary_paths = ("stat/waninfo", "stat/wan")
+        for path in primary_paths:
+            links = self._get_list(self._site_path(path))
+            if links:
+                return links
+
+        if self._internet_api_supported is False:
+            return []
+
+        attempted_internet = False
+        internet_paths = ("internet/wan", "rest/internet")
+        for path in internet_paths:
+            if self._internet_api_supported is False:
+                break
+            attempted_internet = True
             try:
                 links = self._get_list(self._site_path(path))
             except APIError as err:
@@ -1128,7 +1153,14 @@ class UniFiOSClient:
                     continue
                 raise
             if links:
+                self._internet_api_supported = True
                 return links
+
+        if attempted_internet and self._internet_api_supported is None:
+            if all(
+                self._is_path_unavailable(self._site_path(path)) for path in internet_paths
+            ):
+                self._internet_api_supported = False
         return []
 
     def instance_key(self) -> str:
