@@ -1,7 +1,7 @@
 {
   "domain": "unifi_gateway_refactored",
   "name": "UniFi Gateway Dashboard Analyzer",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "config_flow": true,
   "documentation": "https://github.com/rupert12pl/unifi_gatway_refacoty",
   "issue_tracker": "https://github.com/rupert12pl/unifi_gatway_refacoty/issues",
@@ -19,7 +19,8 @@
     "custom_components.unifi_gateway_refactored",
     "custom_components.unifi_gateway_refactored.coordinator",
     "custom_components.unifi_gateway_refactored.monitor",
-    "custom_components.unifi_gateway_refactored.unifi_client"
+    "custom_components.unifi_gateway_refactored.unifi_client",
+    "custom_components.unifi_gateway_refactored.cloud_client"
   ],
   "logo": "https://github.com/rupert12pl/unifi_gatway_refacoty/blob/main/custom_components/unifi_gateway_refactored/logo.svg",
   "icon": "https://github.com/rupert12pl/unifi_gatway_refacoty/blob/main/custom_components/unifi_gateway_refactored/icon.svg"
