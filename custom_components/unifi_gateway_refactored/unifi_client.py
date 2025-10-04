@@ -502,12 +502,14 @@ class UniFiOSClient:
         url = self._ui_hosts_endpoint()
         requests = self._requests_module()
 
+        verify = True if url.startswith("https://api.ui.com/v1/") else self._session.verify
+
         try:
             response = self._session.get(
                 url,
                 timeout=self._timeout,
                 allow_redirects=False,
-                verify=True,
+                verify=verify,
             )
         except requests.exceptions.RequestException as err:  # pragma: no cover - network guard
             _LOGGER.debug("Fetching UI hosts from %s failed: %s", url, err)

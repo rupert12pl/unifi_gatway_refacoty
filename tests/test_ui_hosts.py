@@ -116,3 +116,34 @@ def test_fetch_ui_hosts_enforces_ssl_verification(monkeypatch):
     session_get.assert_called_once()
     _, kwargs = session_get.call_args
     assert kwargs["verify"] is True
+
+
+def test_fetch_ui_hosts_respects_user_verify_setting_for_other_domains(monkeypatch):
+    monkeypatch.setattr(
+        UniFiOSClient,
+        "_login",
+        lambda self, host, port, ssl_verify, timeout: None,
+    )
+    monkeypatch.setattr(
+        UniFiOSClient,
+        "_ensure_connected",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        UniFiOSClient,
+        "_ui_hosts_endpoint",
+        staticmethod(lambda: "https://example.com/v1/hosts"),
+    )
+
+    dummy_password = uuid.uuid4().hex
+    client = UniFiOSClient("example.com", username="user", password=dummy_password)
+    client._session.verify = False
+    response = MagicMock(status_code=200, text="[]")
+    session_get = MagicMock(return_value=response)
+    client._session.get = session_get
+
+    assert client._fetch_ui_hosts() == []
+
+    session_get.assert_called_once()
+    _, kwargs = session_get.call_args
+    assert kwargs["verify"] is False
