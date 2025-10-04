@@ -7,7 +7,7 @@ import logging
 import socket
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from urllib.parse import urlsplit
 
@@ -19,6 +19,51 @@ from .const import DEFAULT_SITE
 
 DEFAULT_ACTIVE_WINDOW_SEC = 120
 UNAVAILABLE_ENDPOINT_RETRY_SEC = 1800
+_PLACEHOLDER_STRINGS = {
+    "unknown",
+    "none",
+    "null",
+    "n/a",
+    "na",
+    "not available",
+    "-",
+}
+_WAN_IPV4_KEYS = (
+    "wan_ip",
+    "ip",
+    "public_ip",
+    "external_ip",
+    "internet_ip",
+    "ipv4",
+)
+_WAN_IPV6_KEYS = (
+    "wan_ipv6",
+    "ipv6",
+    "public_ipv6",
+    "external_ipv6",
+    "global_ipv6",
+    "wan_ip6",
+    "ip6",
+    "ip_v6",
+    "internet_ipv6",
+)
+_WAN_GATEWAY_IPV6_KEYS = (
+    "gateway_ipv6",
+    "wan_gateway_ipv6",
+    "gw_ipv6",
+    "gateway_v6",
+    "wan_ipv6_gateway",
+    "wan_gateway_ip6",
+)
+_WAN_IPV6_PREFIX_KEYS = (
+    "wan_ipv6_prefix",
+    "ipv6_prefix",
+    "wan_ipv6_subnet",
+    "ipv6_network",
+    "wan_ipv6_cidr",
+    "ipv6_cidr",
+    "wan_prefix_ipv6",
+)
 _VPN_NET_ID_KEYS = (
     "networkconf_id",
     "network_id",
@@ -167,6 +212,7 @@ class UniFiOSClient:
         self._vpn_sessions_cache: Optional[Tuple[float, Dict[str, Dict[str, int]]]] = None
         self._st_cache: Optional[tuple[float, Dict[str, Any] | None]] = None
         self._unavailable_paths: dict[str, float] = {}
+        self._ui_hosts_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
@@ -283,6 +329,233 @@ class UniFiOSClient:
         if path:
             return f"{base}/{path.lstrip('/')}"
         return base
+
+    @staticmethod
+    def _ui_hosts_endpoint() -> str:
+        return "https://api.ui.com/v1/hosts"
+
+    @staticmethod
+    def _is_meaningful_value(value: Any) -> bool:
+        if value in (None, "", [], {}):
+            return False
+        if isinstance(value, str) and value.strip().lower() in _PLACEHOLDER_STRINGS:
+            return False
+        return True
+
+    @staticmethod
+    def _first_value(record: Mapping[str, Any], keys: Sequence[str]) -> Any:
+        for key in keys:
+            if key not in record:
+                continue
+            value = record.get(key)
+            if UniFiOSClient._is_meaningful_value(value):
+                return value
+        return None
+
+    @staticmethod
+    def _iter_ui_host_wan_entries(host: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
+        if not isinstance(host, Mapping):
+            return []
+
+        def _flatten(value: Any) -> Iterable[Mapping[str, Any]]:
+            if isinstance(value, Mapping):
+                yield value
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, Mapping):
+                        yield item
+
+        containers: list[Any] = []
+        for key in (
+            "wan_networks",
+            "wan",
+            "wan_links",
+            "wan_interfaces",
+            "wan_connections",
+            "wan_status",
+            "internet",
+        ):
+            value = host.get(key)
+            if value in (None, ""):
+                continue
+            containers.append(value)
+
+        networks = host.get("networks") or host.get("interfaces") or host.get("links")
+        if isinstance(networks, list):
+            for item in networks:
+                if not isinstance(item, Mapping):
+                    continue
+                purpose = str(
+                    item.get("purpose")
+                    or item.get("type")
+                    or item.get("role")
+                    or item.get("interface_type")
+                    or ""
+                ).lower()
+                if "wan" in purpose or any(
+                    key in item for key in (*_WAN_IPV4_KEYS, *_WAN_IPV6_KEYS)
+                ):
+                    containers.append(item)
+
+        if any(key in host for key in (*_WAN_IPV4_KEYS, *_WAN_IPV6_KEYS, *_WAN_IPV6_PREFIX_KEYS)):
+            containers.append(host)
+
+        entries: list[Mapping[str, Any]] = []
+        for container in containers:
+            entries.extend(list(_flatten(container)))
+        return entries
+
+    @staticmethod
+    def _normalize_ui_host_wan(
+        host: Mapping[str, Any], entry: Mapping[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(entry, Mapping):
+            return None
+
+        normalized: Dict[str, Any] = {"ui_host_source": "ui_host"}
+
+        host_id = UniFiOSClient._first_value(host, ("id", "_id", "uuid", "host_id"))
+        if host_id is not None:
+            normalized["ui_host_id"] = str(host_id)
+
+        host_name = UniFiOSClient._first_value(
+            host, ("name", "hostname", "display_name", "device_name", "host_name")
+        )
+        if host_name is not None:
+            normalized["ui_host_name"] = str(host_name)
+
+        identifier_keys = (
+            "id",
+            "wan_id",
+            "ifname",
+            "interface",
+            "iface",
+            "port",
+            "name",
+            "display_name",
+            "wan_name",
+        )
+
+        identifier_value = UniFiOSClient._first_value(entry, identifier_keys)
+        if identifier_value is not None:
+            normalized["id"] = str(identifier_value)
+
+        name_value = UniFiOSClient._first_value(
+            entry,
+            (
+                "display_name",
+                "name",
+                "wan_name",
+                "label",
+                "description",
+            ),
+        )
+        if name_value is not None:
+            normalized["name"] = str(name_value)
+
+        if "id" not in normalized and "name" in normalized:
+            normalized["id"] = normalized["name"]
+        if "name" not in normalized and "id" in normalized:
+            normalized["name"] = normalized["id"]
+
+        ifname_value = UniFiOSClient._first_value(entry, ("ifname", "interface", "iface", "port"))
+        if ifname_value is not None:
+            normalized["ifname"] = str(ifname_value)
+
+        ipv4_value = UniFiOSClient._first_value(entry, _WAN_IPV4_KEYS)
+        if ipv4_value is not None:
+            normalized["wan_ip"] = ipv4_value
+            normalized.setdefault("last_ipv4", ipv4_value)
+
+        ipv6_value = UniFiOSClient._first_value(entry, _WAN_IPV6_KEYS)
+        if ipv6_value is not None:
+            normalized["wan_ipv6"] = ipv6_value
+            normalized.setdefault("last_ipv6", ipv6_value)
+
+        gateway_v6 = UniFiOSClient._first_value(entry, _WAN_GATEWAY_IPV6_KEYS)
+        if gateway_v6 is not None:
+            normalized["gateway_ipv6"] = gateway_v6
+
+        prefix_v6 = UniFiOSClient._first_value(entry, _WAN_IPV6_PREFIX_KEYS)
+        if prefix_v6 is not None:
+            normalized["wan_ipv6_prefix"] = prefix_v6
+
+        isp_value = UniFiOSClient._first_value(
+            entry,
+            ("isp", "provider", "service_provider", "organization", "carrier"),
+        )
+        if isp_value is not None:
+            normalized["isp"] = isp_value
+
+        if "id" not in normalized and "name" not in normalized:
+            return None
+
+        if not any(
+            UniFiOSClient._is_meaningful_value(normalized.get(key))
+            for key in ("wan_ip", "wan_ipv6", "gateway_ipv6", "wan_ipv6_prefix")
+        ):
+            return None
+
+        return normalized
+
+    def _fetch_ui_hosts(self) -> List[Dict[str, Any]]:
+        url = self._ui_hosts_endpoint()
+        requests = self._requests_module()
+
+        try:
+            response = self._session.get(
+                url,
+                timeout=self._timeout,
+                allow_redirects=False,
+                verify=True,
+            )
+        except requests.exceptions.RequestException as err:  # pragma: no cover - network guard
+            _LOGGER.debug("Fetching UI hosts from %s failed: %s", url, err)
+            return []
+
+        status = response.status_code
+        if status >= 400:
+            _LOGGER.debug(
+                "UI hosts request %s returned HTTP %s", url, status
+            )
+            return []
+
+        text = response.text or ""
+        if not text.strip():
+            return []
+
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            _LOGGER.debug("Invalid JSON from UI hosts endpoint")
+            return []
+
+        records = self._extract_list(payload)
+        _LOGGER.debug("Fetched %s UI host records", len(records))
+        return records
+
+    def get_ui_hosts(self, cache_sec: int = 120) -> List[Dict[str, Any]]:
+        now = time.time()
+        if self._ui_hosts_cache and (now - self._ui_hosts_cache[0]) < cache_sec:
+            return self._ui_hosts_cache[1]
+
+        hosts = self._fetch_ui_hosts()
+        self._ui_hosts_cache = (now, hosts)
+        return hosts
+
+    def get_ui_host_wan_links(self, cache_sec: int = 120) -> List[Dict[str, Any]]:
+        hosts = self.get_ui_hosts(cache_sec=cache_sec)
+        results: List[Dict[str, Any]] = []
+        for host in hosts:
+            for entry in self._iter_ui_host_wan_entries(host):
+                normalized = self._normalize_ui_host_wan(host, entry)
+                if normalized:
+                    results.append(normalized)
+
+        _LOGGER.debug(
+            "Extracted %s WAN records from api.ui.com hosts payload", len(results)
+        )
+        return results
 
     @staticmethod
     def _shorten(text: Optional[str], limit: int = 1024) -> Optional[str]:
