@@ -22,6 +22,7 @@ from custom_components.unifi_gateway_refactored.const import (
     CONF_PORT,
     CONF_SITE_ID,
     CONF_TIMEOUT,
+    CONF_VERIFY_SSL,
     CONF_USERNAME,
 )
 from custom_components.unifi_gateway_refactored.coordinator import (
@@ -409,3 +410,26 @@ def test_options_flow_saves_api_key_and_reload(hass, monkeypatch: pytest.MonkeyP
     asyncio.run(flow.async_step_init({CONF_API_KEY: "abc123"}))
     assert entry.options[CONF_API_KEY] == "abc123"
     assert updated_options[CONF_API_KEY] == "abc123"
+
+
+def test_options_flow_handles_missing_string_defaults(hass) -> None:
+    entry = SimpleNamespace(
+        entry_id="1234",
+        data={
+            CONF_PORT: 443,
+            CONF_TIMEOUT: 10,
+        },
+        options={
+            CONF_VERIFY_SSL: True,
+            CONF_HOST: None,
+            CONF_USERNAME: None,
+            CONF_PASSWORD: None,
+            CONF_SITE_ID: None,
+        },
+    )
+
+    flow = OptionsFlow(cast(config_entries.ConfigEntry, entry))
+    flow.hass = hass  # type: ignore[assignment]
+
+    result = asyncio.run(flow.async_step_init())
+    assert result == {}
