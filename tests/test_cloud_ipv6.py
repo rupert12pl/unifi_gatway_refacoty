@@ -397,7 +397,7 @@ def test_options_flow_saves_api_key_and_reload(hass, monkeypatch: pytest.MonkeyP
     updated_options: Dict[str, Any] = {}
 
     class DummyConfigEntries:
-        async def async_update_entry(self, entry_to_update, *, data=None, options=None):
+        def async_update_entry(self, entry_to_update, *, data=None, options=None):
             if options is not None:
                 entry_to_update.options = dict(options)
                 updated_options.update(options)

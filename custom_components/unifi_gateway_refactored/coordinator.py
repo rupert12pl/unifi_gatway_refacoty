@@ -302,7 +302,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             self._stored_gw_mac = normalized
             return
         options[CONF_GW_MAC] = normalized
-        await self.hass.config_entries.async_update_entry(
+        self.hass.config_entries.async_update_entry(
             self._config_entry,
             options=options,
         )

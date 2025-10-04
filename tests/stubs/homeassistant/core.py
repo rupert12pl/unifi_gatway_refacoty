@@ -14,7 +14,7 @@ class _ConfigEntriesManager:
     async def async_unload_platforms(self, entry: Any, platforms: Any) -> bool:
         return True
 
-    async def async_update_entry(
+    def async_update_entry(
         self,
         entry: Any,
         *,

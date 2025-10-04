@@ -405,7 +405,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                         else:
                             current_options[CONF_UI_API_KEY] = normalized_key
                         cleaned.pop(CONF_UI_API_KEY, None)
-                        await self.hass.config_entries.async_update_entry(
+                        self.hass.config_entries.async_update_entry(
                             self._entry,
                             options=current_options,
                         )
