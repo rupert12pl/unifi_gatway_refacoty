@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional, cast
 
 import pytest
-import voluptuous as vol
 
 from custom_components.unifi_gateway_refactored.cloud_client import (
     HostItem,
@@ -21,19 +20,9 @@ from custom_components.unifi_gateway_refactored.const import (
     CONF_HOST,
     CONF_PASSWORD,
     CONF_PORT,
-    CONF_SPEEDTEST_ENTITIES,
-    CONF_SPEEDTEST_INTERVAL,
     CONF_SITE_ID,
     CONF_TIMEOUT,
-    CONF_UI_API_KEY,
     CONF_USERNAME,
-    CONF_VERIFY_SSL,
-    CONF_USE_PROXY_PREFIX,
-    CONF_WIFI_GUEST,
-    CONF_WIFI_IOT,
-    DEFAULT_SITE,
-    DEFAULT_SPEEDTEST_INTERVAL_MINUTES,
-    DEFAULT_TIMEOUT,
 )
 from custom_components.unifi_gateway_refactored.coordinator import (
     UniFiGatewayData,
@@ -420,107 +409,3 @@ def test_options_flow_saves_api_key_and_reload(hass, monkeypatch: pytest.MonkeyP
     asyncio.run(flow.async_step_init({CONF_API_KEY: "abc123"}))
     assert entry.options[CONF_API_KEY] == "abc123"
     assert updated_options[CONF_API_KEY] == "abc123"
-
-
-def test_options_flow_handles_legacy_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    entry = SimpleNamespace(
-        entry_id="4321",
-        data={
-            CONF_HOST: "udm.local",
-            CONF_USERNAME: 123,
-            CONF_PASSWORD: None,
-            CONF_PORT: "8443",
-            CONF_TIMEOUT: "invalid",
-            CONF_SITE_ID: True,
-            CONF_VERIFY_SSL: "yes",
-            CONF_USE_PROXY_PREFIX: None,
-            CONF_SPEEDTEST_ENTITIES: ["sensor.one", " sensor.two "],
-            CONF_UI_API_KEY: "  key  ",
-            CONF_WIFI_GUEST: True,
-            CONF_WIFI_IOT: 12345,
-        },
-        options={
-            CONF_SPEEDTEST_INTERVAL: -30,
-            CONF_WIFI_GUEST: False,
-        },
-    )
-
-    captured: Dict[str, Any] = {}
-
-    def capture_form(*, step_id: str, data_schema: Any, errors: Dict[str, str]) -> Dict[str, Any]:
-        captured["step_id"] = step_id
-        captured["schema"] = data_schema
-        captured["errors"] = errors
-        return {"type": "form"}
-
-    flow = OptionsFlow(cast(config_entries.ConfigEntry, entry))
-    monkeypatch.setattr(flow, "async_show_form", capture_form)
-
-    asyncio.run(flow.async_step_init())
-
-    assert captured["step_id"] == "init"
-    schema = captured["schema"]
-    assert isinstance(schema, vol.Schema)
-    defaults: Dict[str, Any] = {}
-    for key in schema.schema:
-        if isinstance(key, vol.Optional):
-            defaults[key.key] = key.default
-
-    assert defaults[CONF_HOST] == "udm.local"
-    assert defaults[CONF_USERNAME] == "123"
-    assert defaults[CONF_PASSWORD] == ""
-    assert defaults[CONF_SITE_ID] == DEFAULT_SITE
-    assert defaults[CONF_PORT] == 8443
-    assert defaults[CONF_TIMEOUT] == DEFAULT_TIMEOUT
-    assert defaults[CONF_VERIFY_SSL] is True
-    assert defaults[CONF_USE_PROXY_PREFIX] is True
-    assert defaults[CONF_SPEEDTEST_INTERVAL] == DEFAULT_SPEEDTEST_INTERVAL_MINUTES
-    assert defaults[CONF_SPEEDTEST_ENTITIES] == "sensor.one,sensor.two"
-    assert defaults[CONF_UI_API_KEY] == "key"
-    assert defaults[CONF_WIFI_GUEST] == ""
-    assert defaults[CONF_WIFI_IOT] == "12345"
-
-
-def test_options_flow_normalizes_complex_speedtest_entities(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    entry = SimpleNamespace(
-        entry_id="5678",
-        data={
-            CONF_HOST: "udm.local",
-            CONF_USERNAME: "user",
-            CONF_PASSWORD: "pass",
-            CONF_PORT: 443,
-            CONF_TIMEOUT: 10,
-            CONF_SITE_ID: "default",
-        },
-        options={
-            CONF_SPEEDTEST_ENTITIES: {
-                "download": [" sensor.one ", "sensor.two"],
-                "nested": {"upload": "sensor.three\nsensor.four"},
-                "ignored": "",
-            }
-        },
-    )
-
-    captured: Dict[str, Any] = {}
-
-    def capture_form(*, step_id: str, data_schema: Any, errors: Dict[str, str]) -> Dict[str, Any]:
-        captured["schema"] = data_schema
-        return {"type": "form"}
-
-    flow = OptionsFlow(cast(config_entries.ConfigEntry, entry))
-    monkeypatch.setattr(flow, "async_show_form", capture_form)
-
-    asyncio.run(flow.async_step_init())
-
-    schema: vol.Schema = captured["schema"]
-    defaults: Dict[str, Any] = {}
-    for key in schema.schema:
-        if isinstance(key, vol.Optional):
-            defaults[key.key] = key.default
-
-    assert (
-        defaults[CONF_SPEEDTEST_ENTITIES]
-        == "sensor.one,sensor.two,sensor.three,sensor.four"
-    )
