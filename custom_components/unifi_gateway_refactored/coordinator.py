@@ -384,7 +384,6 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             attrs["gw_name"] = hostname
         elif data.wan.get("name"):
             attrs.setdefault("gw_name", data.wan.get("name"))
-
         def _normalize_ip(value: Any) -> str | None:
             if isinstance(value, str):
                 cleaned = value.strip()

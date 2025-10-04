@@ -168,8 +168,6 @@ class UniFiOSClient:
         self._vpn_sessions_cache: Optional[Tuple[float, Dict[str, Dict[str, int]]]] = None
         self._st_cache: Optional[tuple[float, Dict[str, Any] | None]] = None
         self._unavailable_paths: dict[str, float] = {}
-        self._supports_stat_alert: Optional[bool] = None
-        self._internet_api_supported: Optional[bool] = None
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
@@ -483,16 +481,6 @@ class UniFiOSClient:
     def _normalize_path(path: str) -> str:
         return str(path or "").lstrip("/")
 
-    @staticmethod
-    def _strip_network_prefix(path: str) -> str:
-        """Remove known network proxy prefixes from ``path``."""
-
-        normalized = UniFiOSClient._normalize_path(path)
-        for prefix in ("proxy/network/", "network/"):
-            if normalized.startswith(prefix):
-                normalized = normalized[len(prefix) :]
-        return normalized
-
     def _is_path_unavailable(self, path: str) -> bool:
         normalized = self._normalize_path(path)
         if not normalized:
@@ -717,31 +705,10 @@ class UniFiOSClient:
         return self._get_list(self._site_path("stat/health"))
 
     def get_alerts(self) -> List[Dict[str, Any]]:
-        """Return the active UniFi alerts, preferring modern endpoints."""
-
-        modern_paths = ("list/alarm", "stat/alarm")
-        for path in modern_paths:
+        for path in ("stat/alert", "list/alarm", "stat/alarm"):
             alerts = self._get_list(self._site_path(path))
             if alerts:
                 return alerts
-
-        stat_alert_path = self._site_path("stat/alert")
-        if self._supports_stat_alert is False:
-            return []
-
-        if self._is_path_unavailable(stat_alert_path):
-            if self._supports_stat_alert is None:
-                self._supports_stat_alert = False
-            _LOGGER.debug("Skipping unavailable legacy alerts endpoint %s", stat_alert_path)
-            return []
-
-        alerts = self._get_list(stat_alert_path)
-        if alerts:
-            self._supports_stat_alert = True
-            return alerts
-
-        if self._supports_stat_alert is None and self._is_path_unavailable(stat_alert_path):
-            self._supports_stat_alert = False
         return []
 
     def get_devices(self) -> List[Dict[str, Any]]:
@@ -1135,21 +1102,12 @@ class UniFiOSClient:
         return result
 
     def get_wan_links(self) -> List[Dict[str, Any]]:
-        primary_paths = ("stat/waninfo", "stat/wan")
-        for path in primary_paths:
-            links = self._get_list(self._site_path(path))
-            if links:
-                return links
-
-        if self._internet_api_supported is False:
-            return []
-
-        attempted_internet = False
-        internet_paths = ("internet/wan", "rest/internet")
-        for path in internet_paths:
-            if self._internet_api_supported is False:
-                break
-            attempted_internet = True
+        for path in (
+            "internet/wan",
+            "stat/waninfo",
+            "stat/wan",
+            "rest/internet",
+        ):
             try:
                 links = self._get_list(self._site_path(path))
             except APIError as err:
@@ -1160,14 +1118,7 @@ class UniFiOSClient:
                     continue
                 raise
             if links:
-                self._internet_api_supported = True
                 return links
-
-        if attempted_internet and self._internet_api_supported is None:
-            if all(
-                self._is_path_unavailable(self._site_path(path)) for path in internet_paths
-            ):
-                self._internet_api_supported = False
         return []
 
     def instance_key(self) -> str:
@@ -1269,52 +1220,26 @@ class UniFiOSClient:
     def _iter_speedtest_paths(self, endpoint: str) -> List[str]:
         """Return candidate API paths for a speedtest endpoint."""
 
-        cleaned = self._strip_network_prefix(endpoint)
+        cleaned = str(endpoint or "").lstrip("/")
         site_id = self._ensure_site_id_sync()
-        configured_site = (self._site_name or DEFAULT_SITE).strip() or DEFAULT_SITE
+        site_name = self._site_name
 
-        base_endpoint = cleaned
-        origin_site: str | None = None
-        if base_endpoint.startswith("v2/api/site/"):
-            remainder = base_endpoint[len("v2/api/site/") :]
-            origin_site, _, tail = remainder.partition("/")
-            base_endpoint = tail
-        elif base_endpoint.startswith("api/s/"):
-            remainder = base_endpoint[len("api/s/") :]
-            origin_site, _, tail = remainder.partition("/")
-            base_endpoint = tail
-
-        base_endpoint = base_endpoint.lstrip("/")
-
-        site_candidates: List[str] = []
-        for candidate in (origin_site, site_id, configured_site):
-            candidate = (candidate or "").strip()
-            if candidate and candidate not in site_candidates:
-                site_candidates.append(candidate)
+        candidates = [cleaned]
+        candidates.append(self._site_path(cleaned))
+        if site_id:
+            candidates.append(self._site_path_for(site_id, cleaned))
+            candidates.append(f"v2/api/site/{site_id}/{cleaned}")
+        if site_name:
+            candidates.append(f"v2/api/site/{site_name}/{cleaned}")
 
         paths: List[str] = []
         seen: set[str] = set()
-
-        def _add(path: str) -> None:
-            normalized = self._normalize_path(path)
+        for path in candidates:
+            normalized = str(path or "").lstrip("/")
             if not normalized or normalized in seen:
-                return
+                continue
             seen.add(normalized)
             paths.append(normalized)
-
-        original = self._normalize_path(endpoint)
-        cleaned_norm = self._normalize_path(cleaned)
-        _add(original)
-        if cleaned_norm != original:
-            _add(cleaned_norm)
-        if base_endpoint:
-            _add(base_endpoint)
-
-        suffix = f"/{base_endpoint}" if base_endpoint else ""
-        for site in site_candidates:
-            _add(f"api/s/{site}{suffix}")
-            _add(f"v2/api/site/{site}{suffix}")
-
         return paths
 
     def _call_speedtest_endpoint(
