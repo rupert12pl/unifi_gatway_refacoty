@@ -17,6 +17,9 @@ from custom_components.unifi_gateway_refactored.const import (
     CONF_PASSWORD,
     CONF_TIMEOUT,
     CONF_USERNAME,
+    CONF_WIFI_GUEST,
+    CONF_WIFI_IOT,
+    CONF_UI_API_KEY,
 )
 from homeassistant.config_entries import ConfigEntry
 
@@ -265,3 +268,56 @@ def test_options_flow_normalizes_existing_host(
     assert result["type"] == "create_entry"
     assert result["data"][CONF_HOST] == "udm.local"
     assert hass.config_entries.data_updates[-1][CONF_HOST] == "udm.local"
+
+
+def test_options_flow_sanitizes_wifi_defaults(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ensure non-string wifi defaults don't break the options form."""
+
+    entry = cast(
+        ConfigEntry,
+        SimpleNamespace(
+            entry_id="wifi-defaults",
+            data={
+                CONF_HOST: "udm.local",
+                CONF_USERNAME: "user",
+                CONF_PASSWORD: "pass",
+                CONF_WIFI_GUEST: True,
+                CONF_UI_API_KEY: True,
+            },
+            options={
+                CONF_WIFI_IOT: False,
+            },
+        ),
+    )
+
+    captured: dict[str, Any] = {}
+
+    def fake_options_form(
+        self, *, step_id, data_schema=None, errors=None, description_placeholders=None
+    ):
+        captured["step_id"] = step_id
+        captured["schema"] = data_schema
+        return {"type": "form", "step_id": step_id, "errors": errors or {}}
+
+    monkeypatch.setattr(OptionsFlow, "async_show_form", fake_options_form, raising=False)
+
+    flow = OptionsFlow(entry)
+    flow.hass = hass  # type: ignore[assignment]
+
+    result = run(flow.async_step_init())
+
+    assert result["type"] == "form"
+    schema = captured.get("schema")
+    assert schema is not None
+
+    defaults = {}
+    for field in schema.schema:  # type: ignore[union-attr]
+        key = getattr(field, "key", None)
+        if key in {CONF_WIFI_GUEST, CONF_WIFI_IOT, CONF_UI_API_KEY}:
+            defaults[key] = getattr(field, "default", None)
+
+    assert defaults[CONF_WIFI_GUEST] == ""
+    assert defaults[CONF_WIFI_IOT] == ""
+    assert defaults[CONF_UI_API_KEY] == ""
