@@ -189,6 +189,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def _normalize_api_key(value: Any) -> Optional[str]:
         if value in (None, ""):
             return None
+        if isinstance(value, bool):
+            return None
         if isinstance(value, str):
             cleaned = value.strip()
             return cleaned or None
@@ -590,17 +592,30 @@ class OptionsFlow(config_entries.OptionsFlow):
             CONF_SPEEDTEST_ENTITIES,
             default=entities_default,
         )] = str
+        api_key_default = ConfigFlow._normalize_api_key(current.get(CONF_UI_API_KEY))
+        if api_key_default is None:
+            api_key_default = ""
         schema_fields[vol.Optional(
             CONF_UI_API_KEY,
-            default=current.get(CONF_UI_API_KEY, ""),
+            default=api_key_default,
         )] = vol.Any(str, None)
+
+        wifi_guest_default = ConfigFlow._normalize_optional_text(
+            current.get(CONF_WIFI_GUEST)
+        )
+        if wifi_guest_default is None:
+            wifi_guest_default = ""
         schema_fields[vol.Optional(
             CONF_WIFI_GUEST,
-            default=current.get(CONF_WIFI_GUEST),
+            default=wifi_guest_default,
         )] = vol.Any(str, None)
+
+        wifi_iot_default = ConfigFlow._normalize_optional_text(current.get(CONF_WIFI_IOT))
+        if wifi_iot_default is None:
+            wifi_iot_default = ""
         schema_fields[vol.Optional(
             CONF_WIFI_IOT,
-            default=current.get(CONF_WIFI_IOT),
+            default=wifi_iot_default,
         )] = vol.Any(str, None)
 
         schema = vol.Schema(schema_fields)
