@@ -2761,13 +2761,13 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
             if ipv6_allowed is not False:
                 ipv6 = _extract_ip_from_value(link.get("last_ipv6"), version=6)
 
+        if ipv4:
+            return ipv4
         if ipv6_allowed is not False and not ipv6 and isinstance(health, Mapping):
             ipv6 = _extract_ip_from_value(health.get("last_ipv6"), version=6)
 
         if ipv6 and ipv6_allowed is not False:
             return ipv6
-        if ipv4:
-            return ipv4
         if self._last_ip:
             return self._last_ip
         return STATE_UNKNOWN
@@ -2778,6 +2778,16 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
         health = self._wan_health_record()
         networks = self._wan_network_records()
         ipv6_allowed = self._network_ipv6_enabled(networks)
+        ip, source = _extract_wan_value_with_source(
+            link, health, _WAN_IPV4_KEYS, version=4
+        )
+        if ip:
+            if isinstance(link, Mapping) and not link.get("last_ipv4"):
+                link.setdefault("last_ipv4", ip)
+            self._last_ip = ip
+            self._last_source = source or "unknown"
+            return ip
+
         ipv6: Optional[str] = None
         source6: Optional[str] = None
         if ipv6_allowed is not False:
@@ -2790,16 +2800,6 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
             self._last_ip = ipv6
             self._last_source = source6 or "unknown"
             return ipv6
-
-        ip, source = _extract_wan_value_with_source(
-            link, health, _WAN_IPV4_KEYS, version=4
-        )
-        if ip:
-            if isinstance(link, Mapping) and not link.get("last_ipv4"):
-                link.setdefault("last_ipv4", ip)
-            self._last_ip = ip
-            self._last_source = source or "unknown"
-            return ip
 
         fallback = self._select_wan_last_ip(link, health, ipv6_allowed)
         if fallback != STATE_UNKNOWN:
