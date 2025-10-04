@@ -717,24 +717,31 @@ class UniFiOSClient:
         return self._get_list(self._site_path("stat/health"))
 
     def get_alerts(self) -> List[Dict[str, Any]]:
-        candidate_paths: List[str] = ["list/alarm", "stat/alarm"]
-        if self._supports_stat_alert is not False:
-            candidate_paths.append("stat/alert")
+        """Return the active UniFi alerts, preferring modern endpoints."""
 
-        attempted_stat_alert = False
-        for path in candidate_paths:
+        modern_paths = ("list/alarm", "stat/alarm")
+        for path in modern_paths:
             alerts = self._get_list(self._site_path(path))
             if alerts:
-                if path == "stat/alert":
-                    self._supports_stat_alert = True
                 return alerts
-            if path == "stat/alert":
-                attempted_stat_alert = True
 
-        if attempted_stat_alert and self._supports_stat_alert is None:
-            stat_alert_path = self._site_path("stat/alert")
-            if self._is_path_unavailable(stat_alert_path):
+        stat_alert_path = self._site_path("stat/alert")
+        if self._supports_stat_alert is False:
+            return []
+
+        if self._is_path_unavailable(stat_alert_path):
+            if self._supports_stat_alert is None:
                 self._supports_stat_alert = False
+            _LOGGER.debug("Skipping unavailable legacy alerts endpoint %s", stat_alert_path)
+            return []
+
+        alerts = self._get_list(stat_alert_path)
+        if alerts:
+            self._supports_stat_alert = True
+            return alerts
+
+        if self._supports_stat_alert is None and self._is_path_unavailable(stat_alert_path):
+            self._supports_stat_alert = False
         return []
 
     def get_devices(self) -> List[Dict[str, Any]]:

@@ -64,6 +64,30 @@ def test_get_alerts_prefers_list_alarm(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == ["api/s/default/list/alarm"]
 
 
+def test_get_alerts_prefers_modern_even_if_legacy_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client()
+    client._supports_stat_alert = True  # type: ignore[attr-defined]
+
+    calls: list[str] = []
+
+    def fake_get_list(self: UniFiOSClient, path: str, *, timeout=None):
+        calls.append(path)
+        if path.endswith("list/alarm"):
+            return [{"id": "alarm"}]
+        if path.endswith("stat/alert"):
+            pytest.fail("legacy alerts endpoint should not be queried when modern data exists")
+        return []
+
+    monkeypatch.setattr(UniFiOSClient, "_get_list", fake_get_list)
+
+    alerts = client.get_alerts()
+
+    assert alerts == [{"id": "alarm"}]
+    assert calls == ["api/s/default/list/alarm"]
+
+
 def test_get_alerts_marks_stat_alert_support(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_client()
 
@@ -78,6 +102,31 @@ def test_get_alerts_marks_stat_alert_support(monkeypatch: pytest.MonkeyPatch) ->
 
     assert alerts == [{"id": "legacy"}]
     assert client._supports_stat_alert is True  # type: ignore[attr-defined]
+
+
+def test_get_alerts_skips_known_unavailable_stat_alert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client()
+    expiry = time.monotonic() + 60
+    client._unavailable_paths["api/s/default/stat/alert"] = expiry  # type: ignore[index]
+
+    calls: list[str] = []
+
+    def fake_get_list(self: UniFiOSClient, path: str, *, timeout=None):
+        if self._is_path_unavailable(path):  # type: ignore[attr-defined]
+            calls.append(f"skip:{path}")
+            return []
+        calls.append(path)
+        return []
+
+    monkeypatch.setattr(UniFiOSClient, "_get_list", fake_get_list)
+
+    alerts = client.get_alerts()
+
+    assert alerts == []
+    assert "api/s/default/stat/alert" not in calls
+    assert client._supports_stat_alert is False  # type: ignore[attr-defined]
 
 
 def test_get_wan_links_disables_internet_api_when_unavailable(
