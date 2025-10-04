@@ -8,13 +8,16 @@ from typing import Any, Callable, Coroutine
 class _ConfigEntriesManager:
     """Extremely small stub of Home Assistant's config entries manager."""
 
+    def __init__(self) -> None:
+        self._entries: dict[str, Any] = {}
+
     async def async_forward_entry_setups(self, entry: Any, platforms: Any) -> bool:
         return True
 
     async def async_unload_platforms(self, entry: Any, platforms: Any) -> bool:
         return True
 
-    async def async_update_entry(
+    def async_update_entry(
         self,
         entry: Any,
         *,
@@ -25,6 +28,10 @@ class _ConfigEntriesManager:
             entry.data = data
         if options is not None:
             entry.options = options
+        self._entries[entry.entry_id] = entry
+
+    def async_get_entry(self, entry_id: str) -> Any | None:
+        return self._entries.get(entry_id)
 
 
 class EventBus:
