@@ -145,6 +145,58 @@ class UniFiOSClient:
         except socket.gaierror as ex:
             raise ConnectivityError(f"DNS resolution failed for {host}: {ex}") from ex
 
+        self._csrf: Optional[str] = None
+        if not self._username or not self._password:
+            raise AuthError("Provide username and password for UniFi controller")
+
+        preferred_ports: list[int] = [port]
+        if port == 443:
+            preferred_ports.append(8443)
+        elif port == 8443:
+            preferred_ports.append(443)
+
+        attempted: set[int] = set()
+        last_connectivity_error: ConnectivityError | None = None
+
+        for candidate_port in preferred_ports:
+            if candidate_port in attempted:
+                continue
+            attempted.add(candidate_port)
+            self._port = candidate_port
+            try:
+                self._login(host, candidate_port, ssl_verify, timeout)
+                self._ensure_connected()
+            except AuthError:
+                raise
+            except ConnectivityError as err:
+                last_connectivity_error = err
+                _LOGGER.debug(
+                    "Connectivity error connecting to UniFi controller %s:%s: %s",
+                    host,
+                    candidate_port,
+                    err,
+                )
+                continue
+            except APIError:
+                # API errors indicate the controller responded, so bubbling up the
+                # exception gives clearer feedback than silently retrying.
+                raise
+            else:
+                if candidate_port != port:
+                    _LOGGER.info(
+                        "Connected to UniFi controller %s using fallback port %s after %s failed",
+                        host,
+                        candidate_port,
+                        port,
+                    )
+                break
+        else:
+            if last_connectivity_error is not None:
+                raise last_connectivity_error
+            raise ConnectivityError(
+                f"Unable to connect to UniFi controller on ports {preferred_ports}"
+            )
+
         self._base = self._join(self._site_path())
 
         # Stable instance identifier – must NOT depend on autodetected _base so that
@@ -153,12 +205,6 @@ class UniFiOSClient:
         basis = f"{self._net_base()}|{host}|{site_id}|{instance_hint or ''}"
         self._iid = hashlib.sha256(basis.encode()).hexdigest()[:12]
 
-        self._csrf: Optional[str] = None
-        if not self._username or not self._password:
-            raise AuthError("Provide username and password for UniFi controller")
-
-        self._login(host, port, ssl_verify, timeout)
-        self._ensure_connected()
         self._active_window = DEFAULT_ACTIVE_WINDOW_SEC
 
         # caches used by advanced VPN discovery helpers
@@ -177,6 +223,12 @@ class UniFiOSClient:
         session = getattr(self, "_session", None)
         if session is not None:
             session.close()
+
+    @property
+    def port(self) -> int:
+        """Return the port used for the active UniFi controller session."""
+
+        return self._port
 
     def _net_base(self) -> str:
         """Return the normalized base URL for UniFi Network requests."""
