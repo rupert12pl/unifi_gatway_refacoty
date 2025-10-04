@@ -18,6 +18,150 @@ from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
 _LOGGER = logging.getLogger(__name__)
 
+_PLACEHOLDER_STRINGS = {
+    "unknown",
+    "none",
+    "null",
+    "n/a",
+    "na",
+    "not available",
+    "-",
+    "0.0.0.0",
+    "::",
+    "::/0",
+}
+_IDENTIFIER_KEYS = (
+    "id",
+    "name",
+    "ifname",
+    "interface",
+    "iface",
+    "wan_id",
+    "wan_name",
+    "display_name",
+    "port",
+    "role",
+    "slot",
+    "interface_name",
+)
+
+
+def _normalize_identifier(value: Any) -> Optional[str]:
+    if value in (None, "", [], {}):
+        return None
+    if isinstance(value, str):
+        candidate = value.strip()
+    else:
+        candidate = str(value).strip()
+    if not candidate:
+        return None
+    return candidate.lower()
+
+
+def _identifier_candidates(record: Mapping[str, Any]) -> Set[str]:
+    if not isinstance(record, Mapping):
+        return set()
+    candidates: Set[str] = set()
+    for key in _IDENTIFIER_KEYS:
+        if key not in record:
+            continue
+        value = record.get(key)
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                normalized = _normalize_identifier(item)
+                if normalized:
+                    candidates.add(normalized)
+        else:
+            normalized = _normalize_identifier(value)
+            if normalized:
+                candidates.add(normalized)
+    return candidates
+
+
+def _has_meaningful_value(value: Any) -> bool:
+    if value in (None, "", [], {}):
+        return False
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return False
+        if cleaned.lower() in _PLACEHOLDER_STRINGS:
+            return False
+    return True
+
+
+def _merge_wan_link_record(target: Dict[str, Any], source: Mapping[str, Any]) -> None:
+    if not isinstance(source, Mapping):
+        return
+    for key in (
+        "wan_ipv6",
+        "last_ipv6",
+        "gateway_ipv6",
+        "wan_ipv6_prefix",
+        "wan_ip",
+        "last_ipv4",
+        "isp",
+    ):
+        value = source.get(key)
+        if not _has_meaningful_value(value):
+            continue
+        if not _has_meaningful_value(target.get(key)):
+            target[key] = value
+    for key in ("ui_host_id", "ui_host_name", "ui_host_source"):
+        value = source.get(key)
+        if _has_meaningful_value(value):
+            target[key] = value
+
+
+def _merge_wan_links_with_ui_hosts(
+    wan_links: Iterable[Mapping[str, Any]],
+    remote_links: Iterable[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    local: List[Dict[str, Any]] = [dict(link) for link in wan_links if isinstance(link, Mapping)]
+    remote_normalized: List[Dict[str, Any]] = []
+    for remote in remote_links:
+        if not isinstance(remote, Mapping):
+            continue
+        if not _identifier_candidates(remote):
+            continue
+        if not any(
+            _has_meaningful_value(remote.get(key))
+            for key in ("wan_ipv6", "wan_ip", "gateway_ipv6", "wan_ipv6_prefix")
+        ):
+            continue
+        remote_normalized.append(dict(remote))
+
+    if not local:
+        return remote_normalized
+
+    used: Set[int] = set()
+    remote_candidates = [_identifier_candidates(remote) for remote in remote_normalized]
+
+    for link in local:
+        candidates = _identifier_candidates(link)
+        if not candidates:
+            continue
+        matched_idx: Optional[int] = None
+        for idx, remote_ids in enumerate(remote_candidates):
+            if idx in used or not remote_ids:
+                continue
+            if candidates & remote_ids:
+                matched_idx = idx
+                break
+        if matched_idx is None and len(remote_normalized) == 1 and 0 not in used:
+            matched_idx = 0
+        if matched_idx is None:
+            continue
+        _merge_wan_link_record(link, remote_normalized[matched_idx])
+        used.add(matched_idx)
+
+    for idx, remote in enumerate(remote_normalized):
+        if idx in used:
+            continue
+        local.append(remote)
+
+    return local
+
 
 @dataclass(slots=True)
 class UniFiGatewayData:
