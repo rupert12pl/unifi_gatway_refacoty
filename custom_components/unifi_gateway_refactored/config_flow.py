@@ -361,6 +361,7 @@ class OptionsFlow(config_entries.OptionsFlow):
         errors: Dict[str, str] = {}
         if user_input is not None:
             cleaned = ConfigFlow._clean_auth_fields(user_input)
+            removed_keys: set[str] = set()
             if CONF_SPEEDTEST_INTERVAL in cleaned:
                 cleaned[CONF_SPEEDTEST_INTERVAL] = ConfigFlow._minutes_to_seconds(
                     cleaned[CONF_SPEEDTEST_INTERVAL]
@@ -383,12 +384,25 @@ class OptionsFlow(config_entries.OptionsFlow):
                     )
             for key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
                 if key in cleaned:
-                    cleaned[key] = ConfigFlow._normalize_optional_text(cleaned[key])
+                    normalized_value = ConfigFlow._normalize_optional_text(cleaned[key])
+                    if normalized_value is None:
+                        cleaned.pop(key, None)
+                        removed_keys.add(key)
+                    else:
+                        cleaned[key] = normalized_value
             if CONF_UI_API_KEY in cleaned:
-                cleaned[CONF_UI_API_KEY] = ConfigFlow._normalize_api_key(
+                normalized_api_key = ConfigFlow._normalize_api_key(
                     cleaned[CONF_UI_API_KEY]
                 )
-            merged = {**self._entry.data, **self._entry.options, **cleaned}
+                if normalized_api_key is None:
+                    cleaned.pop(CONF_UI_API_KEY, None)
+                    removed_keys.add(CONF_UI_API_KEY)
+                else:
+                    cleaned[CONF_UI_API_KEY] = normalized_api_key
+            merged = {**self._entry.data, **self._entry.options}
+            for key in removed_keys:
+                merged.pop(key, None)
+            merged.update(cleaned)
             if not ConfigFlow._has_auth(merged):
                 errors["base"] = "missing_auth"
             else:
@@ -397,19 +411,24 @@ class OptionsFlow(config_entries.OptionsFlow):
                     assert self.hass is not None  # nosec B101
                     await _validate(self.hass, merged)
                     await _validate_ui_api_key(merged.get(CONF_UI_API_KEY))
-                    if CONF_UI_API_KEY in cleaned:
-                        current_options = dict(self._entry.options)
-                        normalized_key = cleaned[CONF_UI_API_KEY]
-                        if normalized_key is None:
-                            current_options.pop(CONF_UI_API_KEY, None)
-                        else:
-                            current_options[CONF_UI_API_KEY] = normalized_key
-                        cleaned.pop(CONF_UI_API_KEY, None)
-                        await self.hass.config_entries.async_update_entry(
-                            self._entry,
-                            options=current_options,
-                        )
-                    return self.async_create_entry(title="", data=cleaned)
+                    updated_data = dict(self._entry.data)
+                    for key in removed_keys:
+                        updated_data.pop(key, None)
+                    updated_data.update(cleaned)
+                    self.hass.config_entries.async_update_entry(
+                        self._entry,
+                        data=updated_data,
+                    )
+                    updated_entry = self.hass.config_entries.async_get_entry(
+                        self._entry.entry_id
+                    )
+                    if updated_entry is not None:
+                        self._entry = updated_entry
+                    new_options = dict(self._entry.options)
+                    for key in removed_keys:
+                        new_options.pop(key, None)
+                    new_options.update(cleaned)
+                    return self.async_create_entry(title="", data=new_options)
                 except AuthError:
                     errors["base"] = "invalid_auth"
                 except ConnectivityError as err:

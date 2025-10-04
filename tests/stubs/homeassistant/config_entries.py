@@ -39,7 +39,7 @@ class ConfigFlow:
     def async_create_entry(
         self, *, title: str, data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        return {"title": title, "data": data}
+        return {"type": "create_entry", "title": title, "data": data}
 
     def async_abort(self, reason: str) -> Dict[str, Any]:
         return {"type": "abort", "reason": reason}
@@ -63,7 +63,7 @@ class OptionsFlow:
     def async_create_entry(
         self, *, title: str, data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        return {"title": title, "data": data}
+        return {"type": "create_entry", "title": title, "data": data}
 
     def async_show_form(
         self,
