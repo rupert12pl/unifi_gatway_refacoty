@@ -149,6 +149,24 @@ def test_fetch_hosts_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:
     assert session.requests == [UI_HOSTS_URL] * 4
 
 
+def test_fetch_hosts_rate_limited_without_retry_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    responses = [DummyResponse(429, {}), DummyResponse(200, {"data": []})]
+    session = DummySession(responses)
+    client = UiCloudClient(cast(ClientSession, session), "secret")
+
+    result = asyncio.run(client.fetch_hosts())
+
+    assert result == {"data": []}
+    assert sleep_calls == [5.0, 0.5]
+    assert session.requests == [UI_HOSTS_URL, UI_HOSTS_URL]
+
+
 def test_fetch_hosts_retries_server_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
     payload: dict[str, Any] = {"data": []}
