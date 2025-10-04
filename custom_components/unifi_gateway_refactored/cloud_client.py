@@ -1,36 +1,40 @@
-"""Client for the UniFi UI Cloud API used to retrieve WAN IPv6 addresses."""
+"""Asynchronous client for retrieving WAN metadata from the UniFi Cloud API."""
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
-
-from urllib.parse import urlsplit
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Any, AsyncContextManager, Final, NotRequired, TypedDict, cast
 
 import aiohttp
+from aiohttp import ClientResponse
 
+from .const import API_CLOUD_HOSTS_URL
 
-from .const import UI_HOSTS_URL
+DEFAULT_TIMEOUT: Final[int] = 15
+MAX_BACKOFF: Final[float] = 30.0
+MAX_ATTEMPTS: Final[int] = 4
 
 
 class UiCloudError(Exception):
-    """Base exception for UI Cloud API failures."""
+    """Base error raised for UniFi cloud client failures."""
 
 
 class UiCloudAuthError(UiCloudError):
-    """Raised when authentication with the UI Cloud API fails."""
+    """Raised when authentication with the UniFi cloud API fails."""
 
     def __init__(self, status: int) -> None:
-        super().__init__(f"UI Cloud API authentication failed (status={status})")
+        super().__init__(f"Authentication with UniFi Cloud API failed (status={status})")
         self.status = status
 
 
 class UiCloudRateLimitError(UiCloudError):
-    """Raised when the UI Cloud API responds with HTTP 429."""
+    """Raised when the UniFi cloud API responds with HTTP 429."""
 
     def __init__(self, retry_after: float | None) -> None:
-        message = "UI Cloud API rate limited"
+        message = "UniFi Cloud API rate limited"
         if retry_after is not None:
             message = f"{message}; retry in {retry_after:.1f}s"
         super().__init__(message)
@@ -38,162 +42,140 @@ class UiCloudRateLimitError(UiCloudError):
 
 
 class UiCloudRequestError(UiCloudError):
-    """Raised when the UI Cloud API request ultimately fails."""
+    """Raised when the UniFi cloud API request fails permanently."""
+
+    def __init__(self, status: int, message: str | None = None) -> None:
+        description = message or "Unexpected response from UniFi Cloud API"
+        super().__init__(f"{description} (status={status})")
+        self.status = status
+
+
+class WanEntry(TypedDict, total=False):
+    type: str
+    interface: str
+    associatedInterface: NotRequired[str]
+    mac: NotRequired[str]
+    ipv4: NotRequired[str]
+    ipv6: NotRequired[str]
+
+
+class ReportedState(TypedDict, total=False):
+    hostname: NotRequired[str]
+    ip: NotRequired[str]
+    wans: NotRequired[list[WanEntry]]
+
+
+class Hardware(TypedDict, total=False):
+    mac: NotRequired[str]
+    name: NotRequired[str]
+
+
+class HostItem(TypedDict, total=False):
+    type: NotRequired[str]
+    reportedState: NotRequired[ReportedState]
+    hardware: NotRequired[Hardware]
+
+
+class HostsResponse(TypedDict):
+    data: list[HostItem]
+    httpStatusCode: int
 
 
 @dataclass(slots=True)
 class UiCloudClient:
-    """Thin asynchronous client for the UniFi UI Cloud API."""
+    """Small aiohttp-based client for the UniFi Cloud API."""
 
     session: aiohttp.ClientSession
     api_key: str
-    hosts_url: str = UI_HOSTS_URL
-    _hosts_url: str = field(init=False, repr=False)
-    _strict_ssl: bool = field(init=False, repr=False)
+    hosts_url: str = API_CLOUD_HOSTS_URL
+    request_timeout: int = DEFAULT_TIMEOUT
 
-    def __post_init__(self) -> None:
-        self._hosts_url = self._normalize_hosts_url(self.hosts_url)
-        parsed = urlsplit(self._hosts_url)
-        self._strict_ssl = (
-            parsed.scheme == "https"
-            and parsed.netloc == "api.ui.com"
-            and parsed.path.startswith("/v1/")
-        )
+    async def async_get_hosts(self) -> HostsResponse:
+        """Return the hosts payload from the UniFi Cloud API."""
 
-    async def fetch_hosts(self) -> Dict[str, Any]:
-        """Return the raw hosts payload from the UI Cloud API."""
+        url = self.hosts_url.rstrip("/")
+        headers = {
+            "Accept": "application/json",
+            "X-API-Key": self.api_key,
+        }
+        backoff = 0.5
+        last_error: UiCloudError | None = None
 
-        url = self._hosts_url
-        headers = {"Accept": "application/json", "X-API-Key": self.api_key}
-        timeouts = aiohttp.ClientTimeout(total=10)
-        backoffs = (0.0, 0.5, 1.0, 2.0)
-        last_error: UiCloudRequestError | None = None
-
-        for attempt, delay in enumerate(backoffs, start=1):
-            if delay:
-                await asyncio.sleep(delay)
+        timeout_config = aiohttp.ClientTimeout(total=self.request_timeout)
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            if attempt > 1:
+                await asyncio.sleep(min(backoff, MAX_BACKOFF))
+                backoff = min(backoff * 2, MAX_BACKOFF)
             try:
-                kwargs: dict[str, Any] = {"headers": headers, "timeout": timeouts}
-                if self._strict_ssl:
-                    kwargs["ssl"] = True
-                resp = await self.session.get(url, **kwargs)
+                request_cm = self.session.get(
+                    url, headers=headers, timeout=timeout_config
+                )
+                async with cast(AsyncContextManager[ClientResponse], request_cm) as resp:
+                    status = resp.status
+                    if status in (401, 403):
+                        raise UiCloudAuthError(status)
+                    if status == 429:
+                        retry_after = _parse_retry_after(resp.headers.get("Retry-After"))
+                        if attempt == MAX_ATTEMPTS:
+                            raise UiCloudRateLimitError(retry_after)
+                        await asyncio.sleep(retry_after or backoff)
+                        backoff = min((retry_after or backoff) * 2, MAX_BACKOFF)
+                        continue
+                    if status >= 500:
+                        last_error = UiCloudRequestError(status, "Server error from UniFi Cloud API")
+                        continue
+                    if status >= 400:
+                        raise UiCloudRequestError(status)
+                    data: Any = await resp.json(content_type=None)
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-                last_error = UiCloudRequestError("Error communicating with UI Cloud API")
-                last_error.__cause__ = err
+                last_error = UiCloudRequestError(-1, str(err))
                 continue
-
-            async with resp:
-                status = resp.status
-                if status == 429:
-                    retry_after = self._parse_retry_after(resp.headers.get("Retry-After"))
-                    if attempt == len(backoffs):
-                        raise UiCloudRateLimitError(retry_after)
-                    await asyncio.sleep(retry_after if retry_after is not None else 5.0)
-                    continue
-                if status in (401, 403):
-                    raise UiCloudAuthError(status)
-                if 500 <= status:
-                    last_error = UiCloudRequestError(
-                        f"UI Cloud API server error (status={status})"
-                    )
-                    continue
-                if status >= 400:
-                    raise UiCloudRequestError(
-                        f"Unexpected UI Cloud API response (status={status})"
-                    )
-
-                try:
-                    return await resp.json()
-                except aiohttp.ContentTypeError as err:
-                    last_error = UiCloudRequestError("Invalid JSON response")
-                    last_error.__cause__ = err
-                    continue
+            else:
+                if isinstance(data, dict):
+                    data.setdefault("httpStatusCode", status)
+                    payload = cast(HostsResponse, data)
+                else:
+                    payload = {
+                        "data": [],
+                        "httpStatusCode": status,
+                    }
+                return cast(HostsResponse, payload)
 
         if last_error is None:
-            last_error = UiCloudRequestError("Failed to fetch UI Cloud hosts")
+            last_error = UiCloudRequestError(-1, "Failed to fetch UniFi Cloud hosts")
         raise last_error
 
-    @staticmethod
-    def _parse_retry_after(value: Optional[str]) -> Optional[float]:
-        if value is None:
-            return None
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            return None
-        return max(0.0, parsed)
 
-    @staticmethod
-    def _normalize_hosts_url(value: str) -> str:
-        cleaned = (value or "").strip()
-        if not cleaned:
-            return UI_HOSTS_URL
-
-        cleaned = cleaned.rstrip("/")
-        if cleaned.endswith("/v1/hosts"):
-            return cleaned
-        if cleaned.endswith("/v1"):
-            return f"{cleaned}/hosts"
-        if cleaned.endswith("/hosts"):
-            return f"{cleaned[:-len('/hosts')]}/v1/hosts"
-        return f"{cleaned}/v1/hosts"
-
-    async def fetch_ipv6_for_mac(self, target_mac: str) -> Optional[str]:
-        """Return the IPv6 address for the provided WAN MAC."""
-
-        normalized_mac = _normalize_mac(target_mac)
-        if not normalized_mac:
-            return None
-
-        payload = await self.fetch_hosts()
-        for console in payload.get("data", []):
-            reported = console.get("reportedState") or {}
-            wans = reported.get("wans") or []
-            for wan in wans:
-                if not isinstance(wan, dict):
-                    continue
-                mac = _normalize_mac(wan.get("mac"))
-                if not mac or mac != normalized_mac:
-                    continue
-                if not _wan_candidate_enabled(wan):
-                    continue
-                ipv6 = wan.get("ipv6")
-                if isinstance(ipv6, str) and ipv6.strip():
-                    return ipv6.strip()
-            # If the console doesn't contain the target MAC continue searching.
-        return None
-
-
-def _wan_candidate_enabled(wan: Dict[str, Any]) -> bool:
-    if not wan.get("enabled", True):
-        return False
-    wan_type = str(wan.get("type") or "").upper()
-    if wan_type and wan_type not in {"WAN", "WAN1", "PRIMARY"}:
-        return False
-    return True
-
-
-def _normalize_mac(value: Any) -> Optional[str]:
-    if value in (None, ""):
-        return None
-    if not isinstance(value, str):
-        value = str(value)
-    hex_chars = [char for char in value if char.isalnum()]
-    cleaned = "".join(hex_chars)
-    if len(cleaned) != 12:
+def _parse_retry_after(value: str | None) -> float | None:
+    if value is None:
         return None
     try:
-        int(cleaned, 16)
-    except ValueError:
-        return None
-    pairs = [cleaned[i:i + 2] for i in range(0, 12, 2)]
-    return ":".join(pairs).lower()
+        retry_after = float(value)
+    except (TypeError, ValueError):
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if parsed is None:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        delay = (parsed - now).total_seconds()
+        if delay <= 0:
+            return 0.0
+        return delay
+    return max(0.0, retry_after)
 
 
 __all__ = [
+    "HostItem",
+    "HostsResponse",
+    "ReportedState",
+    "UiCloudAuthError",
     "UiCloudClient",
     "UiCloudError",
-    "UiCloudAuthError",
     "UiCloudRateLimitError",
     "UiCloudRequestError",
+    "WanEntry",
 ]

@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from custom_components.unifi_gateway_refactored.const import ATTR_REASON
 from custom_components.unifi_gateway_refactored.sensor import (
     _extract_ip_from_value,
     UniFiGatewayLanClientsSensor,
@@ -37,6 +38,9 @@ def _make_data(**overrides):
         "network_map": {},
         "wlans": [],
         "networks": [],
+        "wan": {},
+        "wan_attrs": {},
+        "wan_ipv6": None,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -141,7 +145,6 @@ def test_wan_ipv6_sensor_reports_details():
     link = {
         "id": "wan1",
         "name": "WAN",
-        "wan_ipv6": ["fe80::1", "2001:db8::1"],
     }
     health = {
         "id": "wan1",
@@ -149,7 +152,13 @@ def test_wan_ipv6_sensor_reports_details():
         "gateway_ipv6": "fe80::1",
         "wan_ipv6_prefix": "2001:db8::/64",
     }
-    data = _make_data(wan_links=[link], wan_health=[health])
+    data = _make_data(
+        wan_links=[link],
+        wan_health=[health],
+        wan={"gw_mac": "78:45:58:d0:95:75"},
+        wan_attrs={"last_ipv6": "2001:db8::1", "source": "cloud", "available": True},
+        wan_ipv6="2001:db8::1",
+    )
     coordinator = SimpleNamespace(data=data)
     sensor = UniFiGatewayWanIpv6Sensor(
         coordinator, _StubClient(), "entry-id", dict(link)
@@ -160,33 +169,31 @@ def test_wan_ipv6_sensor_reports_details():
     assert value == "2001:db8::1"
     attrs = sensor.extra_state_attributes
     assert attrs["last_ipv6"] == "2001:db8::1"
-    assert attrs["source"] == "link"
+    assert attrs["source"] == "cloud"
     assert attrs["gateway_ipv6"] == "fe80::1"
     assert attrs["prefix"] == "2001:db8::/64"
+    assert attrs["gw_mac"] == "78:45:58:d0:95:75"
 
 
-def test_wan_ipv6_sensor_ignores_placeholder_values():
-    link = {"id": "wan1", "name": "WAN", "wan_ipv6": "Unknown"}
-    health = {
-        "id": "wan1",
-        "wan_ipv6": "2001:db8::2",
-        "gateway_ipv6": "fe80::2",
-        "wan_ipv6_prefix": "2001:db8::/60",
-    }
-    data = _make_data(wan_links=[link], wan_health=[health])
+def test_wan_ipv6_sensor_handles_unavailable_state():
+    link = {"id": "wan1", "name": "WAN"}
+    data = _make_data(
+        wan_links=[link],
+        wan_health=[],
+        wan={"gw_mac": "78:45:58:d0:95:75"},
+        wan_attrs={"available": False, ATTR_REASON: "cloud_status_500"},
+        wan_ipv6=None,
+    )
     coordinator = SimpleNamespace(data=data)
     sensor = UniFiGatewayWanIpv6Sensor(
         coordinator, _StubClient(), "entry-id", dict(link)
     )
 
-    value = sensor.native_value
-
-    assert value == "2001:db8::2"
+    assert sensor.native_value is None
+    assert sensor.available is False
     attrs = sensor.extra_state_attributes
-    assert attrs["last_ipv6"] == "2001:db8::2"
-    assert attrs["source"] == "health"
-    assert attrs["gateway_ipv6"] == "fe80::2"
-    assert attrs["prefix"] == "2001:db8::/60"
+    assert attrs[ATTR_REASON] == "cloud_status_500"
+    assert attrs["gw_mac"] == "78:45:58:d0:95:75"
 
 
 def test_wan_ip_sensor_prefers_ipv6_when_enabled():
