@@ -263,6 +263,8 @@ def test_missing_api_key_uses_local_ipv6(hass) -> None:
     attrs = result.wan_attrs
     assert attrs["last_ipv6"] == "2001:db8::10"
     assert attrs["source"] == "controller"
+    assert attrs["adress_ipv6"] == "2001:db8::10"
+    assert attrs["gw_name"] == "WAN"
     assert attrs.get(ATTR_REASON) is None
 
 

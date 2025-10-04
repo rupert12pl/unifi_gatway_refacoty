@@ -331,6 +331,20 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             self._warned_missing_gw_mac = False
 
         hostname, ip_address = self._infer_gateway_identity(data, primary_link)
+
+        if hostname:
+            data.wan["name"] = hostname
+            data.wan_attrs["gw_name"] = hostname
+        elif data.wan.get("name"):
+            data.wan_attrs.setdefault("gw_name", data.wan.get("name"))
+
+        if ip_address:
+            data.wan["ip_address"] = ip_address
+            data.wan_attrs.setdefault("gateway_ip", ip_address)
+            data.wan_attrs.setdefault("ip", ip_address)
+        elif data.wan.get("ip_address"):
+            data.wan_attrs.setdefault("gateway_ip", data.wan.get("ip_address"))
+            data.wan_attrs.setdefault("ip", data.wan.get("ip_address"))
         try:
             hardware_mac = normalize_mac(self._client.get_gateway_mac())
         except Exception:  # pragma: no cover - guard against client failures
@@ -360,6 +374,16 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         attrs.pop("error", None)
         attrs.pop(ATTR_REASON, None)
         attrs["available"] = True
+        if hostname:
+            attrs["gw_name"] = hostname
+        elif data.wan.get("name"):
+            attrs.setdefault("gw_name", data.wan.get("name"))
+        if ip_address:
+            attrs.setdefault("gateway_ip", ip_address)
+            attrs.setdefault("ip", ip_address)
+        elif data.wan.get("ip_address"):
+            attrs.setdefault("gateway_ip", data.wan.get("ip_address"))
+            attrs.setdefault("ip", data.wan.get("ip_address"))
 
         normalized_mac = normalize_mac(gw_mac)
         if normalized_mac:
@@ -379,8 +403,11 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         )
         if cached_entry and (now - cached_entry[0]) <= self._cloud_cache_ttl:
             data.wan_ipv6 = cached_entry[1]
+            attrs.setdefault("ipv6", cached_entry[1])
+            attrs["adress_ipv6"] = cached_entry[1]
         else:
             data.wan_ipv6 = None
+            attrs["adress_ipv6"] = None
 
         if self._ui_cloud_client is None or not self._ui_cloud_client.api_key:
             if not self._apply_local_ipv6_fallback(
@@ -412,6 +439,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
 
         if cached_entry and (now - self._cloud_last_fetch) < self._cloud_fetch_interval:
             data.wan_ipv6 = cached_entry[1]
+            attrs.setdefault("ipv6", cached_entry[1])
+            attrs["adress_ipv6"] = cached_entry[1]
             if primary_link is not None:
                 primary_link.setdefault("last_ipv6", cached_entry[1])
                 primary_link.setdefault("wan_ipv6", cached_entry[1])
@@ -423,6 +452,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         if self._cloud_backoff_until and now < self._cloud_backoff_until:
             if cached_entry:
                 data.wan_ipv6 = cached_entry[1]
+                attrs.setdefault("ipv6", cached_entry[1])
+                attrs["adress_ipv6"] = cached_entry[1]
             else:
                 attrs[ATTR_REASON] = "cloud_backoff_active"
                 attrs["available"] = False
@@ -433,6 +464,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                     attrs,
                 ):
                     attrs[ATTR_REASON] = "cloud_backoff_active"
+            if not cached_entry:
+                attrs.setdefault("adress_ipv6", data.wan_ipv6)
             return
 
         try:
@@ -455,6 +488,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             attrs[ATTR_REASON] = "cloud_rate_limited"
             if cached_entry:
                 data.wan_ipv6 = cached_entry[1]
+                attrs.setdefault("ipv6", cached_entry[1])
+                attrs["adress_ipv6"] = cached_entry[1]
                 if primary_link is not None:
                     primary_link.setdefault("last_ipv6", cached_entry[1])
                     primary_link.setdefault("wan_ipv6", cached_entry[1])
@@ -470,6 +505,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                     attrs,
                 ):
                     attrs[ATTR_REASON] = "cloud_rate_limited"
+            if not cached_entry:
+                attrs.setdefault("adress_ipv6", data.wan_ipv6)
             return
         except (UiCloudRequestError, UiCloudError) as err:
             self._cloud_retry_attempts = min(self._cloud_retry_attempts + 1, 6)
@@ -479,6 +516,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             attrs["error"] = str(err)
             if cached_entry:
                 data.wan_ipv6 = cached_entry[1]
+                attrs.setdefault("ipv6", cached_entry[1])
+                attrs["adress_ipv6"] = cached_entry[1]
                 if primary_link is not None:
                     primary_link.setdefault("last_ipv6", cached_entry[1])
                     primary_link.setdefault("wan_ipv6", cached_entry[1])
@@ -494,6 +533,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                     attrs,
                 ):
                     attrs[ATTR_REASON] = "cloud_fetch_error"
+            if not cached_entry:
+                attrs.setdefault("adress_ipv6", data.wan_ipv6)
             return
 
         self._cloud_last_fetch = time.monotonic()
@@ -529,6 +570,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             data.wan_ipv6 = ipv6
             attrs["last_ipv6"] = ipv6
             attrs["source"] = "cloud"
+            attrs["ipv6"] = ipv6
+            attrs["adress_ipv6"] = ipv6
             attrs.pop(ATTR_REASON, None)
             if primary_link is not None:
                 primary_link["last_ipv6"] = ipv6
@@ -540,6 +583,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         else:
             data.wan_ipv6 = None
             attrs[ATTR_REASON] = "no_ipv6_for_gw"
+            attrs.pop("ipv6", None)
+            attrs["adress_ipv6"] = None
             self._wan_ipv6_cache.pop(normalized_mac, None)
 
     def _apply_local_ipv6_fallback(
@@ -556,6 +601,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         attrs["last_ipv6"] = ipv6
         attrs["source"] = "controller"
         attrs["available"] = True
+        attrs["ipv6"] = ipv6
+        attrs["adress_ipv6"] = ipv6
         if primary_link is not None:
             primary_link.setdefault("last_ipv6", ipv6)
             primary_link.setdefault("wan_ipv6", ipv6)

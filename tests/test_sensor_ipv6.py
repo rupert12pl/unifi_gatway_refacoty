@@ -294,3 +294,31 @@ def test_wan_status_sensor_reports_ip_sources():
     assert attrs["ip_source"] == "wan_link"
     assert attrs["ipv6"] == "2001:db8::10"
     assert attrs["ipv6_source"] == "wan_health"
+
+
+def test_wan_status_sensor_includes_adress_ipv6_and_gateway_name():
+    link = {
+        "id": "wan1",
+        "name": "WAN",
+    }
+    health = {"id": "wan1"}
+    data = _make_data(
+        wan_links=[link],
+        wan_health=[health],
+        wan={"name": "RAD01-UDM"},
+        wan_attrs={
+            "adress_ipv6": "2001:db8::abcd",
+            "ipv6": "2001:db8::abcd",
+            "gw_name": "RAD01-UDM",
+        },
+        wan_ipv6="2001:db8::abcd",
+    )
+    coordinator = SimpleNamespace(data=data)
+    sensor = UniFiGatewayWanStatusSensor(
+        coordinator, _StubClient(), "entry-id", dict(link)
+    )
+
+    attrs = sensor.extra_state_attributes
+
+    assert attrs["adress_ipv6"] == "2001:db8::abcd"
+    assert attrs["gw_name"] == "RAD01-UDM"
