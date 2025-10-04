@@ -290,7 +290,7 @@ def test_missing_mac_with_ipv4_fetches_ipv6(hass) -> None:
 
     assert coordinator.data is not None
     result = coordinator.data
-    assert result.wan[ATTR_GW_MAC] is None
+    assert result.wan[ATTR_GW_MAC] == "bb:bb:bb:bb:bb:bb"
     assert result.wan_ipv6 == "2001:db8::123"
     attrs = result.wan_attrs
     assert attrs.get(ATTR_REASON) is None
