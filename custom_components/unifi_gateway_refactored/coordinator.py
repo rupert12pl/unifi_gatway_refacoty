@@ -3,13 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import logging
+import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from .cloud_client import UiCloudAuthError, UiCloudClient, UiCloudError, UiCloudRateLimitError
 from .const import DOMAIN
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
@@ -45,8 +47,12 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         client: UniFiOSClient,
         *,
         speedtest_interval: int | None = None,
+        ui_cloud_client: UiCloudClient | None = None,
     ) -> None:
         self._client = client
+        self._ui_cloud_client = ui_cloud_client
+        self._wan_ipv6_cache: dict[str, tuple[float, str]] = {}
+        self._cloud_cache_ttl = 300.0
         self._speedtest_interval = self._sanitize_speedtest_interval(speedtest_interval)
         super().__init__(
             hass,
@@ -54,6 +60,8 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             name=f"{DOMAIN} data",
             update_interval=timedelta(seconds=15),
         )
+        if self._ui_cloud_client is not None:
+            _LOGGER.info("Using UI Cloud API for WAN IPv6")
 
     @staticmethod
     def _sanitize_speedtest_interval(value: int | None) -> int:
@@ -103,13 +111,282 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             return dt_utc.timestamp()
         return None
 
+    async def _merge_wan_ipv6_from_cloud(self, data: UniFiGatewayData) -> None:
+        if not data or not data.wan_links:
+            return
+
+        mapping: dict[str, str] = {}
+        if self._ui_cloud_client is None:
+            return
+        try:
+            payload = await self._ui_cloud_client.fetch_hosts()
+        except UiCloudAuthError as err:
+            _LOGGER.warning(
+                "UI Cloud API authentication failed while fetching WAN IPv6 (status=%s)",
+                err.status,
+            )
+        except UiCloudRateLimitError as err:
+            retry_desc = (
+                f"{err.retry_after:.1f}s" if err.retry_after is not None else "unknown"
+            )
+            _LOGGER.warning(
+                "UI Cloud API rate limited while fetching WAN IPv6 (retry_in=%s)",
+                retry_desc,
+            )
+        except UiCloudError as err:
+            _LOGGER.error("Failed to fetch WAN IPv6 from UI Cloud API: %s", err)
+        else:
+            if isinstance(payload, Mapping):
+                mapping = self._extract_ipv6_mapping(payload)
+            else:
+                _LOGGER.debug(
+                    "UI Cloud API returned unexpected payload type: %s",
+                    type(payload),
+                )
+
+        now = time.monotonic()
+        self._apply_wan_ipv6_updates(data, mapping, now)
+
+    @staticmethod
+    def _extract_ipv6_mapping(payload: Mapping[str, Any]) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        data_list = payload.get("data")
+        if not isinstance(data_list, list):
+            return mapping
+        for console in data_list:
+            if not isinstance(console, Mapping):
+                continue
+            reported = console.get("reportedState")
+            if not isinstance(reported, Mapping):
+                continue
+            wans = reported.get("wans")
+            if not isinstance(wans, list):
+                continue
+            for wan in wans:
+                if not isinstance(wan, Mapping):
+                    continue
+                if not UniFiGatewayDataUpdateCoordinator._wan_candidate_enabled(wan):
+                    continue
+                mac = UniFiGatewayDataUpdateCoordinator._normalize_mac(wan.get("mac"))
+                if not mac or mac in mapping:
+                    continue
+                ipv6 = wan.get("ipv6")
+                if isinstance(ipv6, str):
+                    ipv6_clean = ipv6.strip()
+                    if ipv6_clean:
+                        mapping[mac] = ipv6_clean
+        return mapping
+
+    def _apply_wan_ipv6_updates(
+        self,
+        data: UniFiGatewayData,
+        mapping: dict[str, str],
+        now: float,
+    ) -> None:
+        if not data.wan_links:
+            return
+
+        health_lookup = self._build_health_lookup(data.wan_health)
+
+        for link in data.wan_links:
+            if not isinstance(link, dict):
+                continue
+
+            mac, health_record = self._resolve_wan_mac(link, health_lookup)
+            if not mac:
+                continue
+
+            cached_value: Optional[str] = None
+            cache_entry = self._wan_ipv6_cache.get(mac)
+            if cache_entry:
+                ts, cached = cache_entry
+                if (now - ts) <= self._cloud_cache_ttl:
+                    cached_value = cached
+                else:
+                    self._wan_ipv6_cache.pop(mac, None)
+
+            if mac in mapping:
+                ipv6_value = mapping[mac]
+                link["last_ipv6"] = ipv6_value
+                if not link.get("wan_ipv6"):
+                    link["wan_ipv6"] = ipv6_value
+                if isinstance(health_record, dict):
+                    if not health_record.get("last_ipv6"):
+                        health_record["last_ipv6"] = ipv6_value
+                    if not health_record.get("wan_ipv6"):
+                        health_record["wan_ipv6"] = ipv6_value
+                self._wan_ipv6_cache[mac] = (now, ipv6_value)
+                continue
+
+            if cached_value and not link.get("last_ipv6"):
+                link["last_ipv6"] = cached_value
+                if not link.get("wan_ipv6"):
+                    link["wan_ipv6"] = cached_value
+                if isinstance(health_record, dict):
+                    if not health_record.get("last_ipv6"):
+                        health_record["last_ipv6"] = cached_value
+                    if not health_record.get("wan_ipv6"):
+                        health_record["wan_ipv6"] = cached_value
+
+    @staticmethod
+    def _build_health_lookup(records: List[Dict[str, Any]]) -> dict[str, Dict[str, Any]]:
+        lookup: dict[str, Dict[str, Any]] = {}
+        keys = ("id", "_id", "ifname", "name", "wan_name", "display_name")
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            for key in keys:
+                if key not in record:
+                    continue
+                for identifier in UniFiGatewayDataUpdateCoordinator._normalized_identifiers(
+                    record.get(key)
+                ):
+                    if identifier not in lookup:
+                        lookup[identifier] = record
+        return lookup
+
+    def _resolve_wan_mac(
+        self,
+        link: Mapping[str, Any],
+        health_lookup: dict[str, Dict[str, Any]],
+    ) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+        identifiers = self._collect_link_identifiers(link)
+        health_record: Optional[Dict[str, Any]] = None
+        for identifier in identifiers:
+            if identifier in health_lookup:
+                health_record = health_lookup[identifier]
+                break
+
+        mac = self._extract_mac_from_mapping(link)
+        if mac:
+            if health_record is None:
+                for identifier in identifiers:
+                    if identifier in health_lookup:
+                        health_record = health_lookup[identifier]
+                        break
+            return mac, health_record
+
+        if health_record is not None:
+            mac = self._extract_mac_from_mapping(health_record)
+            if mac:
+                return mac, health_record
+
+        return None, health_record
+
+    @staticmethod
+    def _collect_link_identifiers(link: Mapping[str, Any]) -> set[str]:
+        identifiers: set[str] = set()
+        keys = (
+            "id",
+            "_id",
+            "ifname",
+            "interface",
+            "wan_port",
+            "port",
+            "display_name",
+            "wan_name",
+            "name",
+        )
+        for key in keys:
+            if key not in link:
+                continue
+            identifiers.update(
+                UniFiGatewayDataUpdateCoordinator._normalized_identifiers(
+                    link.get(key)
+                )
+            )
+        return identifiers
+
+    @staticmethod
+    def _normalized_identifiers(value: Any) -> set[str]:
+        results: set[str] = set()
+        if value in (None, ""):
+            return results
+        if isinstance(value, str):
+            text = value.strip().lower()
+        else:
+            text = str(value).strip().lower()
+        if not text:
+            return results
+        results.add(text)
+        collapsed = text.replace(" ", "")
+        if collapsed:
+            results.add(collapsed)
+        return results
+
+    @staticmethod
+    def _extract_mac_from_mapping(mapping: Mapping[str, Any]) -> Optional[str]:
+        mac_keys = (
+            "mac",
+            "wan_mac",
+            "gateway_mac",
+            "gw_mac",
+            "device_mac",
+            "port_mac",
+            "if_mac",
+            "wan_if_mac",
+            "remote_mac",
+            "primary_mac",
+            "mac_address",
+            "wan_macaddr",
+            "uplink_mac",
+        )
+        for key in mac_keys:
+            normalized = UniFiGatewayDataUpdateCoordinator._normalize_mac(
+                mapping.get(key)
+            )
+            if normalized:
+                return normalized
+        uplink = mapping.get("uplink")
+        if isinstance(uplink, Mapping):
+            nested = UniFiGatewayDataUpdateCoordinator._extract_mac_from_mapping(uplink)
+            if nested:
+                return nested
+        return None
+
+    @staticmethod
+    def _normalize_mac(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if not isinstance(value, str):
+            value = str(value)
+        cleaned = re.sub(r"[^0-9A-Fa-f]", "", value)
+        if len(cleaned) != 12:
+            return None
+        try:
+            int(cleaned, 16)
+        except ValueError:
+            return None
+        parts = [cleaned[i:i + 2] for i in range(0, 12, 2)]
+        return ":".join(parts).lower()
+
+    @staticmethod
+    def _wan_candidate_enabled(wan: Mapping[str, Any]) -> bool:
+        if wan.get("enabled") is False:
+            return False
+        wan_type = str(wan.get("type") or "").strip().upper()
+        if wan_type and wan_type not in {"WAN", "WAN1", "PRIMARY"}:
+            return False
+        return True
+
     async def _async_update_data(self) -> UniFiGatewayData:
         try:
-            return await self.hass.async_add_executor_job(
+            data = await self.hass.async_add_executor_job(
                 self._fetch_data,
             )
         except (ConnectivityError, APIError) as err:
             raise UpdateFailed(str(err)) from err
+
+        if self._ui_cloud_client is not None and data:
+            try:
+                await self._merge_wan_ipv6_from_cloud(data)
+            except Exception as err:  # pragma: no cover - defensive logging
+                _LOGGER.exception(
+                    "Unexpected error while merging WAN IPv6 data from UI Cloud API: %s",
+                    err,
+                )
+
+        return data
 
     def _fetch_data(self) -> UniFiGatewayData:
         """Fetch data with improved VPN and speedtest handling."""
@@ -186,24 +463,25 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 len(wan_links_raw),
             )
 
+        ipv4: Optional[str] = None
         try:
-            ipv4, ipv6 = self._client.get_wan_ips_from_devices()
+            wan_ips = self._client.get_wan_ips_from_devices()
         except Exception as err:  # pragma: no cover - defensive guard for API quirks
-            ipv4 = ipv6 = None
             _LOGGER.debug("WAN IPs from devices unavailable: %s", err)
+        else:
+            if isinstance(wan_ips, (list, tuple)) and wan_ips:
+                ipv4_candidate = wan_ips[0]
+                if isinstance(ipv4_candidate, str) and ipv4_candidate:
+                    ipv4 = ipv4_candidate
 
-        if wan_links_raw and (ipv4 or ipv6):
+        if wan_links_raw and ipv4:
             for wan in wan_links_raw:
                 if isinstance(wan, dict):
                     if ipv4 and not wan.get("last_ipv4"):
                         wan["last_ipv4"] = ipv4
-                    if ipv6 and not wan.get("last_ipv6"):
-                        wan["last_ipv6"] = ipv6
                 else:
                     if ipv4 and not getattr(wan, "last_ipv4", None):
                         setattr(wan, "last_ipv4", ipv4)
-                    if ipv6 and not getattr(wan, "last_ipv6", None):
-                        setattr(wan, "last_ipv6", ipv6)
         wan_links: List[Dict[str, Any]] = []
         for link in wan_links_raw:
             link_id = link.get("id") or link.get("_id") or link.get("ifname")

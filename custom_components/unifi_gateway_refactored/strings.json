@@ -21,6 +21,7 @@
           "timeout": "HTTP timeout (seconds)",
           "speedtest_interval": "Speedtest interval (minutes)",
           "speedtest_entities": "Speedtest entity IDs (comma separated)",
+          "ui_api_key": "UI Cloud API key",
           "wifi_guest": "Guest WiFi SSID",
           "wifi_iot": "IoT WiFi SSID"
         }
@@ -29,6 +30,9 @@
     "error": {
       "invalid_auth": "Invalid credentials.",
       "cannot_connect": "Cannot connect to UniFi host.",
+      "invalid_api_key": "Invalid UI Cloud API key.",
+      "api_rate_limited": "UI Cloud API rate limited. Try again later.",
+      "api_unavailable": "UI Cloud API unavailable.",
       "missing_auth": "Provide a username and password.",
       "unknown": "Unknown error."
     }
@@ -49,6 +53,7 @@
           "timeout": "HTTP timeout (seconds)",
           "speedtest_interval": "Speedtest interval (minutes)",
           "speedtest_entities": "Speedtest entity IDs (comma separated)",
+          "ui_api_key": "UI Cloud API key",
           "wifi_guest": "Guest WiFi SSID",
           "wifi_iot": "IoT WiFi SSID"
         }
@@ -57,6 +62,9 @@
     "error": {
       "invalid_auth": "Invalid credentials.",
       "cannot_connect": "Cannot connect to UniFi host.",
+      "invalid_api_key": "Invalid UI Cloud API key.",
+      "api_rate_limited": "UI Cloud API rate limited. Try again later.",
+      "api_unavailable": "UI Cloud API unavailable.",
       "missing_auth": "Provide a username and password.",
       "unknown": "Unknown error."
     }
