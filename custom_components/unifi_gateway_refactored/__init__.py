@@ -23,6 +23,8 @@ from .const import (
     CONF_USE_PROXY_PREFIX,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
+    CONF_API_KEY,
+    CONF_GW_MAC,
     CONF_SPEEDTEST_ENTITIES,
     CONF_SPEEDTEST_INTERVAL,
     CONF_WIFI_GUEST,
@@ -193,13 +195,15 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
 
     options = entry.options or {}
 
-    ui_api_key = entry.data.get(CONF_UI_API_KEY)
+    ui_api_key = options.get(CONF_API_KEY)
     if not ui_api_key:
-        ui_api_key = options.get(CONF_UI_API_KEY)
+        ui_api_key = entry.data.get(CONF_UI_API_KEY)
     ui_cloud_client: UiCloudClient | None = None
     if ui_api_key:
         session = async_get_clientsession(hass)
         ui_cloud_client = UiCloudClient(session, ui_api_key)
+
+    stored_gw_mac = options.get(CONF_GW_MAC)
 
     speedtest_interval_seconds = _resolve_speedtest_interval_seconds(options, entry.data)
 
@@ -227,6 +231,8 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
         client,
         speedtest_interval=speedtest_interval_seconds,
         ui_cloud_client=ui_cloud_client,
+        config_entry=entry,
+        stored_gw_mac=stored_gw_mac,
     )
     await coordinator.async_config_entry_first_refresh()
 

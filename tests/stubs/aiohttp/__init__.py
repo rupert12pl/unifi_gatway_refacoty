@@ -18,6 +18,14 @@ class ClientTimeout:
         self.total = total
 
 
+class ClientResponse:
+    status: int
+    headers: dict[str, str]
+
+    async def json(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("not implemented")
+
+
 class ClientSession:
     def __init__(self, timeout: ClientTimeout | None = None) -> None:
         self.timeout = timeout
@@ -32,4 +40,10 @@ class ClientSession:
         raise RuntimeError("aiohttp client session is not available in tests")
 
 
-__all__ = ["ClientError", "ContentTypeError", "ClientTimeout", "ClientSession"]
+__all__ = [
+    "ClientError",
+    "ClientResponse",
+    "ContentTypeError",
+    "ClientTimeout",
+    "ClientSession",
+]

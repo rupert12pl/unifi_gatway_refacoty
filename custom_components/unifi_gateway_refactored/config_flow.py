@@ -78,7 +78,7 @@ async def _validate_ui_api_key(api_key: Optional[str]) -> None:
     timeout = aiohttp.ClientTimeout(total=10)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         client = UiCloudClient(session, api_key)
-        await client.fetch_hosts()
+        await client.async_get_hosts()
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -398,16 +398,16 @@ class OptionsFlow(config_entries.OptionsFlow):
                     await _validate(self.hass, merged)
                     await _validate_ui_api_key(merged.get(CONF_UI_API_KEY))
                     if CONF_UI_API_KEY in cleaned:
-                        current_data = dict(self._entry.data)
+                        current_options = dict(self._entry.options)
                         normalized_key = cleaned[CONF_UI_API_KEY]
                         if normalized_key is None:
-                            current_data.pop(CONF_UI_API_KEY, None)
+                            current_options.pop(CONF_UI_API_KEY, None)
                         else:
-                            current_data[CONF_UI_API_KEY] = normalized_key
+                            current_options[CONF_UI_API_KEY] = normalized_key
                         cleaned.pop(CONF_UI_API_KEY, None)
                         await self.hass.config_entries.async_update_entry(
                             self._entry,
-                            data=current_data,
+                            options=current_options,
                         )
                     return self.async_create_entry(title="", data=cleaned)
                 except AuthError:

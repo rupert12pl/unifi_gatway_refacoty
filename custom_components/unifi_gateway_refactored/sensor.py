@@ -56,7 +56,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from homeassistant.util import Throttle
-from .const import CONF_HOST, DOMAIN
+from .const import ATTR_GW_MAC, CONF_HOST, DOMAIN
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
@@ -1782,6 +1782,13 @@ class UniFiGatewayWanSensorBase(UniFiGatewaySensorBase):
                 return link
         return None
 
+    def _wan_common_attributes(self) -> Dict[str, Any]:
+        data = self.coordinator.data
+        gw_mac = None
+        if data:
+            gw_mac = data.wan.get(ATTR_GW_MAC)
+        return {ATTR_GW_MAC: gw_mac}
+
 
 class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
     def __init__(
@@ -2595,6 +2602,7 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
         attrs["status_source"] = self._last_status_source
         attrs["status_normalized"] = self._last_status
         attrs.update(self._controller_attrs())
+        attrs.update(self._wan_common_attributes())
         return attrs
 
 
@@ -2806,6 +2814,7 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
             ),
         }
         attrs.update(self._controller_attrs())
+        attrs.update(self._wan_common_attributes())
         return attrs
 
 
@@ -2830,46 +2839,40 @@ class UniFiGatewayWanIpv6Sensor(UniFiGatewayWanSensorBase):
             " IPv6",
             device_name=device_name,
         )
-        self._last_ipv6: Optional[str] = None
-        self._last_source: Optional[str] = None
 
     def _wan_health_record(self) -> Optional[Dict[str, Any]]:
         return _find_wan_health_record(self.coordinator.data, self._identifiers)
 
     @property
     def native_value(self) -> Optional[str]:
-        link = self._link()
-        health = self._wan_health_record()
-        ipv6, source = _extract_wan_value_with_source(
-            link, health, _WAN_IPV6_KEYS, version=6
-        )
-        if ipv6:
-            if source == "wan_link":
-                normalized_source = "link"
-            elif source == "wan_health":
-                normalized_source = "health"
-            else:
-                normalized_source = source or "unknown"
-            self._last_ipv6 = ipv6
-            self._last_source = normalized_source
-            return ipv6
-        if self._last_ipv6:
-            self._last_source = "cached"
-            return self._last_ipv6
-        return None
+        data = self.coordinator.data
+        if not data:
+            return None
+        return data.wan_ipv6
+
+    @property
+    def available(self) -> bool:
+        data = self.coordinator.data
+        if data and data.wan_attrs.get("available") is False:
+            return False
+        return super().available
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
+        data = self.coordinator.data
+        attrs: Dict[str, Any] = {}
+        if data:
+            attrs.update(data.wan_attrs)
         link = self._link()
         health = self._wan_health_record() or {}
-        attrs = {
-            "last_ipv6": self._last_ipv6,
-            "source": self._last_source or ("cached" if self._last_ipv6 else None),
-            "gateway_ipv6": _extract_wan_value(
-                link, health, _WAN_GATEWAY_IPV6_KEYS, version=6
-            ),
-            "prefix": _extract_wan_value(link, health, _WAN_IPV6_PREFIX_KEYS),
-        }
+        attrs.setdefault(
+            "gateway_ipv6",
+            _extract_wan_value(link, health, _WAN_GATEWAY_IPV6_KEYS, version=6),
+        )
+        attrs.setdefault(
+            "prefix", _extract_wan_value(link, health, _WAN_IPV6_PREFIX_KEYS)
+        )
+        attrs.update(self._wan_common_attributes())
         attrs.update(self._controller_attrs())
         return attrs
 
@@ -2966,6 +2969,7 @@ class UniFiGatewayWanIspSensor(UniFiGatewayWanSensorBase):
             ),
         }
         attrs.update(self._controller_attrs())
+        attrs.update(self._wan_common_attributes())
         return attrs
 
 
