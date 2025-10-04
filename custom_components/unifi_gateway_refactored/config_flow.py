@@ -532,15 +532,15 @@ class OptionsFlow(config_entries.OptionsFlow):
         schema_fields[vol.Optional(
             CONF_UI_API_KEY,
             default=current.get(CONF_UI_API_KEY, ""),
-        )] = vol.Any(str, None)
+        )] = str
         schema_fields[vol.Optional(
             CONF_WIFI_GUEST,
-            default=current.get(CONF_WIFI_GUEST),
-        )] = vol.Any(str, None)
+            default=current.get(CONF_WIFI_GUEST, ""),
+        )] = str
         schema_fields[vol.Optional(
             CONF_WIFI_IOT,
-            default=current.get(CONF_WIFI_IOT),
-        )] = vol.Any(str, None)
+            default=current.get(CONF_WIFI_IOT, ""),
+        )] = str
 
         schema = vol.Schema(schema_fields)
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
