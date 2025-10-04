@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 import aiohttp
@@ -190,6 +191,40 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return default
         return normalized
 
+    @staticmethod
+    def _normalize_speedtest_entities(value: Any) -> str:
+        """Normalize speedtest entities to a comma-separated string."""
+
+        def _flatten(item: Any) -> list[str]:
+            if item in (None, "", False):
+                return []
+            if isinstance(item, bool):
+                return []
+            if isinstance(item, str):
+                segments = [
+                    segment.strip()
+                    for segment in item.replace("\n", ",").split(",")
+                    if segment.strip()
+                ]
+                return segments
+            if isinstance(item, Mapping):
+                mapping_values: list[str] = []
+                for value_item in item.values():
+                    mapping_values.extend(_flatten(value_item))
+                return mapping_values
+            if isinstance(item, (list, tuple, set)):
+                sequence_values: list[str] = []
+                for value_item in item:
+                    sequence_values.extend(_flatten(value_item))
+                return sequence_values
+            text = str(item).strip()
+            return [text] if text else []
+
+        parts = _flatten(value)
+        if not parts:
+            return DEFAULT_SPEEDTEST_ENTITIES
+        return ",".join(parts)
+
     async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         if user_input is not None:
@@ -216,21 +251,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     sanitized[CONF_SPEEDTEST_INTERVAL]
                 )
             if CONF_SPEEDTEST_ENTITIES in sanitized:
-                value = sanitized[CONF_SPEEDTEST_ENTITIES]
-                if isinstance(value, str):
-                    collapsed = ",".join(
-                        segment.strip()
-                        for segment in value.replace("\n", ",").split(",")
-                        if segment.strip()
-                    )
-                    sanitized[CONF_SPEEDTEST_ENTITIES] = (
-                        collapsed or DEFAULT_SPEEDTEST_ENTITIES
-                    )
-                elif isinstance(value, (list, tuple, set)):
-                    collapsed = ",".join(str(item).strip() for item in value if str(item).strip())
-                    sanitized[CONF_SPEEDTEST_ENTITIES] = (
-                        collapsed or DEFAULT_SPEEDTEST_ENTITIES
-                    )
+                sanitized[CONF_SPEEDTEST_ENTITIES] = self._normalize_speedtest_entities(
+                    sanitized[CONF_SPEEDTEST_ENTITIES]
+                )
             self._cached.update(sanitized)
             data = dict(self._cached)
             for key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
@@ -299,15 +322,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if interval_default <= 0:
             interval_default = DEFAULT_SPEEDTEST_INTERVAL_MINUTES
 
-        entities_default = self._cached.get(
-            CONF_SPEEDTEST_ENTITIES, DEFAULT_SPEEDTEST_ENTITIES
+        entities_default = self._normalize_speedtest_entities(
+            self._cached.get(CONF_SPEEDTEST_ENTITIES, DEFAULT_SPEEDTEST_ENTITIES)
         )
-        if isinstance(entities_default, (list, tuple, set)):
-            entities_default = ",".join(
-                str(item).strip() for item in entities_default if str(item).strip()
-            )
-        if not entities_default:
-            entities_default = DEFAULT_SPEEDTEST_ENTITIES
 
         adv_schema = vol.Schema(
             {
@@ -379,21 +396,9 @@ class OptionsFlow(config_entries.OptionsFlow):
                     cleaned[CONF_SPEEDTEST_INTERVAL]
                 )
             if CONF_SPEEDTEST_ENTITIES in cleaned:
-                value = cleaned[CONF_SPEEDTEST_ENTITIES]
-                if isinstance(value, str):
-                    collapsed = ",".join(
-                        segment.strip()
-                        for segment in value.replace("\n", ",").split(",")
-                        if segment.strip()
-                    )
-                    cleaned[CONF_SPEEDTEST_ENTITIES] = (
-                        collapsed or DEFAULT_SPEEDTEST_ENTITIES
-                    )
-                elif isinstance(value, (list, tuple, set)):
-                    collapsed = ",".join(str(item).strip() for item in value if str(item).strip())
-                    cleaned[CONF_SPEEDTEST_ENTITIES] = (
-                        collapsed or DEFAULT_SPEEDTEST_ENTITIES
-                    )
+                cleaned[CONF_SPEEDTEST_ENTITIES] = ConfigFlow._normalize_speedtest_entities(
+                    cleaned[CONF_SPEEDTEST_ENTITIES]
+                )
             for key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
                 if key in cleaned:
                     cleaned[key] = ConfigFlow._normalize_optional_text(cleaned[key])
@@ -462,15 +467,9 @@ class OptionsFlow(config_entries.OptionsFlow):
         )
         if interval_default <= 0:
             interval_default = DEFAULT_SPEEDTEST_INTERVAL_MINUTES
-        entities_default = current.get(
-            CONF_SPEEDTEST_ENTITIES, DEFAULT_SPEEDTEST_ENTITIES
+        entities_default = ConfigFlow._normalize_speedtest_entities(
+            current.get(CONF_SPEEDTEST_ENTITIES, DEFAULT_SPEEDTEST_ENTITIES)
         )
-        if isinstance(entities_default, (list, tuple, set)):
-            entities_default = ",".join(
-                str(item).strip() for item in entities_default if str(item).strip()
-            )
-        if not entities_default:
-            entities_default = DEFAULT_SPEEDTEST_ENTITIES
         host_default = ConfigFlow._normalize_required_text(current.get(CONF_HOST), "")
         username_default = ConfigFlow._normalize_required_text(
             current.get(CONF_USERNAME), ""
