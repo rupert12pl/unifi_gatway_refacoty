@@ -196,7 +196,7 @@ def test_wan_ipv6_sensor_handles_unavailable_state():
     assert attrs["gw_mac"] == "78:45:58:d0:95:75"
 
 
-def test_wan_ip_sensor_prefers_ipv6_when_enabled():
+def test_wan_ip_sensor_prefers_ipv4_when_available():
     link = {
         "id": "wan1",
         "name": "WAN",
@@ -214,7 +214,27 @@ def test_wan_ip_sensor_prefers_ipv6_when_enabled():
 
     value = sensor.native_value
 
-    assert value == "2001:db8::5"
+    assert value == "192.0.2.5"
+
+
+def test_wan_ip_sensor_uses_ipv6_when_ipv4_missing():
+    link = {
+        "id": "wan1",
+        "name": "WAN",
+        "last_ipv6": "2001:db8::15",
+    }
+    data = _make_data(
+        wan_links=[link],
+        networks=[{"name": "WAN", "ipv6_interface_type": "dhcpv6"}],
+    )
+    coordinator = SimpleNamespace(data=data)
+    sensor = UniFiGatewayWanIpSensor(
+        coordinator, _StubClient(), "entry-id", dict(link)
+    )
+
+    value = sensor.native_value
+
+    assert value == "2001:db8::15"
 
 
 def test_wan_ip_sensor_uses_ipv4_when_ipv6_disabled():
