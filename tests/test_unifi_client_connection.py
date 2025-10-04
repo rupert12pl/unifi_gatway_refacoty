@@ -40,29 +40,34 @@ def _install_http_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
         return None
 
     dummy_requests = types.ModuleType("requests")
-    dummy_requests.Session = _DummySession  # type: ignore[attr-defined]
-    dummy_requests.exceptions = types.ModuleType("requests.exceptions")
-    dummy_requests.exceptions.RequestException = Exception  # type: ignore[attr-defined]
+    setattr(dummy_requests, "Session", _DummySession)
+    exceptions_module = types.ModuleType("requests.exceptions")
+    setattr(exceptions_module, "RequestException", Exception)
+    setattr(dummy_requests, "exceptions", exceptions_module)
 
     dummy_adapters = types.ModuleType("requests.adapters")
-    dummy_adapters.HTTPAdapter = _DummyAdapter  # type: ignore[attr-defined]
+    setattr(dummy_adapters, "HTTPAdapter", _DummyAdapter)
 
     dummy_packages = types.ModuleType("requests.packages")
-    dummy_packages.urllib3 = types.ModuleType("requests.packages.urllib3")
-    dummy_packages.urllib3.connectionpool = types.ModuleType(
-        "requests.packages.urllib3.connectionpool"
+    urllib3_package = types.ModuleType("requests.packages.urllib3")
+    setattr(
+        urllib3_package,
+        "connectionpool",
+        types.ModuleType("requests.packages.urllib3.connectionpool"),
     )
+    setattr(dummy_packages, "urllib3", urllib3_package)
 
-    dummy_requests.adapters = dummy_adapters  # type: ignore[attr-defined]
-    dummy_requests.packages = dummy_packages  # type: ignore[attr-defined]
+    setattr(dummy_requests, "adapters", dummy_adapters)
+    setattr(dummy_requests, "packages", dummy_packages)
 
     dummy_urllib3 = types.ModuleType("urllib3")
-    dummy_urllib3.disable_warnings = _disable_warnings  # type: ignore[attr-defined]
-    dummy_urllib3.exceptions = types.ModuleType("urllib3.exceptions")
-    dummy_urllib3.exceptions.InsecureRequestWarning = Warning  # type: ignore[attr-defined]
+    setattr(dummy_urllib3, "disable_warnings", _disable_warnings)
+    urllib3_exceptions = types.ModuleType("urllib3.exceptions")
+    setattr(urllib3_exceptions, "InsecureRequestWarning", Warning)
+    setattr(dummy_urllib3, "exceptions", urllib3_exceptions)
 
     dummy_retry = types.ModuleType("urllib3.util.retry")
-    dummy_retry.Retry = _DummyRetry  # type: ignore[attr-defined]
+    setattr(dummy_retry, "Retry", _DummyRetry)
 
     monkeypatch.setitem(sys.modules, "requests", dummy_requests)
     monkeypatch.setitem(sys.modules, "requests.adapters", dummy_adapters)
