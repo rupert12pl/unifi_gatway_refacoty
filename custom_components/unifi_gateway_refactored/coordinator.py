@@ -325,6 +325,16 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             if primary_link is not None and gw_mac:
                 primary_link.setdefault(ATTR_GW_MAC, gw_mac)
 
+        try:
+            hardware_mac = normalize_mac(self._client.get_gateway_mac())
+        except Exception:  # pragma: no cover - guard against client failures
+            hardware_mac = None
+
+        if not gw_mac and hardware_mac:
+            gw_mac = hardware_mac
+            if primary_link is not None:
+                primary_link.setdefault(ATTR_GW_MAC, gw_mac)
+
         data.wan[ATTR_GW_MAC] = gw_mac
         if gw_mac:
             await self._async_persist_gw_mac(gw_mac)
@@ -345,10 +355,6 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         elif data.wan.get("ip_address"):
             data.wan_attrs.setdefault("gateway_ip", data.wan.get("ip_address"))
             data.wan_attrs.setdefault("ip", data.wan.get("ip_address"))
-        try:
-            hardware_mac = normalize_mac(self._client.get_gateway_mac())
-        except Exception:  # pragma: no cover - guard against client failures
-            hardware_mac = None
 
         await self._async_update_wan_ipv6_from_cloud(
             data,
