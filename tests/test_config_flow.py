@@ -208,6 +208,76 @@ def test_advanced_step_normalizes_cached_host(
     assert validate_payload[CONF_HOST] == "udm.local"
 
 
+def test_advanced_step_handles_invalid_api_key_characters(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Advanced step should surface invalid_api_key for bad header values."""
+
+    captured: dict[str, Any] = {}
+
+    async def fake_validate(_hass: Any, data: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
+    async def fake_set_unique_id(
+        self, unique_id: str, *, raise_on_progress: bool = False
+    ) -> None:  # type: ignore[override]
+        return None
+
+    def fake_abort_if_unique_id_configured(self) -> None:  # type: ignore[override]
+        return None
+
+    def fake_show_form(
+        self, *, step_id, data_schema=None, errors=None, description_placeholders=None
+    ):
+        captured["step_id"] = step_id
+        captured["errors"] = errors or {}
+        return {"type": "form", "step_id": step_id, "errors": errors or {}}
+
+    async def fake_async_get_hosts(self) -> Any:  # type: ignore[override]
+        raise ValueError("invalid header")
+
+    monkeypatch.setattr(
+        "custom_components.unifi_gateway_refactored.config_flow._validate",
+        fake_validate,
+    )
+    monkeypatch.setattr(
+        "custom_components.unifi_gateway_refactored.config_flow.UiCloudClient.async_get_hosts",
+        fake_async_get_hosts,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ConfigFlow, "async_set_unique_id", fake_set_unique_id, raising=False
+    )
+    monkeypatch.setattr(
+        ConfigFlow,
+        "_abort_if_unique_id_configured",
+        fake_abort_if_unique_id_configured,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ConfigFlow, "async_show_form", fake_show_form, raising=False
+    )
+
+    flow = ConfigFlow()
+    flow.hass = hass  # type: ignore[assignment]
+    flow._cached = {
+        CONF_HOST: "udm.local",
+        CONF_USERNAME: "user",
+        CONF_PASSWORD: "pass",
+    }
+
+    result = run(
+        flow.async_step_advanced(
+            {
+                CONF_UI_API_KEY: "abc\ndef",
+            }
+        )
+    )
+
+    assert result["step_id"] == "advanced"
+    assert captured.get("errors", {}).get("base") == "invalid_api_key"
+
+
 def test_options_flow_normalizes_existing_host(
     hass, monkeypatch: pytest.MonkeyPatch
 ) -> None:
