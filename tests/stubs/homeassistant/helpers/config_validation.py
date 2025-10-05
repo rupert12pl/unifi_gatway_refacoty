@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Type, cast
+
 import voluptuous as vol
+
+try:
+    Invalid = cast(Type[Exception], vol.Invalid)  # type: ignore[attr-defined]
+except AttributeError:  # pragma: no cover - stub fallback
+    class _VoluptuousInvalid(Exception):
+        pass
+
+    Invalid = _VoluptuousInvalid
 
 
 def boolean(value):
@@ -21,7 +31,7 @@ def boolean(value):
             return True
         if normalized in {"false", "off", "no", "n", "0"}:
             return False
-    raise vol.Invalid(f"Invalid boolean value: {value!r}")
+    raise Invalid(f"Invalid boolean value: {value!r}")
 
 
 def string(value):
@@ -30,7 +40,7 @@ def string(value):
     if isinstance(value, str):
         return value
     if value is None:
-        raise vol.Invalid("String value cannot be None")
+        raise Invalid("String value cannot be None")
     return str(value)
 
 

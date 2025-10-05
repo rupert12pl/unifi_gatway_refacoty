@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING, Type, cast
 
 import aiohttp
 
@@ -16,15 +16,17 @@ else:  # pragma: no cover - fallback for older Home Assistant
     FlowResult = Dict[str, Any]  # type: ignore[misc, assignment]
 import voluptuous as vol
 
+try:
+    Invalid = cast(Type[Exception], vol.Invalid)  # type: ignore[attr-defined]
+except AttributeError:  # pragma: no cover - stub fallback
+    class _VoluptuousInvalid(Exception):
+        """Fallback Invalid exception when voluptuous stub lacks it."""
+
+        pass
+
+    Invalid = _VoluptuousInvalid
+
 from homeassistant.helpers import config_validation as cv
-
-
-def _ensure_non_empty_string(value: Any) -> str:
-    text = cv.string(value)
-    stripped = text.strip()
-    if not stripped:
-        raise vol.Invalid("String value cannot be empty")
-    return stripped
 
 from .const import (
     DOMAIN,
@@ -60,6 +62,14 @@ from .cloud_client import (
 from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _ensure_non_empty_string(value: Any) -> str:
+    text = cv.string(value)
+    stripped = text.strip()
+    if not stripped:
+        raise Invalid("String value cannot be empty")
+    return stripped
 
 
 async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]:
