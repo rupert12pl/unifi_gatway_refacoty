@@ -22,7 +22,6 @@ CONF_API_KEY = "api_key"
 # Backwards compatibility alias for legacy option name
 CONF_UI_API_KEY = CONF_API_KEY
 CONF_GW_MAC = "gw_mac"
-CONF_VERIFY_SSL_CA = "verify_ssl_ca"
 
 DEFAULT_PORT = 443
 DEFAULT_SITE = "default"
