@@ -3264,7 +3264,7 @@ def _extract_ip_from_value(value: Any, *, version: Optional[int] = None) -> Opti
             closing = text.find("]")
             if closing != -1:
                 inside = text[1:closing]
-                remainder = text[closing + 1 :]
+                remainder = text[closing + 1:]
                 if remainder.startswith(":") and remainder[1:].isdigit():
                     remainder = ""
                 return inside + remainder

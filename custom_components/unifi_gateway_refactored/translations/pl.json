@@ -36,20 +36,16 @@
     "step": {
       "init": {
         "title": "Opcje UniFi Gateway Dashboard Analyzer",
-        "description": "Zaktualizuj szczegóły połączenia lub ustawienia zaawansowane kontrolera.",
+        "description": "Zaktualizuj dane administratora lub ustawienia zaawansowane kontrolera.",
         "data": {
-          "host": "Adres kontrolera (UDM IP)",
           "port": "Port",
           "username": "Nazwa użytkownika (lokalny administrator)",
           "password": "Hasło",
-          "site_id": "Identyfikator witryny (site ID)",
           "verify_ssl": "Weryfikuj SSL (wartość logiczna lub ścieżka do CA)",
           "use_proxy_prefix": "Użyj prefiksu /proxy/network",
           "timeout": "Limit czasu żądania HTTP (sekundy)",
           "speedtest_interval": "Interwał speedtestu (minuty)",
-          "speedtest_entities": "Identyfikatory encji speedtestu (oddzielone przecinkami)",
-          "wifi_guest": "SSID sieci WiFi dla gości",
-          "wifi_iot": "SSID sieci WiFi dla IoT"
+          "speedtest_entities": "Identyfikatory encji speedtestu (oddzielone przecinkami)"
         }
       }
     },

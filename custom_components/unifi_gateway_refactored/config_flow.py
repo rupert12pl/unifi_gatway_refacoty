@@ -390,14 +390,12 @@ class OptionsFlow(config_entries.OptionsFlow):
             entities_default = DEFAULT_SPEEDTEST_ENTITIES
         schema = vol.Schema(
             {
-                vol.Optional(CONF_HOST, default=current.get(CONF_HOST)): str,
                 vol.Optional(
                     CONF_PORT,
                     default=current.get(CONF_PORT, DEFAULT_PORT),
                 ): vol.All(vol.Coerce(int), vol.Clamp(min=1, max=65535)),
                 vol.Optional(CONF_USERNAME, default=current.get(CONF_USERNAME)): str,
                 vol.Optional(CONF_PASSWORD, default=current.get(CONF_PASSWORD)): str,
-                vol.Optional(CONF_SITE_ID, default=current.get(CONF_SITE_ID, DEFAULT_SITE)): str,
                 vol.Optional(
                     CONF_VERIFY_SSL,
                     default=current.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
@@ -420,14 +418,6 @@ class OptionsFlow(config_entries.OptionsFlow):
                     CONF_SPEEDTEST_ENTITIES,
                     default=entities_default,
                 ): str,
-                vol.Optional(
-                    CONF_WIFI_GUEST,
-                    default=current.get(CONF_WIFI_GUEST),
-                ): vol.Any(str, None),
-                vol.Optional(
-                    CONF_WIFI_IOT,
-                    default=current.get(CONF_WIFI_IOT),
-                ): vol.Any(str, None),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
