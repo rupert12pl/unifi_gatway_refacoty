@@ -35,6 +35,7 @@ from .const import (
     CONF_HOST,
     CONF_PORT,
     CONF_VERIFY_SSL,
+    CONF_VERIFY_SSL_CA,
     CONF_USE_PROXY_PREFIX,
     CONF_SITE_ID,
     CONF_TIMEOUT,
@@ -132,13 +133,23 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 cleaned[key] = normalized_host
                 continue
             cleaned[key] = value
-            ca = (cleaned.get(CONF_VERIFY_SSL_CA) or "").strip()
-            if ca:
-                cleaned[CONF_VERIFY_SSL] = ca
+
+        ca_value = ConfigFlow._normalize_optional_text(
+            cleaned.get(CONF_VERIFY_SSL_CA)
+        )
+        cleaned.pop(CONF_VERIFY_SSL_CA, None)
+
+        if ca_value:
+            cleaned[CONF_VERIFY_SSL] = ca_value
+        elif CONF_VERIFY_SSL in cleaned:
+            normalized_verify = ConfigFlow._normalize_verify_ssl(
+                cleaned[CONF_VERIFY_SSL]
+            )
+            if normalized_verify is None:
+                cleaned.pop(CONF_VERIFY_SSL, None)
             else:
-                cleaned[CONF_VERIFY_SSL] = bool(cleaned.get(CONF_VERIFY_SSL, False))
-            # Usuń pomocnicze pole z options
-            cleaned.pop(CONF_VERIFY_SSL_CA, None)
+                cleaned[CONF_VERIFY_SSL] = normalized_verify
+
         return cleaned
 
     @staticmethod
@@ -515,15 +526,11 @@ class OptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
+        cleaned: Dict[str, Any] = {}
         wifi_cleared: set[str] = set()
-        ca = (cleaned.get(CONF_VERIFY_SSL_CA) or "").strip()
-        if ca:
-            cleaned[CONF_VERIFY_SSL] = ca
-        else:
-            cleaned[CONF_VERIFY_SSL] = bool(cleaned.get(CONF_VERIFY_SSL, False))
-        cleaned.pop(CONF_VERIFY_SSL_CA, None)
+        host_provided = False
+        provided_host: Optional[str] = None
 
-        host_provided = CONF_HOST in user_input
         if user_input is not None:
             cleaned = ConfigFlow._clean_auth_fields(user_input)
             host_provided = CONF_HOST in user_input
@@ -532,6 +539,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                 if host_provided
                 else None
             )
+
             wifi_cleared = set()
             for wifi_key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
                 if wifi_key in user_input:
@@ -543,6 +551,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                         cleaned.pop(wifi_key, None)
                     else:
                         cleaned[wifi_key] = normalized_wifi
+
             if CONF_VERIFY_SSL in cleaned:
                 normalized_verify = ConfigFlow._normalize_verify_ssl(
                     cleaned[CONF_VERIFY_SSL]
@@ -551,14 +560,17 @@ class OptionsFlow(config_entries.OptionsFlow):
                     cleaned.pop(CONF_VERIFY_SSL, None)
                 else:
                     cleaned[CONF_VERIFY_SSL] = normalized_verify
+
             if CONF_SPEEDTEST_INTERVAL in cleaned:
                 cleaned[CONF_SPEEDTEST_INTERVAL] = ConfigFlow._minutes_to_seconds(
                     cleaned[CONF_SPEEDTEST_INTERVAL]
                 )
+
             if CONF_SPEEDTEST_ENTITIES in cleaned:
                 cleaned[CONF_SPEEDTEST_ENTITIES] = ConfigFlow._normalize_speedtest_entities(
                     cleaned[CONF_SPEEDTEST_ENTITIES]
                 )
+
             for key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
                 if key in cleaned:
                     normalized_wifi = ConfigFlow._normalize_optional_text(cleaned[key])
@@ -566,12 +578,14 @@ class OptionsFlow(config_entries.OptionsFlow):
                         cleaned.pop(key, None)
                     else:
                         cleaned[key] = normalized_wifi
+
             if CONF_UI_API_KEY in cleaned:
                 normalized_key = ConfigFlow._normalize_api_key(cleaned[CONF_UI_API_KEY])
-                if normalized_key is None:
+                if not normalized_key:
                     cleaned.pop(CONF_UI_API_KEY, None)
                 else:
                     cleaned[CONF_UI_API_KEY] = normalized_key
+
             merged = {**self._entry.data, **self._entry.options, **cleaned}
             normalized_host = ConfigFlow._normalize_host(merged.get(CONF_HOST))
             if host_provided and provided_host is None:
@@ -582,10 +596,10 @@ class OptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "missing_auth"
             else:
                 try:
-                    # Ensure Home Assistant context is available before validation.
                     assert self.hass is not None  # nosec B101
                     merged[CONF_HOST] = normalized_host
                     cleaned[CONF_HOST] = normalized_host
+
                     normalized_key = ConfigFlow._normalize_api_key(
                         merged.get(CONF_UI_API_KEY)
                     )
@@ -594,6 +608,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     else:
                         merged[CONF_UI_API_KEY] = normalized_key
                         cleaned.setdefault(CONF_UI_API_KEY, normalized_key)
+
                     normalized_verify = ConfigFlow._normalize_verify_ssl(
                         merged.get(CONF_VERIFY_SSL)
                     )
@@ -604,6 +619,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                         merged[CONF_VERIFY_SSL] = normalized_verify
                         if CONF_VERIFY_SSL in cleaned:
                             cleaned[CONF_VERIFY_SSL] = normalized_verify
+
                     if CONF_SPEEDTEST_ENTITIES in merged:
                         merged[CONF_SPEEDTEST_ENTITIES] = (
                             ConfigFlow._normalize_speedtest_entities(
@@ -614,6 +630,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                             cleaned[CONF_SPEEDTEST_ENTITIES] = merged[
                                 CONF_SPEEDTEST_ENTITIES
                             ]
+
                     for wifi_key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
                         if wifi_key in wifi_cleared:
                             merged.pop(wifi_key, None)
@@ -629,8 +646,10 @@ class OptionsFlow(config_entries.OptionsFlow):
                             merged[wifi_key] = normalized_wifi
                             if wifi_key in cleaned:
                                 cleaned[wifi_key] = normalized_wifi
+
                     await _validate(self.hass, merged)
                     await _validate_ui_api_key(merged.get(CONF_UI_API_KEY))
+
                     if self.hass is not None:
                         current_data = dict(self._entry.data)
                         updated = False
@@ -663,6 +682,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                                 self._entry,
                                 data=current_data,
                             )
+
                     if CONF_UI_API_KEY in cleaned:
                         current_options = dict(self._entry.options)
                         normalized_key = cleaned[CONF_UI_API_KEY]
@@ -674,6 +694,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                             self._entry,
                             options=current_options,
                         )
+
                     return self.async_create_entry(title="", data=cleaned)
                 except AuthError:
                     errors["base"] = "invalid_auth"
@@ -776,7 +797,10 @@ class OptionsFlow(config_entries.OptionsFlow):
         verify_default = ConfigFlow._normalize_verify_ssl(current.get(CONF_VERIFY_SSL))
         if verify_default is None:
             verify_default = DEFAULT_VERIFY_SSL
-        schema_fields[vol.Optional(CONF_VERIFY_SSL, default=bool(verify_default))] = cv.boolean
+        schema_fields[vol.Optional(
+            CONF_VERIFY_SSL,
+            default=verify_default,
+        )] = vol.Any(cv.boolean, vol.All(_ensure_non_empty_string))
         schema_fields[vol.Optional(CONF_VERIFY_SSL_CA, default=verify_default if isinstance(verify_default, str) else "")] = str
 
         schema_fields[vol.Optional(
@@ -791,9 +815,6 @@ class OptionsFlow(config_entries.OptionsFlow):
             ConfigFlow._normalize_api_key(current.get(CONF_UI_API_KEY)) or ""
         )
         schema_fields[vol.Optional(CONF_UI_API_KEY, default=ui_key_default)] = str
-# a potem po submit:
-        if CONF_UI_API_KEY in cleaned and not cleaned[CONF_UI_API_KEY].strip():
-            cleaned.pop(CONF_UI_API_KEY, None)
 
         wifi_guest_default = (
             ConfigFlow._normalize_optional_text(current.get(CONF_WIFI_GUEST)) or ""
