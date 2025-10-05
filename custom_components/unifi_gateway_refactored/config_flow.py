@@ -437,14 +437,6 @@ class OptionsFlow(config_entries.OptionsFlow):
     def __init__(self, entry: config_entries.ConfigEntry) -> None:
         self._entry = entry
 
-    def _entry_options(self) -> Dict[str, Any]:
-        """Return the entry options as a standard dictionary."""
-
-        options = getattr(self._entry, "options", None)
-        if not options:
-            return {}
-        return dict(options)
-
     async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         wifi_cleared: set[str] = set()
@@ -488,8 +480,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     cleaned.pop(CONF_UI_API_KEY, None)
                 else:
                     cleaned[CONF_UI_API_KEY] = normalized_key
-            entry_options = self._entry_options()
-            merged = {**self._entry.data, **entry_options, **cleaned}
+            merged = {**self._entry.data, **self._entry.options, **cleaned}
             normalized_host = ConfigFlow._normalize_host(merged.get(CONF_HOST))
             if host_provided and provided_host is None:
                 errors["base"] = "missing_host"
@@ -571,7 +562,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                                 data=current_data,
                             )
                     if CONF_UI_API_KEY in cleaned:
-                        current_options = self._entry_options()
+                        current_options = dict(self._entry.options)
                         normalized_key = cleaned[CONF_UI_API_KEY]
                         if normalized_key is None:
                             current_options.pop(CONF_UI_API_KEY, None)
@@ -615,8 +606,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     )
                     errors["base"] = "unknown"
 
-        entry_options = self._entry_options()
-        current = {**self._entry.data, **entry_options}
+        current = {**self._entry.data, **self._entry.options}
         host_default = ConfigFlow._normalize_host(current.get(CONF_HOST))
         if host_default is not None:
             current[CONF_HOST] = host_default
