@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any as TypingAny, Callable
 
 
+class Invalid(Exception):
+    """Minimal Invalid exception stub."""
+
+
 class Schema:
     def __init__(self, schema: TypingAny) -> None:
         self.schema = schema
