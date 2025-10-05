@@ -448,7 +448,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                 if host_provided
                 else None
             )
-            wifi_cleared: set[str] = set()
+            wifi_cleared = set()
             for wifi_key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
                 if wifi_key in user_input:
                     normalized_wifi = ConfigFlow._normalize_optional_text(
