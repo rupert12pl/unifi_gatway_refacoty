@@ -132,6 +132,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 cleaned[key] = normalized_host
                 continue
             cleaned[key] = value
+            ca = (cleaned.get(CONF_VERIFY_SSL_CA) or "").strip()
+            if ca:
+                cleaned[CONF_VERIFY_SSL] = ca
+            else:
+                cleaned[CONF_VERIFY_SSL] = bool(cleaned.get(CONF_VERIFY_SSL, False))
+            # Usuń pomocnicze pole z options
+            cleaned.pop(CONF_VERIFY_SSL_CA, None)
         return cleaned
 
     @staticmethod
@@ -509,6 +516,14 @@ class OptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         wifi_cleared: set[str] = set()
+        ca = (cleaned.get(CONF_VERIFY_SSL_CA) or "").strip()
+        if ca:
+            cleaned[CONF_VERIFY_SSL] = ca
+        else:
+            cleaned[CONF_VERIFY_SSL] = bool(cleaned.get(CONF_VERIFY_SSL, False))
+        cleaned.pop(CONF_VERIFY_SSL_CA, None)
+
+        host_provided = CONF_HOST in user_input
         if user_input is not None:
             cleaned = ConfigFlow._clean_auth_fields(user_input)
             host_provided = CONF_HOST in user_input
@@ -761,10 +776,9 @@ class OptionsFlow(config_entries.OptionsFlow):
         verify_default = ConfigFlow._normalize_verify_ssl(current.get(CONF_VERIFY_SSL))
         if verify_default is None:
             verify_default = DEFAULT_VERIFY_SSL
-        schema_fields[vol.Optional(
-            CONF_VERIFY_SSL,
-            default=verify_default,
-        )] = vol.Any(cv.boolean, vol.All(_ensure_non_empty_string))
+        schema_fields[vol.Optional(CONF_VERIFY_SSL, default=bool(verify_default))] = cv.boolean
+        schema_fields[vol.Optional(CONF_VERIFY_SSL_CA, default=verify_default if isinstance(verify_default, str) else "")] = str
+
         schema_fields[vol.Optional(
             CONF_SPEEDTEST_INTERVAL,
             default=interval_default,
@@ -776,10 +790,11 @@ class OptionsFlow(config_entries.OptionsFlow):
         ui_key_default = (
             ConfigFlow._normalize_api_key(current.get(CONF_UI_API_KEY)) or ""
         )
-        schema_fields[vol.Optional(
-            CONF_UI_API_KEY,
-            default=ui_key_default,
-        )] = vol.Any(str, None)
+        schema_fields[vol.Optional(CONF_UI_API_KEY, default=ui_key_default)] = str
+# a potem po submit:
+        if CONF_UI_API_KEY in cleaned and not cleaned[CONF_UI_API_KEY].strip():
+            cleaned.pop(CONF_UI_API_KEY, None)
+
         wifi_guest_default = (
             ConfigFlow._normalize_optional_text(current.get(CONF_WIFI_GUEST)) or ""
         )
