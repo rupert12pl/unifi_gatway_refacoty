@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING, Type, cast
 
 import aiohttp
 
@@ -15,6 +15,18 @@ if TYPE_CHECKING:
 else:  # pragma: no cover - fallback for older Home Assistant
     FlowResult = Dict[str, Any]  # type: ignore[misc, assignment]
 import voluptuous as vol
+
+try:
+    Invalid = cast(Type[Exception], vol.Invalid)  # type: ignore[attr-defined]
+except AttributeError:  # pragma: no cover - stub fallback
+    class _VoluptuousInvalid(Exception):
+        """Fallback Invalid exception when voluptuous stub lacks it."""
+
+        pass
+
+    Invalid = _VoluptuousInvalid
+
+from homeassistant.helpers import config_validation as cv
 
 from .const import (
     DOMAIN,
@@ -50,6 +62,14 @@ from .cloud_client import (
 from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _ensure_non_empty_string(value: Any) -> str:
+    text = cv.string(value)
+    stripped = text.strip()
+    if not stripped:
+        raise Invalid("String value cannot be empty")
+    return stripped
 
 
 async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -205,6 +225,34 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return cleaned or None
 
     @staticmethod
+    def _normalize_verify_ssl(value: Any) -> Optional[bool | str]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            if value == 0:
+                return False
+            if value == 1:
+                return True
+            return None
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if not cleaned:
+                return None
+            lowered = cleaned.lower()
+            if lowered in {"true", "on", "yes"}:
+                return True
+            if lowered in {"false", "off", "no"}:
+                return False
+            if lowered in {"1"}:
+                return True
+            if lowered in {"0"}:
+                return False
+            return cleaned
+        return None
+
+    @staticmethod
     def _coerce_int(
         value: Any,
         *,
@@ -267,7 +315,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_HOST): str,
             vol.Required(CONF_USERNAME): str,
             vol.Required(CONF_PASSWORD): str,
-            vol.Optional(CONF_VERIFY_SSL, default=DEFAULT_VERIFY_SSL): bool,
+            vol.Optional(
+                CONF_VERIFY_SSL,
+                default=DEFAULT_VERIFY_SSL,
+            ): vol.Any(cv.boolean, vol.All(_ensure_non_empty_string)),
         })
         return self.async_show_form(step_id="user", data_schema=basic_schema, errors=errors)
 
@@ -292,6 +343,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 data[CONF_HOST] = normalized_host
                 self._cached[CONF_HOST] = normalized_host
+            if CONF_VERIFY_SSL in data:
+                normalized_verify = self._normalize_verify_ssl(data[CONF_VERIFY_SSL])
+                if normalized_verify is None:
+                    data.pop(CONF_VERIFY_SSL, None)
+                    self._cached.pop(CONF_VERIFY_SSL, None)
+                else:
+                    data[CONF_VERIFY_SSL] = normalized_verify
+                    self._cached[CONF_VERIFY_SSL] = normalized_verify
             for key in (CONF_WIFI_GUEST, CONF_WIFI_IOT):
                 if key in data:
                     normalized = self._normalize_optional_text(data[key])
@@ -359,6 +418,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._cached.get(CONF_SPEEDTEST_ENTITIES)
         )
 
+        verify_default = self._normalize_verify_ssl(
+            self._cached.get(CONF_VERIFY_SSL)
+        )
+        if verify_default is None:
+            verify_default = DEFAULT_VERIFY_SSL
+
         adv_schema = vol.Schema(
             {
                 vol.Optional(
@@ -387,6 +452,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                     or DEFAULT_TIMEOUT,
                 ): vol.All(vol.Coerce(int), vol.Clamp(min=1)),
+                vol.Optional(
+                    CONF_VERIFY_SSL,
+                    default=verify_default,
+                ): vol.Any(cv.boolean, vol.All(_ensure_non_empty_string)),
                 vol.Optional(
                     CONF_SPEEDTEST_INTERVAL,
                     default=self._seconds_to_minutes(
@@ -459,6 +528,14 @@ class OptionsFlow(config_entries.OptionsFlow):
                         cleaned.pop(wifi_key, None)
                     else:
                         cleaned[wifi_key] = normalized_wifi
+            if CONF_VERIFY_SSL in cleaned:
+                normalized_verify = ConfigFlow._normalize_verify_ssl(
+                    cleaned[CONF_VERIFY_SSL]
+                )
+                if normalized_verify is None:
+                    cleaned.pop(CONF_VERIFY_SSL, None)
+                else:
+                    cleaned[CONF_VERIFY_SSL] = normalized_verify
             if CONF_SPEEDTEST_INTERVAL in cleaned:
                 cleaned[CONF_SPEEDTEST_INTERVAL] = ConfigFlow._minutes_to_seconds(
                     cleaned[CONF_SPEEDTEST_INTERVAL]
@@ -502,6 +579,16 @@ class OptionsFlow(config_entries.OptionsFlow):
                     else:
                         merged[CONF_UI_API_KEY] = normalized_key
                         cleaned.setdefault(CONF_UI_API_KEY, normalized_key)
+                    normalized_verify = ConfigFlow._normalize_verify_ssl(
+                        merged.get(CONF_VERIFY_SSL)
+                    )
+                    if normalized_verify is None:
+                        merged.pop(CONF_VERIFY_SSL, None)
+                        cleaned.pop(CONF_VERIFY_SSL, None)
+                    else:
+                        merged[CONF_VERIFY_SSL] = normalized_verify
+                        if CONF_VERIFY_SSL in cleaned:
+                            cleaned[CONF_VERIFY_SSL] = normalized_verify
                     if CONF_SPEEDTEST_ENTITIES in merged:
                         merged[CONF_SPEEDTEST_ENTITIES] = (
                             ConfigFlow._normalize_speedtest_entities(
@@ -661,10 +748,6 @@ class OptionsFlow(config_entries.OptionsFlow):
             schema_fields[vol.Optional(CONF_SITE_ID, default=site_default)] = str
 
         schema_fields[vol.Optional(
-            CONF_VERIFY_SSL,
-            default=current.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
-        )] = bool
-        schema_fields[vol.Optional(
             CONF_USE_PROXY_PREFIX,
             default=current.get(CONF_USE_PROXY_PREFIX, DEFAULT_USE_PROXY_PREFIX),
         )] = bool
@@ -675,6 +758,13 @@ class OptionsFlow(config_entries.OptionsFlow):
             )
             or DEFAULT_TIMEOUT,
         )] = vol.All(vol.Coerce(int), vol.Clamp(min=1))
+        verify_default = ConfigFlow._normalize_verify_ssl(current.get(CONF_VERIFY_SSL))
+        if verify_default is None:
+            verify_default = DEFAULT_VERIFY_SSL
+        schema_fields[vol.Optional(
+            CONF_VERIFY_SSL,
+            default=verify_default,
+        )] = vol.Any(cv.boolean, vol.All(_ensure_non_empty_string))
         schema_fields[vol.Optional(
             CONF_SPEEDTEST_INTERVAL,
             default=interval_default,

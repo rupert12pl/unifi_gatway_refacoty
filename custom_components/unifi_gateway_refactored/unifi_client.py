@@ -95,7 +95,7 @@ class UniFiOSClient:
         password: str | None = None,
         port: int = 443,
         site_id: str = DEFAULT_SITE,
-        ssl_verify: bool = False,
+        ssl_verify: bool | str = False,
         use_proxy_prefix: bool = True,
         timeout: int = 10,
         instance_hint: str | None = None,
@@ -581,7 +581,7 @@ class UniFiOSClient:
     def _get(self, path: str, *, timeout: Optional[int] = None) -> Any:
         return self._request_json("GET", path, timeout=timeout)
 
-    def _login(self, host: str, port: int, ssl_verify: bool, timeout: int) -> None:
+    def _login(self, host: str, port: int, ssl_verify: bool | str, timeout: int) -> None:
         requests = self._requests_module()
 
         base = f"{self._scheme}://{host}:{port}"
