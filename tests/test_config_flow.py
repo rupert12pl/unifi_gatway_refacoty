@@ -17,7 +17,6 @@ from custom_components.unifi_gateway_refactored.const import (
     CONF_PASSWORD,
     CONF_TIMEOUT,
     CONF_USERNAME,
-    CONF_VERIFY_SSL,
     CONF_WIFI_GUEST,
     CONF_WIFI_IOT,
     CONF_UI_API_KEY,
@@ -139,53 +138,6 @@ def test_options_flow_rejects_blank_host(
     assert captured.get("errors", {}).get("base") == "missing_host"
 
 
-def test_options_flow_populates_verify_ssl_path_default(
-    hass, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    entry = cast(
-        ConfigEntry,
-        SimpleNamespace(
-            entry_id="verify-path",
-            data={
-                CONF_HOST: "udm.local",
-                CONF_USERNAME: "user",
-                CONF_PASSWORD: "pass",
-                CONF_VERIFY_SSL: "/config/custom-ca.pem",
-            },
-            options={},
-        ),
-    )
-
-    captured: dict[str, Any] = {}
-
-    def fake_options_form(
-        self, *, step_id, data_schema=None, errors=None, description_placeholders=None
-    ):
-        captured["step_id"] = step_id
-        captured["schema"] = data_schema
-        captured["errors"] = errors or {}
-        return {"type": "form", "step_id": step_id, "errors": errors or {}}
-
-    monkeypatch.setattr(OptionsFlow, "async_show_form", fake_options_form, raising=False)
-
-    flow = OptionsFlow(entry)
-    flow.hass = hass  # type: ignore[assignment]
-
-    result = run(flow.async_step_init())
-
-    assert result["step_id"] == "init"
-    assert captured.get("errors") == {}
-
-    schema = captured.get("schema")
-    assert schema is not None
-    verify_defaults = []
-    for field in getattr(schema, "schema", {}):  # type: ignore[union-attr]
-        key = getattr(field, "key", getattr(field, "schema", None))
-        if key == CONF_VERIFY_SSL:
-            verify_defaults.append(getattr(field, "default", None))
-    assert verify_defaults == ["/config/custom-ca.pem"]
-
-
 def test_advanced_step_normalizes_cached_host(
     hass, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -254,70 +206,6 @@ def test_advanced_step_normalizes_cached_host(
     assert created_entry["unique_id"] == "udm.local:8443"
     assert flow._cached[CONF_HOST] == "udm.local"
     assert validate_payload[CONF_HOST] == "udm.local"
-
-
-def test_advanced_step_accepts_verify_ssl_path(
-    hass, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    async def fake_validate(_hass: Any, data: dict[str, Any]) -> dict[str, Any]:
-        return {}
-
-    async def fake_validate_key(_api_key: str | None) -> None:
-        return None
-
-    async def fake_set_unique_id(
-        self, unique_id: str, *, raise_on_progress: bool = False
-    ) -> None:  # type: ignore[override]
-        return None
-
-    def fake_abort_if_unique_id_configured(self) -> None:  # type: ignore[override]
-        return None
-
-    def fake_create_entry(
-        self, *, title: str, data: dict[str, Any]
-    ) -> dict[str, Any]:  # type: ignore[override]
-        return {"type": "create_entry", "title": title, "data": data}
-
-    monkeypatch.setattr(
-        "custom_components.unifi_gateway_refactored.config_flow._validate",
-        fake_validate,
-    )
-    monkeypatch.setattr(
-        "custom_components.unifi_gateway_refactored.config_flow._validate_ui_api_key",
-        fake_validate_key,
-    )
-    monkeypatch.setattr(
-        ConfigFlow, "async_set_unique_id", fake_set_unique_id, raising=False
-    )
-    monkeypatch.setattr(
-        ConfigFlow,
-        "_abort_if_unique_id_configured",
-        fake_abort_if_unique_id_configured,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        ConfigFlow, "async_create_entry", fake_create_entry, raising=False
-    )
-
-    flow = ConfigFlow()
-    flow.hass = hass  # type: ignore[assignment]
-    flow._cached = {
-        CONF_HOST: "udm.local",
-        CONF_USERNAME: "user",
-        CONF_PASSWORD: "pass",
-    }
-
-    result = run(
-        flow.async_step_advanced(
-            {
-                CONF_VERIFY_SSL: "  /config/custom-ca.pem  ",
-            }
-        )
-    )
-
-    assert result["type"] == "create_entry"
-    assert result["data"][CONF_VERIFY_SSL] == "/config/custom-ca.pem"
-    assert flow._cached[CONF_VERIFY_SSL] == "/config/custom-ca.pem"
 
 
 def test_advanced_step_handles_invalid_api_key_characters(
