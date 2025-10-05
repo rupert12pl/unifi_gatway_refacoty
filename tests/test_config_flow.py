@@ -17,9 +17,11 @@ from custom_components.unifi_gateway_refactored.const import (
     CONF_PASSWORD,
     CONF_TIMEOUT,
     CONF_USERNAME,
+    CONF_VERIFY_SSL,
     CONF_WIFI_GUEST,
     CONF_WIFI_IOT,
     CONF_UI_API_KEY,
+    CONF_USE_PROXY_PREFIX,
 )
 from homeassistant.config_entries import ConfigEntry
 
@@ -391,3 +393,51 @@ def test_options_flow_sanitizes_wifi_defaults(
     assert defaults[CONF_WIFI_GUEST] == ""
     assert defaults[CONF_WIFI_IOT] == ""
     assert defaults[CONF_UI_API_KEY] == ""
+
+
+def test_options_flow_coerces_boolean_defaults(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ensure boolean defaults stored as text are coerced for the form."""
+
+    entry = cast(
+        ConfigEntry,
+        SimpleNamespace(
+            entry_id="bool-defaults",
+            data={
+                CONF_HOST: "udm.local",
+                CONF_USERNAME: "user",
+                CONF_PASSWORD: "pass",
+                CONF_VERIFY_SSL: "false",
+                CONF_USE_PROXY_PREFIX: "yes",
+            },
+            options={},
+        ),
+    )
+
+    captured: dict[str, Any] = {}
+
+    def fake_options_form(
+        self, *, step_id, data_schema=None, errors=None, description_placeholders=None
+    ):
+        captured["schema"] = data_schema
+        return {"type": "form", "step_id": step_id, "errors": errors or {}}
+
+    monkeypatch.setattr(OptionsFlow, "async_show_form", fake_options_form, raising=False)
+
+    flow = OptionsFlow(entry)
+    flow.hass = hass  # type: ignore[assignment]
+
+    result = run(flow.async_step_init())
+
+    assert result["type"] == "form"
+    schema = captured.get("schema")
+    assert schema is not None
+    defaults: dict[str, Any] = {}
+    for field in schema.schema:  # type: ignore[union-attr]
+        key = getattr(field, "key", None)
+        if key in {CONF_VERIFY_SSL, CONF_USE_PROXY_PREFIX}:
+            defaults[key] = getattr(field, "default", None)
+
+    assert defaults[CONF_VERIFY_SSL] is False
+    assert defaults[CONF_USE_PROXY_PREFIX] is True
