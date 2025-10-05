@@ -8,7 +8,7 @@ from custom_components.unifi_gateway_refactored.coordinator import (
     UniFiGatewayDataUpdateCoordinator,
 )
 from custom_components.unifi_gateway_refactored.const import CONF_GW_MAC
-from tests.stubs.homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry
 
 
 def test_persist_gw_mac_handles_missing_options(hass) -> None:
