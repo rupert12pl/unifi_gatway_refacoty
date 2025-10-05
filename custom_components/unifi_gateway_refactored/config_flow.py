@@ -222,6 +222,23 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return int_value
 
     @staticmethod
+    def _coerce_bool(value: Any, *, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+            return default
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if value is None:
+            return default
+        return default
+
+    @staticmethod
     def _normalize_speedtest_entities(value: Any) -> str:
         if isinstance(value, str):
             collapsed = ",".join(
@@ -502,6 +519,18 @@ class OptionsFlow(config_entries.OptionsFlow):
                     else:
                         merged[CONF_UI_API_KEY] = normalized_key
                         cleaned.setdefault(CONF_UI_API_KEY, normalized_key)
+                    merged[CONF_VERIFY_SSL] = ConfigFlow._coerce_bool(
+                        merged.get(CONF_VERIFY_SSL),
+                        default=DEFAULT_VERIFY_SSL,
+                    )
+                    if CONF_VERIFY_SSL in cleaned:
+                        cleaned[CONF_VERIFY_SSL] = merged[CONF_VERIFY_SSL]
+                    merged[CONF_USE_PROXY_PREFIX] = ConfigFlow._coerce_bool(
+                        merged.get(CONF_USE_PROXY_PREFIX),
+                        default=DEFAULT_USE_PROXY_PREFIX,
+                    )
+                    if CONF_USE_PROXY_PREFIX in cleaned:
+                        cleaned[CONF_USE_PROXY_PREFIX] = merged[CONF_USE_PROXY_PREFIX]
                     if CONF_SPEEDTEST_ENTITIES in merged:
                         merged[CONF_SPEEDTEST_ENTITIES] = (
                             ConfigFlow._normalize_speedtest_entities(
@@ -619,6 +648,12 @@ class OptionsFlow(config_entries.OptionsFlow):
             interval_default = DEFAULT_SPEEDTEST_INTERVAL_MINUTES
         entities_default = ConfigFlow._normalize_speedtest_entities(
             current.get(CONF_SPEEDTEST_ENTITIES)
+        )
+        current[CONF_VERIFY_SSL] = ConfigFlow._coerce_bool(
+            current.get(CONF_VERIFY_SSL), default=DEFAULT_VERIFY_SSL
+        )
+        current[CONF_USE_PROXY_PREFIX] = ConfigFlow._coerce_bool(
+            current.get(CONF_USE_PROXY_PREFIX), default=DEFAULT_USE_PROXY_PREFIX
         )
         schema_fields: Dict[Any, Any] = {}
 
