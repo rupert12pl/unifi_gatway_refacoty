@@ -17,11 +17,9 @@ from custom_components.unifi_gateway_refactored.const import (
     CONF_PASSWORD,
     CONF_TIMEOUT,
     CONF_USERNAME,
-    CONF_VERIFY_SSL,
     CONF_WIFI_GUEST,
     CONF_WIFI_IOT,
     CONF_UI_API_KEY,
-    CONF_USE_PROXY_PREFIX,
 )
 from homeassistant.config_entries import ConfigEntry
 
