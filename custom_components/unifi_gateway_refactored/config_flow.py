@@ -689,21 +689,21 @@ class OptionsFlow(config_entries.OptionsFlow):
         schema_fields[vol.Optional(
             CONF_UI_API_KEY,
             default=ui_key_default,
-        )] = str
+        )] = vol.Any(str, None)
         wifi_guest_default = (
             ConfigFlow._normalize_optional_text(current.get(CONF_WIFI_GUEST)) or ""
         )
         schema_fields[vol.Optional(
             CONF_WIFI_GUEST,
             default=wifi_guest_default,
-        )] = str
+        )] = vol.Any(str, None)
         wifi_iot_default = (
             ConfigFlow._normalize_optional_text(current.get(CONF_WIFI_IOT)) or ""
         )
         schema_fields[vol.Optional(
             CONF_WIFI_IOT,
             default=wifi_iot_default,
-        )] = str
+        )] = vol.Any(str, None)
 
         schema = vol.Schema(schema_fields)
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
