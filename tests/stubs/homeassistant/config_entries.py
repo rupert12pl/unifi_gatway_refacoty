@@ -11,7 +11,7 @@ class ConfigEntry:
     entry_id: str = "test"
     title: str | None = None
     data: Dict[str, Any] = field(default_factory=dict)
-    options: Dict[str, Any] | None = field(default_factory=dict)
+    options: Dict[str, Any] = field(default_factory=dict)
 
     def async_on_unload(self, func: Callable[[], Any]) -> Callable[[], Any]:
         return func
