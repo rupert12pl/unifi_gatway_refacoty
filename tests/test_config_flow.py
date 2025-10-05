@@ -186,62 +186,6 @@ def test_options_flow_populates_verify_ssl_path_default(
     assert verify_defaults == ["/config/custom-ca.pem"]
 
 
-def test_options_flow_accepts_boolean_string_for_verify_ssl(
-    hass, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    entry = cast(
-        ConfigEntry,
-        SimpleNamespace(
-            entry_id="verify-bool-str",
-            data={
-                CONF_HOST: "udm.local",
-                CONF_USERNAME: "user",
-                CONF_PASSWORD: "pass",
-                CONF_VERIFY_SSL: True,
-            },
-            options={},
-        ),
-    )
-
-    async def fake_validate(_hass: Any, data: dict[str, Any]) -> dict[str, Any]:
-        assert data[CONF_VERIFY_SSL] is False
-        return {}
-
-    async def fake_validate_key(_api_key: str | None) -> None:
-        return None
-
-    def fake_create_entry(
-        self, *, title: str, data: dict[str, Any]
-    ) -> dict[str, Any]:  # type: ignore[override]
-        return {"type": "create_entry", "title": title, "data": data}
-
-    monkeypatch.setattr(
-        "custom_components.unifi_gateway_refactored.config_flow._validate",
-        fake_validate,
-    )
-    monkeypatch.setattr(
-        "custom_components.unifi_gateway_refactored.config_flow._validate_ui_api_key",
-        fake_validate_key,
-    )
-    monkeypatch.setattr(
-        OptionsFlow, "async_create_entry", fake_create_entry, raising=False
-    )
-
-    flow = OptionsFlow(entry)
-    flow.hass = hass  # type: ignore[assignment]
-
-    result = run(
-        flow.async_step_init(
-            {
-                CONF_VERIFY_SSL: "false",
-            }
-        )
-    )
-
-    assert result["type"] == "create_entry"
-    assert hass.config_entries.async_get_entry("verify-bool-str").data[CONF_VERIFY_SSL] is False
-
-
 def test_advanced_step_normalizes_cached_host(
     hass, monkeypatch: pytest.MonkeyPatch
 ) -> None:

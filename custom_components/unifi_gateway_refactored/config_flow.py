@@ -72,19 +72,6 @@ def _ensure_non_empty_string(value: Any) -> str:
     return stripped
 
 
-def _format_verify_ssl_default(value: Any) -> str:
-    normalized = ConfigFlow._normalize_verify_ssl(value)
-    if isinstance(normalized, str):
-        return normalized
-    if normalized is True:
-        return "true"
-    if normalized is False:
-        return "false"
-    # Fall back to Home Assistant's default behaviour when the value is
-    # missing or invalid by showing the boolean default as text.
-    return "false"
-
-
 async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]:
     def _sync():
         client = UniFiOSClient(
@@ -330,8 +317,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_PASSWORD): str,
             vol.Optional(
                 CONF_VERIFY_SSL,
-                default=_format_verify_ssl_default(DEFAULT_VERIFY_SSL),
-            ): vol.All(cv.string, _ensure_non_empty_string),
+                default=DEFAULT_VERIFY_SSL,
+            ): vol.Any(cv.boolean, vol.All(_ensure_non_empty_string)),
         })
         return self.async_show_form(step_id="user", data_schema=basic_schema, errors=errors)
 
@@ -436,7 +423,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         if verify_default is None:
             verify_default = DEFAULT_VERIFY_SSL
-        verify_display_default = _format_verify_ssl_default(verify_default)
 
         adv_schema = vol.Schema(
             {
@@ -468,8 +454,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ): vol.All(vol.Coerce(int), vol.Clamp(min=1)),
                 vol.Optional(
                     CONF_VERIFY_SSL,
-                    default=verify_display_default,
-                ): vol.All(cv.string, _ensure_non_empty_string),
+                    default=verify_default,
+                ): vol.Any(cv.boolean, vol.All(_ensure_non_empty_string)),
                 vol.Optional(
                     CONF_SPEEDTEST_INTERVAL,
                     default=self._seconds_to_minutes(
@@ -775,11 +761,10 @@ class OptionsFlow(config_entries.OptionsFlow):
         verify_default = ConfigFlow._normalize_verify_ssl(current.get(CONF_VERIFY_SSL))
         if verify_default is None:
             verify_default = DEFAULT_VERIFY_SSL
-        verify_display_default = _format_verify_ssl_default(verify_default)
         schema_fields[vol.Optional(
             CONF_VERIFY_SSL,
-            default=verify_display_default,
-        )] = vol.All(cv.string, _ensure_non_empty_string)
+            default=verify_default,
+        )] = vol.Any(cv.boolean, vol.All(_ensure_non_empty_string))
         schema_fields[vol.Optional(
             CONF_SPEEDTEST_INTERVAL,
             default=interval_default,
