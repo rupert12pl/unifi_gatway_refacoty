@@ -391,3 +391,63 @@ def test_options_flow_sanitizes_wifi_defaults(
     assert defaults[CONF_WIFI_GUEST] == ""
     assert defaults[CONF_WIFI_IOT] == ""
     assert defaults[CONF_UI_API_KEY] == ""
+
+
+def test_options_flow_handles_missing_options_mapping(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Options flow should cope with config entries that have ``options`` set to None."""
+
+    entry = cast(
+        ConfigEntry,
+        SimpleNamespace(
+            entry_id="none-options",
+            data={
+                CONF_HOST: "udm.local",
+                CONF_USERNAME: "user",
+                CONF_PASSWORD: "pass",
+            },
+            options=None,
+        ),
+    )
+
+    async def fake_validate(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {}
+
+    async def fake_validate_key(_api_key: str | None) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "custom_components.unifi_gateway_refactored.config_flow._validate",
+        fake_validate,
+    )
+    monkeypatch.setattr(
+        "custom_components.unifi_gateway_refactored.config_flow._validate_ui_api_key",
+        fake_validate_key,
+    )
+
+    class DummyConfigEntries:
+        def __init__(self) -> None:
+            self.data_updates: list[dict[str, Any]] = []
+
+        def async_update_entry(self, entry_to_update, *, data=None, options=None):
+            if data is not None:
+                entry_to_update.data = dict(data)
+                self.data_updates.append(dict(data))
+            if options is not None:
+                entry_to_update.options = dict(options)
+
+        def async_get_entry(self, entry_id: str):
+            return entry if entry.entry_id == entry_id else None
+
+    hass.config_entries = DummyConfigEntries()  # type: ignore[attr-defined]
+
+    flow = OptionsFlow(entry)
+    flow.hass = hass  # type: ignore[assignment]
+
+    result = run(flow.async_step_init())
+    assert result == {}
+
+    result = run(flow.async_step_init({CONF_TIMEOUT: 20}))
+    assert result["type"] == "create_entry"
+    assert result["data"][CONF_TIMEOUT] == 20
