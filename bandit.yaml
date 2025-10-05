@@ -1,5 +1,0 @@
-# Bandit configuration to skip unit tests that intentionally use asserts.
-exclude_dirs:
-  - tests
-skips:
-  - B101
