@@ -16,6 +16,14 @@ else:  # pragma: no cover - fallback for older Home Assistant
     FlowResult = Dict[str, Any]  # type: ignore[misc, assignment]
 import voluptuous as vol
 
+if TYPE_CHECKING:  # pragma: no cover - only for static analysis
+    from voluptuous.validators import Any as VolAny
+else:  # pragma: no cover - runtime compatibility for test stubs
+    try:
+        from voluptuous.validators import Any as VolAny  # type: ignore[attr-defined]
+    except (ImportError, AttributeError):
+        VolAny = type(vol.Any(str))  # type: ignore[assignment]
+
 from .const import (
     DOMAIN,
     CONF_USERNAME,
@@ -250,6 +258,29 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return normalized
         return DEFAULT_SPEEDTEST_ENTITIES
 
+    @staticmethod
+    def _collapse_nullable_any(validator: Any) -> Any:
+        """Replace nullable Any validators with a simple concrete validator."""
+
+        if isinstance(validator, VolAny):
+            filtered = [candidate for candidate in validator.validators if candidate is not None]
+            if not filtered:
+                return str
+            primary = filtered[0]
+            if isinstance(primary, type):
+                return primary
+            return str
+        return validator
+
+    @staticmethod
+    def _build_schema(fields: Dict[Any, Any]) -> vol.Schema:
+        """Create a voluptuous schema that Home Assistant can serialize."""
+
+        sanitized: Dict[Any, Any] = {}
+        for key, validator in fields.items():
+            sanitized[key] = ConfigFlow._collapse_nullable_any(validator)
+        return vol.Schema(sanitized)
+
     async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         if user_input is not None:
@@ -359,7 +390,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._cached.get(CONF_SPEEDTEST_ENTITIES)
         )
 
-        adv_schema = vol.Schema(
+        adv_schema = ConfigFlow._build_schema(
             {
                 vol.Optional(
                     CONF_PORT,
@@ -705,5 +736,5 @@ class OptionsFlow(config_entries.OptionsFlow):
             default=wifi_iot_default,
         )] = vol.Any(str, None)
 
-        schema = vol.Schema(schema_fields)
+        schema = ConfigFlow._build_schema(schema_fields)
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

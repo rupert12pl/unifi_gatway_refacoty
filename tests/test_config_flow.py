@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, cast
+from typing import Any, TYPE_CHECKING, cast
 from types import SimpleNamespace
 
 import pytest
+import voluptuous as vol
+from voluptuous_serialize import convert  # type: ignore[import-untyped]
+
+if TYPE_CHECKING:  # pragma: no cover - static typing support
+    from voluptuous.validators import Any as VolAny
+else:  # pragma: no cover - runtime compatibility with stubs
+    try:
+        from voluptuous.validators import Any as VolAny  # type: ignore[attr-defined]
+    except (ImportError, AttributeError):
+        VolAny = type(vol.Any(str))  # type: ignore[assignment]
 
 from custom_components.unifi_gateway_refactored.config_flow import (
     ConfigFlow,
@@ -28,6 +38,23 @@ def run(coro):
     """Execute a coroutine synchronously for test assertions."""
 
     return asyncio.run(coro)
+
+
+def test_build_schema_removes_nullable_any() -> None:
+    """The schema builder should collapse nullable Any validators."""
+
+    original = {
+        vol.Optional(CONF_UI_API_KEY): vol.Any(str, None),
+    }
+
+    schema = ConfigFlow._build_schema(original)
+
+    assert all(not isinstance(validator, VolAny) for validator in schema.schema.values())
+
+    # Ensure the resulting schema can be serialized by Home Assistant.
+    if not hasattr(vol, "Marker"):
+        pytest.skip("voluptuous stub does not implement Marker")
+    assert convert(schema) is not None
 
 
 def test_user_step_strips_host_whitespace(
