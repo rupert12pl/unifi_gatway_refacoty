@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, Optional, TYPE_CHECKING
-from collections.abc import Mapping
 
 import aiohttp
 
@@ -51,28 +50,6 @@ from .cloud_client import (
 from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _as_dict(value: Any) -> Dict[str, Any]:
-    """Return a mutable dictionary for mapping-like config entry data."""
-
-    if value is None:
-        return {}
-
-    if isinstance(value, dict):
-        return dict(value)
-
-    if isinstance(value, Mapping):
-        return dict(value)
-
-    try:
-        return dict(value)  # type: ignore[arg-type]
-    except Exception:  # pragma: no cover - defensive guard
-        _LOGGER.warning(
-            "Unexpected non-mapping config entry payload of type %s; treating as empty",
-            type(value),
-        )
-        return {}
 
 
 async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -463,9 +440,6 @@ class OptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
         errors: Dict[str, str] = {}
         wifi_cleared: set[str] = set()
-        entry_data = _as_dict(self._entry.data)
-        entry_options = _as_dict(self._entry.options)
-
         if user_input is not None:
             cleaned = ConfigFlow._clean_auth_fields(user_input)
             host_provided = CONF_HOST in user_input
@@ -506,7 +480,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     cleaned.pop(CONF_UI_API_KEY, None)
                 else:
                     cleaned[CONF_UI_API_KEY] = normalized_key
-            merged = {**entry_data, **entry_options, **cleaned}
+            merged = {**self._entry.data, **self._entry.options, **cleaned}
             normalized_host = ConfigFlow._normalize_host(merged.get(CONF_HOST))
             if host_provided and provided_host is None:
                 errors["base"] = "missing_host"
@@ -556,7 +530,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     await _validate(self.hass, merged)
                     await _validate_ui_api_key(merged.get(CONF_UI_API_KEY))
                     if self.hass is not None:
-                        current_data = _as_dict(self._entry.data)
+                        current_data = dict(self._entry.data)
                         updated = False
                         relevant_keys = {
                             CONF_HOST,
@@ -588,7 +562,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                                 data=current_data,
                             )
                     if CONF_UI_API_KEY in cleaned:
-                        current_options = _as_dict(self._entry.options)
+                        current_options = dict(self._entry.options)
                         normalized_key = cleaned[CONF_UI_API_KEY]
                         if normalized_key is None:
                             current_options.pop(CONF_UI_API_KEY, None)
@@ -632,9 +606,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     )
                     errors["base"] = "unknown"
 
-        entry_data = _as_dict(self._entry.data)
-        entry_options = _as_dict(self._entry.options)
-        current = {**entry_data, **entry_options}
+        current = {**self._entry.data, **self._entry.options}
         host_default = ConfigFlow._normalize_host(current.get(CONF_HOST))
         if host_default is not None:
             current[CONF_HOST] = host_default
