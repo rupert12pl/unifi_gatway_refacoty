@@ -134,22 +134,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 continue
             cleaned[key] = value
 
-        ca_value = ConfigFlow._normalize_optional_text(
-            cleaned.get(CONF_VERIFY_SSL_CA)
-        )
-        cleaned.pop(CONF_VERIFY_SSL_CA, None)
+        ca_raw = cleaned.get(CONF_VERIFY_SSL_CA)
+        ca_value = ""
+        if isinstance(ca_raw, str):
+            ca_value = ca_raw.strip()
+        elif ca_raw is not None:
+            ca_value = str(ca_raw).strip()
 
         if ca_value:
             cleaned[CONF_VERIFY_SSL] = ca_value
-        elif CONF_VERIFY_SSL in cleaned:
-            normalized_verify = ConfigFlow._normalize_verify_ssl(
-                cleaned[CONF_VERIFY_SSL]
-            )
-            if normalized_verify is None:
-                cleaned.pop(CONF_VERIFY_SSL, None)
-            else:
-                cleaned[CONF_VERIFY_SSL] = normalized_verify
 
+        cleaned.pop(CONF_VERIFY_SSL_CA, None)
         return cleaned
 
     @staticmethod
