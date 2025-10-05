@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, cast
+from typing import Any, TYPE_CHECKING, cast
 from types import SimpleNamespace
 
 import pytest
+import voluptuous as vol
+from voluptuous_serialize import convert  # type: ignore[import-untyped]
+
+if TYPE_CHECKING:  # pragma: no cover - static typing support
+    from voluptuous.validators import Any as VolAny
+else:  # pragma: no cover - runtime compatibility with stubs
+    try:
+        from voluptuous.validators import Any as VolAny  # type: ignore[attr-defined]
+    except (ImportError, AttributeError):
+        VolAny = type(vol.Any(str))  # type: ignore[assignment]
 
 from custom_components.unifi_gateway_refactored.config_flow import (
     ConfigFlow,
@@ -28,6 +38,23 @@ def run(coro):
     """Execute a coroutine synchronously for test assertions."""
 
     return asyncio.run(coro)
+
+
+def test_build_schema_removes_nullable_any() -> None:
+    """The schema builder should collapse nullable Any validators."""
+
+    original = {
+        vol.Optional(CONF_UI_API_KEY): vol.Any(str, None),
+    }
+
+    schema = ConfigFlow._build_schema(original)
+
+    assert all(not isinstance(validator, VolAny) for validator in schema.schema.values())
+
+    # Ensure the resulting schema can be serialized by Home Assistant.
+    if not hasattr(vol, "Marker"):
+        pytest.skip("voluptuous stub does not implement Marker")
+    assert convert(schema) is not None
 
 
 def test_user_step_strips_host_whitespace(
@@ -391,3 +418,42 @@ def test_options_flow_sanitizes_wifi_defaults(
     assert defaults[CONF_WIFI_GUEST] == ""
     assert defaults[CONF_WIFI_IOT] == ""
     assert defaults[CONF_UI_API_KEY] == ""
+
+
+def test_options_flow_handles_missing_options_mapping(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Options flow should tolerate config entries without an options dict."""
+
+    entry = cast(
+        ConfigEntry,
+        SimpleNamespace(
+            entry_id="missing-options",
+            data={
+                CONF_HOST: "udm.local",
+                CONF_USERNAME: "user",
+                CONF_PASSWORD: "pass",
+            },
+            options=None,
+        ),
+    )
+
+    captured: dict[str, Any] = {}
+
+    def fake_options_form(
+        self, *, step_id, data_schema=None, errors=None, description_placeholders=None
+    ):
+        captured["step_id"] = step_id
+        captured["schema"] = data_schema
+        return {"type": "form", "step_id": step_id, "errors": errors or {}}
+
+    monkeypatch.setattr(OptionsFlow, "async_show_form", fake_options_form, raising=False)
+
+    flow = OptionsFlow(entry)
+    flow.hass = hass  # type: ignore[assignment]
+
+    result = run(flow.async_step_init())
+
+    assert result["type"] == "form"
+    assert captured.get("step_id") == "init"
+    assert captured.get("schema") is not None

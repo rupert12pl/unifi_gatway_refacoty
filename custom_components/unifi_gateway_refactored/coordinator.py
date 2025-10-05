@@ -177,6 +177,22 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                         lookup[identifier] = record
         return lookup
 
+    def _config_entry_options(self) -> Dict[str, Any]:
+        """Return the current config entry options as a mutable dict."""
+
+        entry = self._config_entry
+        if entry is None:
+            return {}
+        options = getattr(entry, "options", None)
+        if not options:
+            return {}
+        if isinstance(options, Mapping):
+            return dict(options)
+        try:
+            return dict(options)
+        except TypeError:
+            return {}
+
     def _resolve_wan_mac(
         self,
         link: Mapping[str, Any],
@@ -296,7 +312,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         if self._config_entry is None:
             self._stored_gw_mac = normalized
             return
-        options = dict(self._config_entry.options)
+        options = self._config_entry_options()
         existing = normalize_mac(options.get(CONF_GW_MAC))
         if existing == normalized:
             self._stored_gw_mac = normalized
