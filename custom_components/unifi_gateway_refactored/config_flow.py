@@ -17,6 +17,13 @@ if TYPE_CHECKING:  # pragma: no cover - provide precise types for static analysi
         TextSelectorType,
     )
 
+    # Re-export the optional selector types for the benefit of static analysis
+    # tools while keeping the names referenced so import linters do not flag
+    # them as unused when running under TYPE_CHECKING.
+    _PasswordSelector = TextSelector
+    _PasswordSelectorConfig = TextSelectorConfig
+    _PasswordSelectorType = TextSelectorType
+
 try:  # pragma: no cover - optional selector support for newer Home Assistant
     from homeassistant.helpers.selector import (  # type: ignore[import-not-found]
         TextSelector as _RuntimeTextSelector,
