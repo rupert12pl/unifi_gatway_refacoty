@@ -2,14 +2,28 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING, cast
 
 import aiohttp
-import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import AbortFlow
+from homeassistant.core import HomeAssistant
+
+if TYPE_CHECKING:
+    from homeassistant.data_entry_flow import FlowResult
+else:  # pragma: no cover - fallback for older Home Assistant
+    FlowResult = Dict[str, Any]  # type: ignore[misc, assignment]
+import voluptuous as vol
+
+
+if TYPE_CHECKING:  # pragma: no cover - only for static analysis
+    from voluptuous.validators import Any as VolAny  # type: ignore[import-not-found]
+else:  # pragma: no cover - runtime compatibility for test stubs
+    try:
+        from voluptuous.validators import Any as VolAny  # type: ignore[attr-defined, import-not-found]
+    except (ImportError, AttributeError):
+        VolAny = type(vol.Any(str))  # type: ignore[assignment]
 
 from .const import (
     DOMAIN,
@@ -44,61 +58,31 @@ from .cloud_client import (
 )
 from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 
-if TYPE_CHECKING:  # pragma: no cover - provide precise types for static analysis
-    from homeassistant.helpers.selector import (  # type: ignore[import-not-found]
-        TextSelector,
-        TextSelectorConfig,
-        TextSelectorType,
-    )
-
-    # Re-export the optional selector types for the benefit of static analysis
-    # tools while keeping the names referenced so import linters do not flag
-    # them as unused when running under TYPE_CHECKING.
-    _PasswordSelector = TextSelector
-    _PasswordSelectorConfig = TextSelectorConfig
-    _PasswordSelectorType = TextSelectorType
-
-try:  # pragma: no cover - optional selector support for newer Home Assistant
-    from homeassistant.helpers import selector as _selector_module  # type: ignore[import-not-found]
-except (ImportError, AttributeError):  # pragma: no cover - fallback for test stubs
-    _selector_module = None
-
-try:  # pragma: no cover - FlowResult was added in newer Home Assistant versions
-    from homeassistant.data_entry_flow import FlowResult  # type: ignore[attr-defined]
-except (ImportError, AttributeError):  # pragma: no cover - fallback for older versions
-    FlowResult = Dict[str, Any]  # type: ignore[misc, assignment]
-
-_RuntimeTextSelector: Any = None
-_RuntimeTextSelectorConfig: Any = None
-_RuntimeTextSelectorType: Any = None
-
-if _selector_module is not None:  # pragma: no cover - executed when selectors exist
-    _RuntimeTextSelector = _selector_module.TextSelector
-    _RuntimeTextSelectorConfig = _selector_module.TextSelectorConfig
-    _RuntimeTextSelectorType = _selector_module.TextSelectorType
-
-if TYPE_CHECKING:  # pragma: no cover - only for static analysis
-    from voluptuous.validators import Any as VolAny  # type: ignore[import-not-found]
-else:  # pragma: no cover - runtime compatibility for test stubs
-    try:
-        from voluptuous.validators import Any as VolAny  # type: ignore[attr-defined, import-not-found]
-    except (ImportError, AttributeError):
-        VolAny = type(vol.Any(str))  # type: ignore[assignment]
-
-
 _LOGGER = logging.getLogger(__name__)
 
 
-if (
-    _RuntimeTextSelector is not None
-    and _RuntimeTextSelectorConfig is not None
-    and _RuntimeTextSelectorType is not None
-):
-    _UI_API_KEY_SELECTOR = _RuntimeTextSelector(
-        _RuntimeTextSelectorConfig(type=_RuntimeTextSelectorType.PASSWORD)
+try:  # pragma: no cover - optional selector support
+    from homeassistant.helpers import selector as _selector_module  # type: ignore[attr-defined, import-not-found]
+except (ImportError, AttributeError):  # pragma: no cover - fallback for older installs
+    _selector_module = cast(Any, None)
+
+
+def _build_password_selector() -> Any:
+    if _selector_module is None:
+        return str
+    return _selector_module.TextSelector(
+        _selector_module.TextSelectorConfig(
+            type=_selector_module.TextSelectorType.PASSWORD
+        )
     )
-else:  # pragma: no cover - fallback when selectors are unavailable
-    _UI_API_KEY_SELECTOR = str
+
+
+_ADVANCED_API_KEY_VALIDATOR = _build_password_selector()
+
+if _selector_module is None:
+    _OPTIONS_API_KEY_VALIDATOR = vol.Any(str, None)
+else:
+    _OPTIONS_API_KEY_VALIDATOR = _ADVANCED_API_KEY_VALIDATOR
 
 
 async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -476,7 +460,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self._cached.get(CONF_UI_API_KEY)
                     )
                     or "",
-                ): _UI_API_KEY_SELECTOR,
+                ): _ADVANCED_API_KEY_VALIDATOR,
                 vol.Optional(
                     CONF_WIFI_GUEST,
                     default=self._normalize_optional_text(
@@ -761,7 +745,7 @@ class OptionsFlow(config_entries.OptionsFlow):
         schema_fields[vol.Optional(
             CONF_UI_API_KEY,
             default=ui_key_default,
-        )] = _UI_API_KEY_SELECTOR
+        )] = _OPTIONS_API_KEY_VALIDATOR
         wifi_guest_default = (
             ConfigFlow._normalize_optional_text(current.get(CONF_WIFI_GUEST)) or ""
         )
