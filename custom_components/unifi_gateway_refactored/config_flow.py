@@ -10,16 +10,23 @@ from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import AbortFlow
 
+if TYPE_CHECKING:  # pragma: no cover - provide precise types for static analysis
+    from homeassistant.helpers.selector import (  # type: ignore[import-not-found]
+        TextSelector,
+        TextSelectorConfig,
+        TextSelectorType,
+    )
+
 try:  # pragma: no cover - optional selector support for newer Home Assistant
     from homeassistant.helpers.selector import (  # type: ignore[import-not-found]
-        TextSelector as _TextSelector,
-        TextSelectorConfig as _TextSelectorConfig,
-        TextSelectorType as _TextSelectorType,
+        TextSelector as _RuntimeTextSelector,
+        TextSelectorConfig as _RuntimeTextSelectorConfig,
+        TextSelectorType as _RuntimeTextSelectorType,
     )
 except (ImportError, AttributeError):  # pragma: no cover - fallback for test stubs
-    _TextSelector = None
-    _TextSelectorConfig = None
-    _TextSelectorType = None
+    _RuntimeTextSelector = None
+    _RuntimeTextSelectorConfig = None
+    _RuntimeTextSelectorType = None
 
 if TYPE_CHECKING:
     from homeassistant.data_entry_flow import FlowResult
@@ -72,12 +79,12 @@ _LOGGER = logging.getLogger(__name__)
 
 
 if (
-    _TextSelector is not None
-    and _TextSelectorConfig is not None
-    and _TextSelectorType is not None
+    _RuntimeTextSelector is not None
+    and _RuntimeTextSelectorConfig is not None
+    and _RuntimeTextSelectorType is not None
 ):
-    _UI_API_KEY_SELECTOR = _TextSelector(
-        _TextSelectorConfig(type=_TextSelectorType.PASSWORD)
+    _UI_API_KEY_SELECTOR = _RuntimeTextSelector(
+        _RuntimeTextSelectorConfig(type=_RuntimeTextSelectorType.PASSWORD)
     )
 else:  # pragma: no cover - fallback when selectors are unavailable
     _UI_API_KEY_SELECTOR = str
