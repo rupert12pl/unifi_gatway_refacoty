@@ -12,14 +12,14 @@ from homeassistant.data_entry_flow import AbortFlow
 
 try:  # pragma: no cover - optional selector support for newer Home Assistant
     from homeassistant.helpers.selector import (  # type: ignore[import-not-found]
-        TextSelector,
-        TextSelectorConfig,
-        TextSelectorType,
+        TextSelector as _TextSelector,
+        TextSelectorConfig as _TextSelectorConfig,
+        TextSelectorType as _TextSelectorType,
     )
 except (ImportError, AttributeError):  # pragma: no cover - fallback for test stubs
-    TextSelector = None  # type: ignore[assignment]
-    TextSelectorConfig = None  # type: ignore[assignment]
-    TextSelectorType = None  # type: ignore[assignment]
+    _TextSelector = None
+    _TextSelectorConfig = None
+    _TextSelectorType = None
 
 if TYPE_CHECKING:
     from homeassistant.data_entry_flow import FlowResult
@@ -28,10 +28,10 @@ else:  # pragma: no cover - fallback for older Home Assistant
 import voluptuous as vol
 
 if TYPE_CHECKING:  # pragma: no cover - only for static analysis
-    from voluptuous.validators import Any as VolAny
+    from voluptuous.validators import Any as VolAny  # type: ignore[import-not-found]
 else:  # pragma: no cover - runtime compatibility for test stubs
     try:
-        from voluptuous.validators import Any as VolAny  # type: ignore[attr-defined]
+        from voluptuous.validators import Any as VolAny  # type: ignore[attr-defined, import-not-found]
     except (ImportError, AttributeError):
         VolAny = type(vol.Any(str))  # type: ignore[assignment]
 
@@ -71,9 +71,13 @@ from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 _LOGGER = logging.getLogger(__name__)
 
 
-if TextSelector is not None:
-    _UI_API_KEY_SELECTOR = TextSelector(
-        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+if (
+    _TextSelector is not None
+    and _TextSelectorConfig is not None
+    and _TextSelectorType is not None
+):
+    _UI_API_KEY_SELECTOR = _TextSelector(
+        _TextSelectorConfig(type=_TextSelectorType.PASSWORD)
     )
 else:  # pragma: no cover - fallback when selectors are unavailable
     _UI_API_KEY_SELECTOR = str
