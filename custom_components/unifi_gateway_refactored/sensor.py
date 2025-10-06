@@ -11,6 +11,7 @@ import time
 import ipaddress
 from typing import (
     Any,
+    Callable,
     Dict,
     Iterable,
     List,
@@ -52,6 +53,7 @@ else:  # pragma: no cover - modern Home Assistant releases
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import EntityCategory
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
@@ -423,7 +425,7 @@ async def async_setup_entry(
                     entry.entry_id,
                     names,
                 )
-                async_add_entities(new_entities, update_before_add=True)
+                async_add_entities(new_entities)
             else:
                 _LOGGER.debug(
                     "No new dynamic sensors discovered for entry %s",
@@ -1980,7 +1982,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
 
     _attr_native_unit_of_measurement = "clients"
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_should_poll = True
+    _attr_should_poll = False
 
     def __init__(
         self,
@@ -2048,6 +2050,85 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         self._connected_clients: List[str] = []
         self._connected_clients_html: Optional[str] = None
         self._connected_clients_signature: Any | None = None
+        self._last_signature: Any | None = None
+        self._refresh_task: asyncio.Task[None] | None = None
+        self._refresh_lock = asyncio.Lock()
+        self._refresh_unsub: Callable[[], None] | None = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if self.hass is None:
+            return
+
+        def _interval_refresh(_: datetime) -> None:
+            enabled = cast(bool, getattr(self, "enabled", True))
+            if self.hass is None or not enabled:
+                return
+            self._schedule_refresh()
+
+        unsubscribe = async_track_time_interval(
+            self.hass, _interval_refresh, VPN_MIN_TIME_BETWEEN_UPDATES
+        )
+        self._refresh_unsub = unsubscribe
+
+        remove_callback = getattr(self, "async_on_remove", None)
+        if callable(remove_callback):
+            remove_callback(unsubscribe)
+
+            def _cancel_refresh_task() -> None:
+                if self._refresh_task is not None and not self._refresh_task.done():
+                    self._refresh_task.cancel()
+                self._refresh_task = None
+
+            remove_callback(_cancel_refresh_task)
+
+        self._schedule_refresh(no_throttle=True)
+
+    def _schedule_refresh(self, *, no_throttle: bool = False) -> None:
+        if self.hass is None:
+            return
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return
+        self._refresh_task = self.hass.async_create_task(
+            self._async_refresh(no_throttle=no_throttle)
+        )
+
+    async def _async_refresh(self, *, no_throttle: bool = False) -> None:
+        try:
+            async with self._refresh_lock:
+                if self.hass is None:
+                    return
+                await self.hass.async_add_executor_job(
+                    self._execute_update, no_throttle
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # pragma: no cover - guard against client failures
+            _LOGGER.debug(
+                "Failed to refresh VPN usage sensor %s: %s", self._attr_name, err
+            )
+        else:
+            self._async_write_state_if_changed()
+        finally:
+            self._refresh_task = None
+
+    def _execute_update(self, no_throttle: bool) -> None:
+        if no_throttle:
+            self.update(no_throttle=True)
+        else:
+            self.update()
+
+    def _async_write_state_if_changed(self) -> None:
+        signature = (
+            self._state,
+            _freeze_state(self._attrs),
+            _freeze_state(self._connected_clients),
+            self._connected_clients_html,
+        )
+        if signature == self._last_signature and self._last_signature is not None:
+            return
+        self._last_signature = signature
+        self.async_write_ha_state()
 
     def _apply_network_overrides(self) -> None:
         raw = self._linked_network if isinstance(self._linked_network, dict) else {}
@@ -2281,7 +2362,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
     async def async_update(self) -> None:
         if self.hass is None:
             return
-        await self.hass.async_add_executor_job(self.update)
+        await self._async_refresh(no_throttle=True)
 
     def _update_connected_clients(
         self, primary_records: Optional[Iterable[Mapping[str, Any]]] = None

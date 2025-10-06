@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING, cast
 
 import aiohttp
 
@@ -16,11 +16,12 @@ else:  # pragma: no cover - fallback for older Home Assistant
     FlowResult = Dict[str, Any]  # type: ignore[misc, assignment]
 import voluptuous as vol
 
+
 if TYPE_CHECKING:  # pragma: no cover - only for static analysis
-    from voluptuous.validators import Any as VolAny
+    from voluptuous.validators import Any as VolAny  # type: ignore[import-not-found]
 else:  # pragma: no cover - runtime compatibility for test stubs
     try:
-        from voluptuous.validators import Any as VolAny  # type: ignore[attr-defined]
+        from voluptuous.validators import Any as VolAny  # type: ignore[attr-defined, import-not-found]
     except (ImportError, AttributeError):
         VolAny = type(vol.Any(str))  # type: ignore[assignment]
 
@@ -58,6 +59,30 @@ from .cloud_client import (
 from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 
 _LOGGER = logging.getLogger(__name__)
+
+
+try:  # pragma: no cover - optional selector support
+    from homeassistant.helpers import selector as _selector_module  # type: ignore[attr-defined, import-not-found]
+except (ImportError, AttributeError):  # pragma: no cover - fallback for older installs
+    _selector_module = cast(Any, None)
+
+
+def _build_password_selector() -> Any:
+    if _selector_module is None:
+        return str
+    return _selector_module.TextSelector(
+        _selector_module.TextSelectorConfig(
+            type=_selector_module.TextSelectorType.PASSWORD
+        )
+    )
+
+
+_ADVANCED_API_KEY_VALIDATOR = _build_password_selector()
+
+if _selector_module is None:
+    _OPTIONS_API_KEY_VALIDATOR = vol.Any(str, None)
+else:
+    _OPTIONS_API_KEY_VALIDATOR = _ADVANCED_API_KEY_VALIDATOR
 
 
 async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -435,7 +460,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self._cached.get(CONF_UI_API_KEY)
                     )
                     or "",
-                ): str,
+                ): _ADVANCED_API_KEY_VALIDATOR,
                 vol.Optional(
                     CONF_WIFI_GUEST,
                     default=self._normalize_optional_text(
@@ -720,7 +745,7 @@ class OptionsFlow(config_entries.OptionsFlow):
         schema_fields[vol.Optional(
             CONF_UI_API_KEY,
             default=ui_key_default,
-        )] = vol.Any(str, None)
+        )] = _OPTIONS_API_KEY_VALIDATOR
         wifi_guest_default = (
             ConfigFlow._normalize_optional_text(current.get(CONF_WIFI_GUEST)) or ""
         )
