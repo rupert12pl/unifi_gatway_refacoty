@@ -1,7 +1,7 @@
 {
   "domain": "unifi_gateway_refactored",
   "name": "UniFi Gateway Dashboard Analyzer",
-  "version": "0.6.31",
+  "version": "0.6.32",
   "config_flow": true,
   "documentation": "https://github.com/rupert12pl/unifi_gatway_refacoty",
   "issue_tracker": "https://github.com/rupert12pl/unifi_gatway_refacoty/issues",
