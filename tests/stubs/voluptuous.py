@@ -46,11 +46,16 @@ def Clamp(
     return _validator
 
 
-def Any(*validators: TypingAny) -> Callable[[TypingAny], TypingAny]:
-    def _validator(value: TypingAny) -> TypingAny:
+class _AnyValidator:
+    def __init__(self, *validators: TypingAny) -> None:
+        self.validators = validators
+
+    def __call__(self, value: TypingAny) -> TypingAny:
         return value
 
-    return _validator
+
+def Any(*validators: TypingAny) -> _AnyValidator:
+    return _AnyValidator(*validators)
 
 
 def In(container: TypingAny) -> Callable[[TypingAny], TypingAny]:
@@ -58,3 +63,7 @@ def In(container: TypingAny) -> Callable[[TypingAny], TypingAny]:
         return value
 
     return _validator
+
+
+class validators:
+    Any = _AnyValidator
