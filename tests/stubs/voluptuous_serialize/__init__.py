@@ -1,15 +1,15 @@
 """Lightweight stub of voluptuous_serialize for tests."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-try:
-    from voluptuous.schema_builder import Schema
-except ImportError:  # pragma: no cover - stub fallback
-    Schema = object  # type: ignore[assignment]
+if TYPE_CHECKING:  # pragma: no cover - only used for typing during tests
+    from voluptuous.schema_builder import Schema as VolSchema  # type: ignore[import-not-found]
+else:  # pragma: no cover - runtime fallback when voluptuous is absent
+    VolSchema = Any
 
 
-def convert(schema: Schema | Any) -> dict[str, Any]:
+def convert(schema: VolSchema | Any) -> dict[str, Any]:
     """Return a minimal serialization for the provided schema.
 
     The real library returns a structure describing the schema; for tests we only

@@ -5,49 +5,11 @@ import logging
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 import aiohttp
+import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import AbortFlow
-
-if TYPE_CHECKING:  # pragma: no cover - provide precise types for static analysis
-    from homeassistant.helpers.selector import (  # type: ignore[import-not-found]
-        TextSelector,
-        TextSelectorConfig,
-        TextSelectorType,
-    )
-
-    # Re-export the optional selector types for the benefit of static analysis
-    # tools while keeping the names referenced so import linters do not flag
-    # them as unused when running under TYPE_CHECKING.
-    _PasswordSelector = TextSelector
-    _PasswordSelectorConfig = TextSelectorConfig
-    _PasswordSelectorType = TextSelectorType
-
-try:  # pragma: no cover - optional selector support for newer Home Assistant
-    from homeassistant.helpers.selector import (  # type: ignore[import-not-found]
-        TextSelector as _RuntimeTextSelector,
-        TextSelectorConfig as _RuntimeTextSelectorConfig,
-        TextSelectorType as _RuntimeTextSelectorType,
-    )
-except (ImportError, AttributeError):  # pragma: no cover - fallback for test stubs
-    _RuntimeTextSelector = None
-    _RuntimeTextSelectorConfig = None
-    _RuntimeTextSelectorType = None
-
-if TYPE_CHECKING:
-    from homeassistant.data_entry_flow import FlowResult
-else:  # pragma: no cover - fallback for older Home Assistant
-    FlowResult = Dict[str, Any]  # type: ignore[misc, assignment]
-import voluptuous as vol
-
-if TYPE_CHECKING:  # pragma: no cover - only for static analysis
-    from voluptuous.validators import Any as VolAny  # type: ignore[import-not-found]
-else:  # pragma: no cover - runtime compatibility for test stubs
-    try:
-        from voluptuous.validators import Any as VolAny  # type: ignore[attr-defined, import-not-found]
-    except (ImportError, AttributeError):
-        VolAny = type(vol.Any(str))  # type: ignore[assignment]
 
 from .const import (
     DOMAIN,
@@ -81,6 +43,48 @@ from .cloud_client import (
     UiCloudRateLimitError,
 )
 from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
+
+if TYPE_CHECKING:  # pragma: no cover - provide precise types for static analysis
+    from homeassistant.helpers.selector import (  # type: ignore[import-not-found]
+        TextSelector,
+        TextSelectorConfig,
+        TextSelectorType,
+    )
+
+    # Re-export the optional selector types for the benefit of static analysis
+    # tools while keeping the names referenced so import linters do not flag
+    # them as unused when running under TYPE_CHECKING.
+    _PasswordSelector = TextSelector
+    _PasswordSelectorConfig = TextSelectorConfig
+    _PasswordSelectorType = TextSelectorType
+
+try:  # pragma: no cover - optional selector support for newer Home Assistant
+    from homeassistant.helpers import selector as _selector_module  # type: ignore[import-not-found]
+except (ImportError, AttributeError):  # pragma: no cover - fallback for test stubs
+    _selector_module = None
+
+try:  # pragma: no cover - FlowResult was added in newer Home Assistant versions
+    from homeassistant.data_entry_flow import FlowResult  # type: ignore[attr-defined]
+except (ImportError, AttributeError):  # pragma: no cover - fallback for older versions
+    FlowResult = Dict[str, Any]  # type: ignore[misc, assignment]
+
+_RuntimeTextSelector: Any = None
+_RuntimeTextSelectorConfig: Any = None
+_RuntimeTextSelectorType: Any = None
+
+if _selector_module is not None:  # pragma: no cover - executed when selectors exist
+    _RuntimeTextSelector = _selector_module.TextSelector
+    _RuntimeTextSelectorConfig = _selector_module.TextSelectorConfig
+    _RuntimeTextSelectorType = _selector_module.TextSelectorType
+
+if TYPE_CHECKING:  # pragma: no cover - only for static analysis
+    from voluptuous.validators import Any as VolAny  # type: ignore[import-not-found]
+else:  # pragma: no cover - runtime compatibility for test stubs
+    try:
+        from voluptuous.validators import Any as VolAny  # type: ignore[attr-defined, import-not-found]
+    except (ImportError, AttributeError):
+        VolAny = type(vol.Any(str))  # type: ignore[assignment]
+
 
 _LOGGER = logging.getLogger(__name__)
 
