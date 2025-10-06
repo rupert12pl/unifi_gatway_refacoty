@@ -17,7 +17,7 @@ else:  # pragma: no cover - fallback for older Home Assistant
 import voluptuous as vol
 
 if TYPE_CHECKING:  # pragma: no cover - only for static analysis
-    VolAny = type(vol.Any(str))  # type: ignore[assignment]
+    from voluptuous.validators import Any as VolAny
 else:  # pragma: no cover - runtime compatibility for test stubs
     try:
         from voluptuous.validators import Any as VolAny  # type: ignore[attr-defined]
