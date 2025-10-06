@@ -1,34 +1,37 @@
 # =====================================================================
-# Unifi KAT01 Dashboard — WERSJA PARAMETRYZOWANA Z PARAMETREM VOUCHER (Lovelace YAML)
+# Unifi KAT01 Dashboard — WERSJA PARAMETRYZOWANA (Lovelace YAML)
+# Cel: jeden plik, łatwe podmiany w sekcji `vars`, reszta korzysta z aliasów
 # =====================================================================
 
+# ------------------------------
+#  ZMIENNE (edytuj tutaj)
+# ------------------------------
 vars:
-  VOUCHER: &VOUCHER 65ca7619febe23401acd95fe
-  title: &title "Unifi KAT01 Dashboard"
+  title: &title "Unifi KAT03 Dashboard"
   icon: &icon "phu:ubiquiti-udm-pro"
   theme: &theme "Frosted Glass Dark Lite"
   visible_user: &visible_user d011ff1e9e89430ab550066d8c298e55
 
   entities:
     # Speedtest
-    speedtest_download: &e_speed_dl sensor.speedtest_download
-    speedtest_upload:   &e_speed_up sensor.speedtest_upload
-    speedtest_ping:     &e_speed_ping sensor.speedtest_ping
+    speedtest_download: &e_speed_dl sensor.speedtest_download_4
+    speedtest_upload:   &e_speed_up sensor.speedtest_upload_4
+    speedtest_ping:     &e_speed_ping sensor.speedtest_ping_4
 
     # Agregaty
     lan:  &e_lan  sensor.lan
     wlan: &e_wlan sensor.wlan
 
     # Latencje WAN
-    wan_latency_cloudflare: &e_lat_cf  sensor.kat01_udm_pro_se_cloudflare_wan_latency
-    wan_latency_google:     &e_lat_go  sensor.kat01_udm_pro_se_google_wan_latency
-    wan_latency_msft:       &e_lat_ms  sensor.kat01_udm_pro_se_microsoft_wan_latency
+    wan_latency_cloudflare: &e_lat_cf  sensor.kat03_udm_cloudflare_wan_latency
+    wan_latency_google:     &e_lat_go  sensor.kat03_udm_google_wan_latency
+    wan_latency_msft:       &e_lat_ms  sensor.kat03_udm_microsoft_wan_latency
 
     # UDM/host — CPU/RAM/temperatury
-    udm_cpu_util: &e_udm_cpu   sensor.kat01_udm_pro_se_cpu_utilization
-    udm_mem_util: &e_udm_mem   sensor.kat01_udm_pro_se_memory_utilization
-    udm_cpu_temp: &e_udm_ctmp  sensor.kat01_udm_pro_se_kat01_udm_pro_se_cpu_temperature
-    udm_phy_temp: &e_udm_ptmp  sensor.kat01_udm_pro_se_kat01_udm_pro_se_phy_temperature
+    udm_cpu_util: &e_udm_cpu   sensor.kat03_udm_cpu_utilization
+    udm_mem_util: &e_udm_mem   sensor.kat03_udm_memory_utilization
+    udm_cpu_temp: &e_udm_ctmp  sensor.kat03_udm_kat03_udm_cpu_temperature
+    udm_phy_temp: &e_udm_ptmp  sensor.kat03_udm_kat03_udm_phy_temperature
 
     # Sieci LAN-y z detalami
     lan_ui:      &e_lan_ui      sensor.lan_lan_ui
@@ -42,25 +45,25 @@ vars:
     up_usw_flex:   &e_up_usw_flex   sensor.kat01_usw_flex_uptime
     up_usw_flex_m: &e_up_usw_flex_m sensor.kat01_usw_flex_mini_uptime
     up_lite8poe:   &e_up_lite8poe   sensor.kat01_usw_lite_8_poe_uptime
-    up_udm:        &e_up_udm        sensor.kat01_udm_pro_se_uptime
+    up_udm:        &e_up_udm        sensor.kat03_udm_uptime
 
     # WAN info
     wan_ip:  &e_wan_ip  sensor.wan_netia_wan1_ip
     wan_isp: &e_wan_isp sensor.wan_netia_wan1_isp
 
-    # WiFi
+    # WiFi (nazwy zmienione wg prośby)
     ram_z:       &e_ram_z       sensor.ram_z
     ram_ui:      &e_ram_ui      sensor.ram_ui
     ram_ui_iot:  &e_ram_ui_iot  sensor.ram_ui_iot
     ram5:        &e_ram5        sensor.ram5
     ram_gu:      &e_ram_gu      sensor.ram_gu
 
-    # VPN serwery
+    # VPN serwery (zmieniono nazwę vpn_wg_family)
     vpn_wg_family:   &e_vpn_wg_family   sensor.vpn_wireguard_server_kat01_family
     vpn_ovpn_srv:    &e_vpn_ovpn_srv    sensor.vpn_openvpn_server_kat01_openvpn
     vpn_wg_main:     &e_vpn_wg_main     sensor.vpn_wireguard_server_kat01_wireguard
     vpn_wg_family_l: &e_vpn_wg_family_l sensor.vpn_wireguard_server_family_lan
-    vpn_uid:         &e_vpn_uid         sensor.vpn_uid_server_kat01_udm_pro_se
+    vpn_uid:         &e_vpn_uid         sensor.vpn_uid_server_kat03_udm
 
     # VPN klienci
     vpn_cli_es: &e_vpn_cli_es sensor.vpn_openvpn_client_proton_hiszpania
@@ -68,112 +71,662 @@ vars:
     vpn_cli_vn: &e_vpn_cli_vn sensor.vpn_openvpn_client_proton_wietnam
 
     # Firmware
-    upd_udm:       &e_upd_udm       update.kat01_udm_pro_se
+    upd_udm:       &e_upd_udm       update.kat03_udm
     upd_u6_ent:    &e_upd_u6_ent    update.kat01_u6_ent
     upd_usw_fx_m2: &e_upd_usw_fx_m2 update.kat01_usw_flex_mini_2
     upd_lite8poe:  &e_upd_lite8poe  update.kat01_usw_lite_8_poe
     upd_usw_fx_m:  &e_upd_usw_fx_m  update.kat01_usw_flex_mini
 
+    # Inne
     alerts: &e_alerts sensor.alerts
 
+  # Style/parametry
   style:
-    speed_gauge_max: &speed_gauge_max 1000
-    speed_up_max: &speed_up_max 350
-    speed_dl_inner_max: &speed_dl_inner_max 330
-    ping_max: &ping_max 30
-    color_ok: &color_ok "#4FCF58"
-    color_mid: &color_mid "#CF4FC6"
+    speed_gauge_max:      &speed_gauge_max 1000
+    speed_up_max:         &speed_up_max 350
+    speed_dl_inner_max:   &speed_dl_inner_max 330
+    ping_max:             &ping_max 30
+    color_ok:   &color_ok   "#4FCF58"
+    color_mid:  &color_mid  "#CF4FC6"
     color_warn: &color_warn "#C6CF4F"
 
+# ------------------------------
+#  WZORCE (anchors)
+# ------------------------------
+defaults:
+  graph_common: &graph_common
+    type: custom:mini-graph-card
+    height: 75
+    line_width: 1
+    font_size: 70
+    hours_to_show: 72
+    points_per_hour: 10
+    align_state: center
+    show:
+      fill: fade
+
+  graph_common_dense: &graph_common_dense
+    <<: *graph_common
+    points_per_hour: 20
+
+  ring_common: &ring_common
+    type: custom:ring-tile
+    ring_size: 3
+    top_element: icon
+    middle_element: value_with_unit
+    bottom_element: name
+    scale: ticks_with_labels
+
+  modern_gauge_common: &modern_gauge_common
+    type: custom:modern-circular-gauge
+    start_from_zero: false
+    needle: false
+    adaptive_state_color: true
+    decimals: 0
+    header_position: bottom
+    smooth_segments: false
+    show_entity_picture: false
+    adaptive_icon_color: true
+    gauge_type: full
+    rotate_gauge: false
+
+  mer_users: &mer_users
+    type: custom:multiple-entity-row
+    show_state: false
+    secondary_info: last-changed
+    entities:
+      - { attribute: num_user,   name: "Num user",  unit: " " }
+      - { attribute: num_guest,  name: "Num guest", unit: " " }
+      - { attribute: num_iot,    name: "Num iot",   unit: " " }
+      - { attribute: user_total, name: "User total",unit: " " }
+
+  mer_devices: &mer_devices
+    type: custom:multiple-entity-row
+    show_state: false
+    secondary_info: last-changed
+    entities:
+      - { attribute: num_sw,           name: "Devices",     unit: " " }
+      - { attribute: num_adopted,      name: "Adopted",     unit: " " }
+      - { attribute: num_disconnected, name: "Disconnected",unit: " " }
+      - { attribute: num_pending,      name: "Pending",     unit: " " }
+
+  mer_network: &mer_network
+    type: custom:multiple-entity-row
+    show_state: false
+    secondary_info: last-changed
+    entities:
+      - { attribute: vlan_id,      name: "VLAN",   unit: " " }
+      - { attribute: client_count, name: "Clients",unit: " " }
+      - { attribute: subnet,       name: "Subnet", unit: " " }
+
+# ------------------------------
+#  DASHBOARD
+# ------------------------------
 type: sections
 title: *title
 icon: *icon
 theme: *theme
 visible:
   - user: *visible_user
+cards: []
+background:
+  opacity: 33
+  alignment: center
+  size: cover
+  repeat: repeat
+  attachment: scroll
 
 max_columns: 2
 dense_section_placement: true
 subview: true
 
-# =====================
-# Sekcja WiFi (QR z parametrem VOUCHER)
-# =====================
-- type: grid
-  cards:
-    - type: heading
-      heading: WiFi
-      heading_style: title
+header:
+  layout: center
+  badges_position: bottom
+  badges_wrap: wrap
+  card:
+    type: markdown
+    text_only: true
+    content: >-
+      <div style="display:flex;align-items:center;gap:16px;">
+        <img width="125" src="https://companieslogo.com/img/orig/UI_BIG.D-8d05b636.png"/>
+        <a href="https://192.168.166.1/" target="_blank" rel="noreferrer"
+           style="text-decoration:none;padding:8px 12px;border-radius:8px;background:var(--primary-color);color:white;">
+          UniFi KAT01 Controller
+        </a>
+      </div>
 
-    - type: picture-elements
-      image: /local/wifi.jpg
-      elements:
-        - type: state-label
-          entity: !concat [ 'image.', *VOUCHER, '_qr_code' ]
-          attribute: wlan_name
-          style:
-            top: 15%
-            left: 50%
-            color: white
-            font-size: 180%
-            font-weight: bold
-            cursor: default
-          tap_action: { action: none }
-          hold_action: { action: none }
+badges:
+  - { type: entity, show_name: false, show_state: true, show_icon: true, entity: *e_speed_dl }
+  - { type: entity, show_name: false, show_state: true, show_icon: true, entity: *e_speed_up }
+  - type: entity
+    show_name: true
+    show_state: true
+    show_icon: true
+    entity: *e_wlan
+    icon: mdi:account-multiple
+    state_content: [ num_user, num_guest, num_iot ]
+  - { type: entity, show_name: true, show_state: true, show_icon: true, entity: *e_wlan, state_content: num_guest }
+  - { type: entity, show_name: false, show_state: true, show_icon: true, entity: *e_lat_go }
+  - { type: entity, show_name: false, show_state: true, show_icon: true, entity: *e_lat_ms }
+  - { type: entity, show_name: false, show_state: true, show_icon: true, entity: *e_lat_cf }
 
-        - type: image
-          entity: !concat [ 'image.', *VOUCHER, '_qr_code' ]
-          style:
-            top: 50%
-            left: 20%
-            width: 30%
-            cursor: default
+sections:
+  # =====================
+  # Internet speed & Users
+  # =====================
+  - type: grid
+    cards:
+      - { type: heading, heading: Internet speed, heading_style: subtitle, icon: selfhst:openspeedtest }
 
-        - type: state-label
-          entity: !concat [ 'sensor.', *VOUCHER, '_voucher' ]
-          style:
-            top: 49%
-            left: 67%
-            background: rgba(11, 11, 11, 70%)
-            padding: 5px
-            height: 60px
-            color: white
-            border-radius: 12px
-            font-size: 200%
-            font-weight: bold
-            cursor: default
-          tap_action: { action: none }
-          hold_action: { action: none }
+      - <<: *graph_common
+        name: Speed
+        entities:
+          - { entity: *e_speed_dl,  name: "Download (Mbps)" }
+          - { entity: *e_speed_up,  name: "Upload (Mbps)" }
+          - { entity: *e_speed_ping, name: "Ping (ms)", y_axis: secondary }
+        grid_options: { columns: 12 }
 
-        - type: state-label
-          entity: !concat [ 'sensor.', *VOUCHER, '_voucher' ]
-          attribute: duration
-          prefix: "Duration (ważność): "
-          style:
-            top: 39%
-            left: 67%
-            color: white
-            font-size: 90%
-            cursor: default
-          tap_action: { action: none }
-          hold_action: { action: none }
+      - { type: heading, icon: mdi:fridge, heading: "# Users", heading_style: subtitle }
 
-        - type: service-button
-          title: Refresh/Odśwież
-          style:
-            transform: none
-            bottom: 1%
-            left: 35%
-          service: button.press
-          service_data:
-            entity_id: !concat [ 'button.', *VOUCHER, '_update' ]
+      - <<: *graph_common
+        name: LAN
+        icon: mdi:access-point-network
+        line_width: 2
+        hours_to_show: 73
+        entities:
+          - { entity: *e_lan, attribute: num_user, name: "LAN" }
+        grid_options: { columns: 4 }
 
-        - type: service-button
-          title: Create/Nowy
-          style:
-            transform: none
-            bottom: 1%
-            right: 2%
-          service: button.press
-          service_data:
-            entity_id: !concat [ 'button.', *VOUCHER, '_create' ]
+      - <<: *graph_common
+        name: Guest
+        icon: mdi:account-network-outline
+        entities:
+          - { entity: *e_lan, attribute: num_guest, name: "Users" }
+        grid_options: { columns: 4 }
+
+      - <<: *graph_common
+        name: WLAN
+        icon: mdi:account-network-outline
+        entities:
+          - { entity: *e_wlan, attribute: num_user, name: "Users" }
+        grid_options: { columns: 4 }
+
+      - <<: *modern_gauge_common
+        entity: *e_speed_dl
+        max: *speed_gauge_max
+        min: 10
+        gauge_foreground_style: { color: *color_ok }
+        secondary:
+          entity: *e_speed_up
+          state_size: big
+          show_gauge: inner
+          max: *speed_dl_inner_max
+          min: 10
+          unit: Mbps
+          needle: false
+          decimals: 0
+          gauge_foreground_style: { color: *color_mid }
+          adaptive_state_color: true
+        tertiary:
+          entity: *e_speed_ping
+          unit: ms
+          show_gauge: inner
+          max: *ping_max
+          adaptive_state_color: true
+          start_from_zero: true
+          gauge_foreground_style: { color: *color_warn, opacity: 0.77 }
+
+      - <<: *modern_gauge_common
+        entity: *e_lan_ui
+        attribute: client_count
+        show_icon: true
+        show_header: false
+        rotate_gauge: true
+        combine_gauges: true
+        start_from_zero: true
+        gauge_background_style: { opacity: 1 }
+        gauge_foreground_style: { color: *color_ok, opacity: 1 }
+        secondary:
+          entity: *e_lan_iot
+          attribute: client_count
+          show_gauge: inner
+          state_size: small
+          needle: false
+          decimals: 0
+          gauge_foreground_style: { color: *color_mid }
+          adaptive_state_color: true
+        tertiary:
+          entity: *e_ram_gu
+          show_gauge: inner
+          adaptive_state_color: true
+          start_from_zero: true
+          gauge_foreground_style: { color: *color_warn, opacity: 0.77 }
+
+      - <<: *graph_common_dense
+        name: Users
+        entities:
+          - { entity: *e_wlan, attribute: num_user,  name: "Users" }
+          - { entity: *e_wlan, attribute: num_iot,   name: "IoT" }
+          - { entity: *e_wlan, attribute: num_guest, name: "Guests", y_axis: secondary }
+        grid_options: { columns: 12 }
+
+  # =====================
+  # Performance
+  # =====================
+  - type: grid
+    cards:
+      - { type: heading, heading: Performance, heading_style: title, icon: cil:docker-watchtower }
+
+      - type: custom:simple-swipe-card
+        card_spacing: 5
+        swipe_direction: vertical
+        auto_hide_pagination: 0
+        loop_mode: loopback
+        enable_auto_swipe: true
+        auto_swipe_interval: 4000
+        cards:
+          - <<: *ring_common
+            entity: *e_lat_cf
+            name: Cloudflare
+          - <<: *ring_common
+            entity: *e_lat_go
+            name: Google
+          - <<: *ring_common
+            entity: *e_lat_ms
+            name: Microsoft
+        grid_options: { columns: 6, rows: 3 }
+
+      - type: custom:simple-swipe-card
+        card_spacing: 5
+        swipe_direction: vertical
+        auto_hide_pagination: 0
+        loop_mode: loopback
+        enable_auto_swipe: true
+        auto_swipe_interval: 4000
+        cards:
+          - <<: *ring_common
+            entity: *e_udm_cpu
+            name: CPU
+          - <<: *ring_common
+            entity: *e_udm_mem
+            name: RAM
+          - <<: *ring_common
+            entity: *e_udm_ctmp
+            name: CPU
+          - <<: *ring_common
+            entity: *e_udm_ptmp
+            name: PHY
+        grid_options: { columns: 6, rows: 3 }
+
+      - type: custom:simple-swipe-card
+        card_spacing: 5
+        swipe_direction: vertical
+        auto_hide_pagination: 0
+        loop_mode: loopback
+        enable_auto_swipe: true
+        auto_swipe_interval: 4000
+        cards:
+          - <<: *ring_common
+            entity: *e_speed_dl
+            name: Download
+            max: *speed_gauge_max
+          - <<: *ring_common
+            entity: *e_speed_up
+            name: Upload
+            max: *speed_up_max
+        grid_options: { columns: 6, rows: 3 }
+
+      - type: custom:simple-swipe-card
+        swipe_direction: vertical
+        auto_hide_pagination: 0
+        loop_mode: infinite
+        enable_auto_swipe: true
+        auto_swipe_interval: 4000
+        cards:
+          - { type: entity, entity: *e_wlan, attribute: num_user, state_color: true, icon: mdi:account-group-outline, grid_options: { columns: 6, rows: 3 } }
+          - { type: entity, entity: *e_alerts, grid_options: { columns: 6, rows: 3 } }
+          - { type: entity, entity: *e_lan, attribute: num_user, state_color: true, icon: mdi:account-group-outline, grid_options: { columns: 6, rows: 3 } }
+        grid_options: { columns: 6, rows: 3 }
+
+  # =====================
+  # WAN/LAN/WLAN (Entities)
+  # =====================
+  - type: grid
+    cards:
+      - { type: heading, heading: Nowa sekcja }
+      - { type: heading, icon: mdi:wan, heading: WAN, heading_style: subtitle }
+
+      - type: entities
+        entities:
+          - { entity: *e_wan_ip,  name: IP }
+          - { entity: *e_wan_isp, name: ISP, icon: mdi:shield-outline }
+          - { entity: *e_lat_go,  name: Google latency,    icon: mdi:google }
+          - { entity: *e_lat_ms,  name: Microsoft latency, icon: mdi:microsoft }
+          - { entity: *e_lat_cf,  name: Cloudflare latency,icon: phu:cloudflare }
+          - entity: sensor.wan
+            name: Gateways
+            <<: *mer_devices
+            entities:
+              - { attribute: num_gw,          name: Devices,      unit: " " }
+              - { attribute: num_adopted,     name: Adopted,      unit: " " }
+              - { attribute: num_disconnected,name: Disconnected, unit: " " }
+              - { attribute: num_pending,     name: Pending,      unit: " " }
+
+      - { type: heading, icon: mdi:lan, heading: LAN, heading_style: subtitle,
+          badges: [ { type: entity, entity: *e_lan, show_state: true, show_icon: true, state_content: user_total } ] }
+
+      - type: entities
+        state_color: false
+        show_header_toggle: false
+        entities:
+          - { entity: *e_lan, name: Status }
+          - { entity: *e_up_us8,        name: "Uptime US 8",           icon: mdi:lan }
+          - { entity: *e_up_usw_flex,   name: "Uptime USW Flex",       icon: mdi:lan }
+          - { entity: *e_up_usw_flex_m, name: "Uptime USW Flex mini",  icon: mdi:lan }
+          - { entity: *e_up_lite8poe,   name: "Uptime USW Lite 8POE",  icon: mdi:lan }
+          - { entity: *e_up_udm,        name: "Uptime UDM Pro SE",     icon: mdi:lan }
+          - { entity: *e_lan, name: Users, <<: *mer_users }
+          - { entity: *e_lan, name: Switches, <<: *mer_devices }
+
+      - { type: heading, icon: mdi:wifi, heading: WLAN, heading_style: subtitle,
+          badges: [ { type: entity, entity: *e_wlan, name: Users, show_state: true, show_icon: true, state_content: user_total } ] }
+
+      - type: entities
+        entities:
+          - { entity: *e_wlan, name: Status }
+          - { entity: sensor.kat01_u6_ent_uptime, name: Uptime, icon: mdi:wifi }
+          - entity: *e_wlan
+            name: Users
+            icon: mdi:wifi
+            <<: *mer_users
+          - entity: *e_wlan
+            name: Access Points
+            <<: *mer_devices
+
+  # =====================
+  # LAN — Networks & Infrastructure
+  # =====================
+  - type: grid
+    cards:
+      - { type: heading, heading: LAN, heading_style: title, icon: mdi:lan }
+
+      - { type: heading, icon: phu:ubiquiti-ap, heading: Networks, heading_style: subtitle }
+
+      - type: entities
+        entities:
+          - { entity: *e_lan_ui,      name: LAN-UI,      <<: *mer_network }
+          - { entity: *e_lan_iot,     name: LAN-IoT,     <<: *mer_network }
+          - { entity: *e_lan_local,   name: LAN-LOCAL,   <<: *mer_network }
+          - { entity: *e_lan_guest,   name: LAN-GUEST,   <<: *mer_network }
+          - { entity: *e_lan_default, name: Default,     <<: *mer_network }
+
+      - { type: heading, icon: phu:ubiquiti-udm-pro, heading: Infrastructure, heading_style: subtitle }
+
+      - type: entities
+        title: Infrastructure
+        state_color: false
+        show_header_toggle: false
+        entities:
+          - { entity: *e_lan, name: Status }
+          - { entity: *e_up_us8,        name: "Uptime US 8",          icon: mdi:lan }
+          - { entity: *e_up_usw_flex,   name: "Uptime USW Flex",      icon: mdi:lan }
+          - { entity: *e_up_usw_flex_m, name: "Uptime USW Flex mini", icon: mdi:lan }
+          - { entity: *e_up_lite8poe,   name: "Uptime USW Lite 8POE", icon: mdi:lan }
+          - { entity: *e_up_udm,        name: "Uptime UDM Pro SE",    icon: mdi:lan }
+          - { entity: *e_lan, name: Switches, <<: *mer_devices }
+
+  # =====================
+  # VPN — Serwery
+  # =====================
+  - type: grid
+    cards:
+      - { type: heading, heading: VPN, heading_style: title, icon: mdi:vpn }
+      - { type: heading, icon: mdi:server-security, heading: Server, heading_style: subtitle }
+
+      - type: entities
+        state_color: true
+        show_header_toggle: false
+        entities:
+          - entity: *e_vpn_wg_family
+            name: KAT01-Family
+            icon: selfhst:openvpn
+            type: custom:multiple-entity-row
+            show_state: false
+            secondary_info: last-changed
+            entities:
+              - { attribute: "Online users", name: Clients, unit: " " }
+              - { attribute: subnet,         name: Subnet,  unit: " " }
+          - entity: *e_vpn_ovpn_srv
+            name: KAT01 - OpenVPN
+            icon: selfhst:openvpn
+            type: custom:multiple-entity-row
+            show_state: false
+            secondary_info: last-changed
+            entities:
+              - { attribute: "Online users", name: Clients, unit: " " }
+              - { attribute: subnet,         name: Subnet,  unit: " " }
+          - entity: *e_vpn_wg_main
+            name: KAT01-WireGuard
+            icon: selfhst:wireguard
+            type: custom:multiple-entity-row
+            show_state: false
+            secondary_info: last-changed
+            entities:
+              - { attribute: "Online users", name: Clients, unit: " " }
+              - { attribute: subnet,         name: Subnet,  unit: " " }
+          - entity: *e_vpn_wg_family_l
+            name: Family-LAN
+            icon: selfhst:wireguard
+            type: custom:multiple-entity-row
+            show_state: false
+            secondary_info: last-changed
+            entities:
+              - { attribute: "Online users", name: Clients, unit: " " }
+              - { attribute: subnet,         name: Subnet,  unit: " " }
+          - entity: *e_vpn_uid
+            name: Unigi Identity VPN
+            icon: selfhst:wireguard
+            type: custom:multiple-entity-row
+            show_state: false
+            secondary_info: last-changed
+            entities:
+              - { attribute: "Online users", name: Clients, unit: " " }
+              - { attribute: subnet,         name: Subnet,  unit: " " }
+
+      # HTML listy klientów (bez zmian — używa state_attr)
+      - type: custom:html-template-card
+        ignore_line_breaks: true
+        content: >
+          <big><span style="color: grey;"><center>{{ state_attr('sensor.vpn_wireguard_server_kat01_family','vpn_name') }}</center></big>
+          {{ state_attr('sensor.vpn_wireguard_server_kat01_family','connected_clients_html') }}
+      - type: custom:html-template-card
+        ignore_line_breaks: true
+        content: >
+          <big><span style="color: grey;"><center>{{ state_attr('sensor.vpn_openvpn_server_kat01_openvpn','vpn_name') }}</center></big>
+          {{ state_attr('sensor.vpn_openvpn_server_kat01_openvpn','connected_clients_html') }}
+      - type: custom:html-template-card
+        ignore_line_breaks: true
+        content: >
+          <big><span style="color: grey;"><center>{{ state_attr('sensor.vpn_wireguard_server_kat01_wireguard','vpn_name') }}</center></big>
+          {{ state_attr('sensor.vpn_wireguard_server_kat01_wireguard','connected_clients_html') }}
+      - type: custom:html-template-card
+        ignore_line_breaks: true
+        content: >
+          <big><span style="color: grey;"><center>{{ state_attr('sensor.vpn_wireguard_server_family_lan','vpn_name') }}</center></big>
+          {{ state_attr('sensor.vpn_wireguard_server_family_lan','connected_clients_html') }}
+      - type: custom:html-template-card
+        ignore_line_breaks: true
+        content: >
+          <big><span style="color: grey;"><center>{{ state_attr('sensor.vpn_uid_server_kat03_udm','vpn_name') }}</center></big>
+          {{ state_attr('sensor.vpn_uid_server_kat03_udm','connected_clients_html') }}
+
+  # =====================
+  # VPN — Klienci
+  # =====================
+  - type: grid
+    cards:
+      - { type: heading, heading: VPN, heading_style: title, icon: mdi:vpn }
+      - { type: heading, icon: mdi:server-security, heading: Clients, heading_style: subtitle }
+
+      - type: entities
+        state_color: false
+        show_header_toggle: false
+        entities:
+          - entity: *e_vpn_cli_es
+            name: Proton Hiszpania
+            icon: selfhst:openvpn
+            type: custom:multiple-entity-row
+            show_state: false
+            secondary_info: last-changed
+            entities:
+              - { attribute: "Online users", name: Clients, unit: " " }
+              - { attribute: subnet,         name: Subnet,  unit: " " }
+          - entity: *e_vpn_cli_de
+            name: Proton Niemcy
+            icon: selfhst:openvpn
+            type: custom:multiple-entity-row
+            show_state: false
+            secondary_info: last-changed
+            entities:
+              - { attribute: "Online users", name: Clients, unit: " " }
+              - { attribute: subnet,         name: Subnet,  unit: " " }
+          - entity: *e_vpn_cli_vn
+            name: KAT01-Family
+            icon: selfhst:wireguard
+            type: custom:multiple-entity-row
+            show_state: false
+            secondary_info: last-changed
+            entities:
+              - { attribute: "Online users", name: Clients, unit: " " }
+              - { attribute: subnet,         name: Subnet,  unit: " " }
+
+  # =====================
+  # Firmware
+  # =====================
+  - type: grid
+    cards:
+      - { type: heading, heading: Firmware, heading_style: title, icon: mdi:update }
+
+      - type: entities
+        state_color: true
+        show_header_toggle: false
+        entities:
+          - entity: *e_upd_udm
+            icon: phu:ubiquiti-udm-pro
+            type: custom:multiple-entity-row
+            show_state: false
+            secondary_info: last-changed
+            entities:
+              - { attribute: installed_version, name: Instaled, unit: " " }
+              - { attribute: latest_version,    name: Latest,   unit: " " }
+          - entity: *e_upd_u6_ent
+            icon: phu:ubiquiti-ap
+            type: custom:multiple-entity-row
+            show_state: false
+            secondary_info: last-changed
+            entities:
+              - { attribute: installed_version, name: Instaled, unit: " " }
+              - { attribute: latest_version,    name: Latest,   unit: " " }
+          - entity: *e_upd_usw_fx_m2
+            icon: phu:ubiquiti-ux
+            type: custom:multiple-entity-row
+            show_state: false
+            secondary_info: last-changed
+            entities:
+              - { attribute: installed_version, name: Instaled, unit: " " }
+              - { attribute: latest_version,    name: Latest,   unit: " " }
+          - entity: *e_upd_lite8poe
+            icon: phu:ubiquiti-ux
+            type: custom:multiple-entity-row
+            show_state: false
+            secondary_info: last-changed
+            entities:
+              - { attribute: installed_version, name: Instaled, unit: " " }
+              - { attribute: latest_version,    name: Latest,   unit: " " }
+          - entity: *e_upd_usw_fx_m
+            icon: phu:ubiquiti-ux
+            type: custom:multiple-entity-row
+            show_state: false
+            secondary_info: last-changed
+            entities:
+              - { attribute: installed_version, name: Instaled, unit: " " }
+              - { attribute: latest_version,    name: Latest,   unit: " " }
+
+  # =====================
+  # WiFi (Users + QR)
+  # =====================
+  - type: grid
+    cards:
+      - { type: heading, heading: WiFi, heading_style: title }
+
+      - type: entities
+        state_color: false
+        show_header_toggle: false
+        entities:
+          - { entity: *e_ram_z }
+          - { entity: *e_ram_ui }
+          - { entity: *e_ram_ui_iot }
+          - { entity: *e_ram5 }
+          - { entity: *e_ram_gu }
+
+      - <<: *graph_common_dense
+        name: Users
+        entities:
+          - { entity: *e_ram_z }
+          - { entity: *e_ram_ui }
+          - { entity: *e_ram_gu }
+          - { entity: *e_ram5 }
+          - { entity: *e_ram_ui_iot, name: "IoT", y_axis: secondary }
+        grid_options: { columns: 12 }
+
+      - type: picture-elements
+        image: /local/wifi.jpg
+        elements:
+          - type: state-label
+            entity: image.65ca7619febe23401acd95fe_qr_code
+            attribute: wlan_name
+            style:
+              top: 15%
+              left: 50%
+              color: white
+              font-size: 180%
+              font-weight: bold
+              cursor: default
+            tap_action: { action: none }
+            hold_action: { action: none }
+          - type: image
+            entity: image.65ca7619febe23401acd95fe_qr_code
+            style: { top: 50%, left: 20%, width: 30%, cursor: default }
+          - type: state-label
+            entity: sensor.65ca7619febe23401acd95fe_voucher
+            style:
+              top: 49%
+              left: 67%
+              background: rgba(11, 11, 11, 70%)
+              padding: 5px
+              height: 60px
+              color: white
+              border-radius: 12px
+              font-size: 200%
+              font-weight: bold
+              cursor: default
+            tap_action: { action: none }
+            hold_action: { action: none }
+          - type: state-label
+            entity: sensor.65ca7619febe23401acd95fe_voucher
+            attribute: duration
+            prefix: "Duration (ważność): "
+            style: { top: 39%, left: 67%, color: white, font-size: 90%, cursor: default }
+            tap_action: { action: none }
+            hold_action: { action: none }
+          - type: service-button
+            title: Refresh/Odśwież
+            style: { transform: none, bottom: 1%, left: 35% }
+            service: button.press
+            service_data: { entity_id: button.65ca7619febe23401acd95fe_update }
+          - type: service-button
+            title: Create/Nowy
+            style: { transform: none, bottom: 1%, right: 2% }
+            service: button.press
+            service_data: { entity_id: button.65ca7619febe23401acd95fe_create }
