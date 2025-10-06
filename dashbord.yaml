@@ -12,6 +12,9 @@ vars:
   theme: &theme "Frosted Glass Dark Lite"
   visible_user: &visible_user d011ff1e9e89430ab550066d8c298e55
 
+  # parametr VOUCHER – identyfikator zestawu encji (QR, voucher, przyciski)
+  VOUCHER: &VOUCHER 65ca7619febe23401acd95fe
+
   entities:
     # Speedtest
     speedtest_download: &e_speed_dl sensor.speedtest_download_4
@@ -79,6 +82,14 @@ vars:
 
     # Inne
     alerts: &e_alerts sensor.alerts
+
+    # ——— VOUCHER: aliasy encji wygodne do użycia w kartach ———
+    # (UWAGA: YAML nie wspiera konkatenacji, więc te aliasy trzeba zaktualizować,
+    #  gdy zmienisz *VOUCHER*; poniżej są zgodne z domyślną wartością VOUCHER)
+    qr_code:    &e_qr_code    image.65ca7619febe23401acd95fe_qr_code
+    voucher:    &e_voucher    sensor.65ca7619febe23401acd95fe_voucher
+    btn_update: &e_btn_update button.65ca7619febe23401acd95fe_update
+    btn_create: &e_btn_create button.65ca7619febe23401acd95fe_create
 
   # Style/parametry
   style:
@@ -684,7 +695,7 @@ sections:
         image: /local/wifi.jpg
         elements:
           - type: state-label
-            entity: image.65ca7619febe23401acd95fe_qr_code
+            entity: *e_qr_code
             attribute: wlan_name
             style:
               top: 15%
@@ -696,10 +707,10 @@ sections:
             tap_action: { action: none }
             hold_action: { action: none }
           - type: image
-            entity: image.65ca7619febe23401acd95fe_qr_code
+            entity: *e_qr_code
             style: { top: 50%, left: 20%, width: 30%, cursor: default }
           - type: state-label
-            entity: sensor.65ca7619febe23401acd95fe_voucher
+            entity: *e_voucher
             style:
               top: 49%
               left: 67%
@@ -714,7 +725,7 @@ sections:
             tap_action: { action: none }
             hold_action: { action: none }
           - type: state-label
-            entity: sensor.65ca7619febe23401acd95fe_voucher
+            entity: *e_voucher
             attribute: duration
             prefix: "Duration (ważność): "
             style: { top: 39%, left: 67%, color: white, font-size: 90%, cursor: default }
@@ -724,9 +735,9 @@ sections:
             title: Refresh/Odśwież
             style: { transform: none, bottom: 1%, left: 35% }
             service: button.press
-            service_data: { entity_id: button.65ca7619febe23401acd95fe_update }
+            service_data: { entity_id: *e_btn_update }
           - type: service-button
             title: Create/Nowy
             style: { transform: none, bottom: 1%, right: 2% }
             service: button.press
-            service_data: { entity_id: button.65ca7619febe23401acd95fe_create }
+            service_data: { entity_id: *e_btn_create }
