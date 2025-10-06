@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import custom_components.unifi_gateway_refactored.sensor as sensor_module
+
 from custom_components.unifi_gateway_refactored.sensor import (
     _collect_vpn_connected_clients_details,
     _format_vpn_connected_clients,
@@ -205,3 +207,62 @@ def test_vpn_sensor_attribute_display_names():
         "connected_clients": "Connected Clients",
         "connected_clients_html": "Connected Clients HTML",
     }
+
+
+def test_vpn_sensor_update_skips_expensive_fallbacks_when_deadline_exceeded(monkeypatch):
+    calls: list[str] = []
+
+    class _DeadlineClient(_DummyClient):
+        def get_active_clients_v2(self):
+            calls.append("active_v2")
+            return []
+
+        def get_dhcp_leases(self):
+            calls.append("leases")
+            return []
+
+        def get_vpn_active_sessions_map(self):
+            calls.append("sessions")
+            return {"by_server": {}, "by_net": {}}
+
+        def get_clients(self):
+            calls.append("clients")
+            return []
+
+        def get_vpn_servers(self):
+            calls.append("servers")
+            return []
+
+        def get_controller_url(self):
+            return "http://controller"
+
+        def get_controller_api_url(self):
+            return "http://controller/api"
+
+        def get_site(self):
+            return "default"
+
+        def _lease_is_active(self, lease, now_ts):
+            return False
+
+        def is_client_active(self, client, now_ts):
+            return False
+
+    sensor = UniFiGatewayVpnUsageSensor(
+        coordinator=SimpleNamespace(data=None),
+        client=_DeadlineClient(),
+        entry_id="entry-id",
+        base_name="Gateway",
+        server={"id": "srv", "name": "Srv", "vpn_type": "L2TP"},
+        linked_network={"_id": "net"},
+        unique_id="unique",
+    )
+
+    monotonic_values = iter([0.0, 9.5, 9.6, 9.7, 9.8, 9.9])
+    monkeypatch.setattr(sensor_module, "_monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(sensor_module.time, "time", lambda: 0.0)
+
+    sensor.update()
+
+    assert calls == ["active_v2"]
+    assert sensor.native_value == 0
