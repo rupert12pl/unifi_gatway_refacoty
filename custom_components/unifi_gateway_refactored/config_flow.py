@@ -7,8 +7,19 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 import aiohttp
 
 from homeassistant import config_entries
-from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import AbortFlow
+
+try:  # pragma: no cover - optional selector support for newer Home Assistant
+    from homeassistant.helpers.selector import (  # type: ignore[import-not-found]
+        TextSelector,
+        TextSelectorConfig,
+        TextSelectorType,
+    )
+except (ImportError, AttributeError):  # pragma: no cover - fallback for test stubs
+    TextSelector = None  # type: ignore[assignment]
+    TextSelectorConfig = None  # type: ignore[assignment]
+    TextSelectorType = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     from homeassistant.data_entry_flow import FlowResult
@@ -58,6 +69,14 @@ from .cloud_client import (
 from .unifi_client import UniFiOSClient, APIError, AuthError, ConnectivityError
 
 _LOGGER = logging.getLogger(__name__)
+
+
+if TextSelector is not None:
+    _UI_API_KEY_SELECTOR = TextSelector(
+        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+    )
+else:  # pragma: no cover - fallback when selectors are unavailable
+    _UI_API_KEY_SELECTOR = str
 
 
 async def _validate(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -435,7 +454,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self._cached.get(CONF_UI_API_KEY)
                     )
                     or "",
-                ): str,
+                ): _UI_API_KEY_SELECTOR,
                 vol.Optional(
                     CONF_WIFI_GUEST,
                     default=self._normalize_optional_text(
@@ -720,7 +739,7 @@ class OptionsFlow(config_entries.OptionsFlow):
         schema_fields[vol.Optional(
             CONF_UI_API_KEY,
             default=ui_key_default,
-        )] = vol.Any(str, None)
+        )] = _UI_API_KEY_SELECTOR
         wifi_guest_default = (
             ConfigFlow._normalize_optional_text(current.get(CONF_WIFI_GUEST)) or ""
         )
