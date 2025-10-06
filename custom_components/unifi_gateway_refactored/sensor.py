@@ -83,6 +83,13 @@ _LOGGER = logging.getLogger(__name__)
 
 
 VPN_MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=10)
+VPN_UPDATE_DEADLINE_GUARD = 8.5
+
+
+def _monotonic() -> float:
+    """Return a monotonic timestamp for deadline tracking."""
+
+    return time.monotonic()
 
 
 def _freeze_state(value: Any) -> Any:
@@ -2166,8 +2173,20 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
             "name": self._base_name,
         }
 
+    def _deadline_exceeded(self, deadline: float, stage: str) -> bool:
+        if _monotonic() >= deadline:
+            _LOGGER.debug(
+                "Skipping %s for VPN %s (exceeded %ss execution guard)",
+                stage,
+                self._srv_name,
+                VPN_UPDATE_DEADLINE_GUARD,
+            )
+            return True
+        return False
+
     @Throttle(VPN_MIN_TIME_BETWEEN_UPDATES)
     def update(self) -> None:
+        deadline = _monotonic() + VPN_UPDATE_DEADLINE_GUARD
         now_ts = time.time()
         count = 0
         v2_total = 0
@@ -2193,7 +2212,9 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         except (APIError, ConnectivityError) as err:
             _LOGGER.debug("Active clients v2 fetch failed for VPN %s: %s", self._srv_name, err)
 
-        if count == 0:
+        if count == 0 and not self._deadline_exceeded(
+            deadline, "DHCP lease fallback"
+        ):
             try:
                 leases = self._client.get_dhcp_leases()
             except (APIError, ConnectivityError) as err:
@@ -2233,7 +2254,9 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
                 connected_records = lease_matches
                 count = len(lease_matches)
 
-        if count == 0:
+        if count == 0 and not self._deadline_exceeded(
+            deadline, "VPN session fallback"
+        ):
             try:
                 session_map = self._client.get_vpn_active_sessions_map()
             except (APIError, ConnectivityError) as err:
@@ -2246,7 +2269,9 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
             elif self._linked_net_id and str(self._linked_net_id) in by_net:
                 count = by_net[str(self._linked_net_id)]
 
-        if count == 0:
+        if count == 0 and not self._deadline_exceeded(
+            deadline, "Legacy client fallback"
+        ):
             try:
                 legacy_clients = self._client.get_clients()
             except (APIError, ConnectivityError) as err:
@@ -2276,7 +2301,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         self._state = count
         self._attrs["debug_v2_seen_total"] = v2_total
         self._attrs["Online users"] = v2_for_net
-        self._update_connected_clients(connected_records)
+        self._update_connected_clients(connected_records, deadline=deadline)
 
     async def async_update(self) -> None:
         if self.hass is None:
@@ -2284,7 +2309,10 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         await self.hass.async_add_executor_job(self.update)
 
     def _update_connected_clients(
-        self, primary_records: Optional[Iterable[Mapping[str, Any]]] = None
+        self,
+        primary_records: Optional[Iterable[Mapping[str, Any]]] = None,
+        *,
+        deadline: Optional[float] = None,
     ) -> None:
         raw_payload: Optional[Mapping[str, Any]] = None
 
@@ -2307,6 +2335,11 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
             self._connected_clients = formatted
             self._connected_clients_html = html_value
             self._connected_clients_signature = signature
+            return
+
+        if deadline is not None and self._deadline_exceeded(
+            deadline, "VPN server client lookup"
+        ):
             return
 
         try:
