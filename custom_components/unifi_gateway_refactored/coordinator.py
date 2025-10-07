@@ -1167,15 +1167,19 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
 
         # Improved speedtest trigger logic
         interval = self._speedtest_interval
+        should_trigger = False
+        reason = "disabled"
         if interval > 0:
             last_ts = self._speedtest_last_timestamp(speedtest)
             now_ts = time.time()
 
-            should_trigger = False
             if not speedtest:
                 should_trigger = True
                 reason = "missing"
-            elif last_ts and (now_ts - last_ts) >= interval:
+            elif last_ts is None:
+                should_trigger = True
+                reason = "unknown age"
+            elif (now_ts - last_ts) >= interval:
                 should_trigger = True
                 reason = f"stale ({int(now_ts - last_ts)}s old)"
 
@@ -1187,7 +1191,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                     "Triggered speedtest (reason=%s, interval=%ss, cooldown=%ss)",
                     reason,
                     interval,
-                    cooldown
+                    cooldown,
                 )
             except APIError as err:
                 _LOGGER.warning("Failed to trigger speedtest: %s", err)
