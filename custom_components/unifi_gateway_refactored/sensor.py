@@ -1699,6 +1699,7 @@ class UniFiGatewaySensorBase(
         self._default_icon = getattr(self, "_attr_icon", None)
         self._device_name = device_name or self._derive_device_name()
         self._last_signature: Any | None = None
+        self._last_refresh: datetime | None = None
 
     def _derive_device_name(self) -> str:
         site = self._client.get_site()
@@ -1735,19 +1736,33 @@ class UniFiGatewaySensorBase(
         attrs = self.extra_state_attributes
         icon = getattr(self, "icon", None)
         available = self.available
+        refreshed_at = self._last_refresh or getattr(
+            self.coordinator, "last_update_success_time", None
+        )
         return (
             _freeze_state(native),
             _freeze_state(attrs) if attrs is not None else None,
             icon,
             available,
+            refreshed_at.isoformat() if isinstance(refreshed_at, datetime) else refreshed_at,
         )
 
     def _handle_coordinator_update(self) -> None:
+        self._last_refresh = datetime.now(timezone.utc)
         signature = self._state_signature()
         if signature == self._last_signature and self._last_signature is not None:
             return
         self._last_signature = signature
         self.async_write_ha_state()
+
+    def _augment_extra_state_attributes(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+        augmented = dict(attrs)
+        refreshed = self._last_refresh or getattr(
+            self.coordinator, "last_update_success_time", None
+        )
+        if isinstance(refreshed, datetime):
+            augmented["last_refresh"] = dt_util.as_utc(refreshed).isoformat()
+        return augmented
 
 
 class UniFiGatewayWanSensorBase(UniFiGatewaySensorBase):
@@ -1924,7 +1939,7 @@ class UniFiGatewaySubsystemSensor(UniFiGatewaySensorBase):
                             break
             attrs["ipv6"] = ipv6_value
         attrs.update(self._controller_attrs())
-        return attrs
+        return self._augment_extra_state_attributes(attrs)
 
     def _compute_wlan_user_counts(self) -> Optional[Dict[str, int]]:
         if not (self._wifi_guest_name or self._wifi_iot_name):
@@ -1980,7 +1995,7 @@ class UniFiGatewayAlertsSensor(UniFiGatewaySensorBase):
         data = self.coordinator.data
         attrs = {"alerts": data.alerts if data else []}
         attrs.update(self._controller_attrs())
-        return attrs
+        return self._augment_extra_state_attributes(attrs)
 
 
 class UniFiGatewayVpnUsageSensor(SensorEntity):
@@ -2061,6 +2076,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         self._refresh_task: asyncio.Task[None] | None = None
         self._refresh_lock = asyncio.Lock()
         self._refresh_unsub: Callable[[], None] | None = None
+        self._last_refresh: datetime | None = None
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -2106,13 +2122,25 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         self._schedule_refresh(no_throttle=True)
 
     def _schedule_refresh(self, *, no_throttle: bool = False) -> None:
-        if self.hass is None:
+        hass = self.hass
+        if hass is None:
             return
-        if self._refresh_task is not None and not self._refresh_task.done():
-            return
-        self._refresh_task = self.hass.async_create_task(
-            self._async_refresh(no_throttle=no_throttle)
-        )
+
+        def _create_task() -> None:
+            if self._refresh_task is not None and not self._refresh_task.done():
+                return
+            self._refresh_task = hass.async_create_task(
+                self._async_refresh(no_throttle=no_throttle)
+            )
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop == hass.loop:
+            _create_task()
+        else:
+            hass.loop.call_soon_threadsafe(_create_task)
 
     async def _async_refresh(self, *, no_throttle: bool = False) -> None:
         try:
@@ -2140,11 +2168,16 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
             self.update()
 
     def _async_write_state_if_changed(self) -> None:
+        refresh_time = datetime.now(timezone.utc)
+        self._last_refresh = refresh_time
+        refresh_iso = refresh_time.isoformat()
+        self._attrs["last_refresh"] = refresh_iso
         signature = (
             self._state,
             _freeze_state(self._attrs),
             _freeze_state(self._connected_clients),
             self._connected_clients_html,
+            refresh_iso,
         )
         if signature == self._last_signature and self._last_signature is not None:
             return
@@ -2526,7 +2559,7 @@ class UniFiGatewayFirmwareSensor(UniFiGatewaySensorBase):
         ]
         attrs = {"devices": upgradable}
         attrs.update(self._controller_attrs())
-        return attrs
+        return self._augment_extra_state_attributes(attrs)
 
 
 class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
@@ -2726,7 +2759,7 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
                     attrs["gw_name"] = fallback["gw_name"]
         if data and data.wan_ipv6 and not attrs.get("adress_ipv6"):
             attrs["adress_ipv6"] = data.wan_ipv6
-        return attrs
+        return self._augment_extra_state_attributes(attrs)
 
 
 class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
@@ -2938,7 +2971,7 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
         }
         attrs.update(self._controller_attrs())
         attrs.update(self._wan_common_attributes())
-        return attrs
+        return self._augment_extra_state_attributes(attrs)
 
 
 class UniFiGatewayWanIpv6Sensor(UniFiGatewayWanSensorBase):
@@ -3001,7 +3034,7 @@ class UniFiGatewayWanIpv6Sensor(UniFiGatewayWanSensorBase):
             attrs["adress_ipv6"] = attrs.get("ipv6")
         attrs.update(self._wan_common_attributes())
         attrs.update(self._controller_attrs())
-        return attrs
+        return self._augment_extra_state_attributes(attrs)
 
 
 class UniFiGatewayWanIspSensor(UniFiGatewayWanSensorBase):
@@ -3097,7 +3130,7 @@ class UniFiGatewayWanIspSensor(UniFiGatewayWanSensorBase):
         }
         attrs.update(self._controller_attrs())
         attrs.update(self._wan_common_attributes())
-        return attrs
+        return self._augment_extra_state_attributes(attrs)
 
 
 class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
@@ -3220,7 +3253,7 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
             "ip_leases": leases,
         }
         attrs.update(self._controller_attrs())
-        return attrs
+        return self._augment_extra_state_attributes(attrs)
 
 
 class UniFiGatewayWlanClientsSensor(UniFiGatewaySensorBase):
@@ -3298,7 +3331,7 @@ class UniFiGatewayWlanClientsSensor(UniFiGatewaySensorBase):
                     break
         attrs["ipv6_address"] = ipv6_address
         attrs.update(self._controller_attrs())
-        return attrs
+        return self._augment_extra_state_attributes(attrs)
 
 
 class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
@@ -3363,7 +3396,7 @@ class UniFiGatewaySpeedtestSensor(UniFiGatewaySensorBase):
             attrs.update(server_details)
 
         attrs.update(self._controller_attrs())
-        return attrs
+        return self._augment_extra_state_attributes(attrs)
 
     def _get_speedtest_status(self, record: Optional[Dict[str, Any]]) -> str:
         """Get normalized speedtest status."""
