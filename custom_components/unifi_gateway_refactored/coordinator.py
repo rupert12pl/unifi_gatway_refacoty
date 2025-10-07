@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
 import re
 import time
@@ -20,7 +20,13 @@ from .cloud_client import (
     UiCloudRateLimitError,
     UiCloudRequestError,
 )
-from .const import ATTR_GW_MAC, ATTR_REASON, CONF_GW_MAC, DOMAIN
+from .const import (
+    ATTR_GW_MAC,
+    ATTR_REASON,
+    CONF_GW_MAC,
+    DOMAIN,
+    NETWORK_STATUS_UPDATE_INTERVAL,
+)
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 from .utils import normalize_mac
 
@@ -107,7 +113,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
             hass,
             logger=_LOGGER,
             name=f"{DOMAIN} data",
-            update_interval=timedelta(seconds=15),
+            update_interval=NETWORK_STATUS_UPDATE_INTERVAL,
         )
         if self._ui_cloud_client is not None:
             _LOGGER.info("Using UniFi Cloud API for WAN IPv6 lookups")

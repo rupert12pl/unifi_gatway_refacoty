@@ -11,7 +11,7 @@ import voluptuous as vol
 from voluptuous_serialize import convert  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:  # pragma: no cover - static typing support
-    from voluptuous.validators import Any as VolAny
+    from voluptuous.validators import Any as VolAny  # type: ignore[import-not-found]
 else:  # pragma: no cover - runtime compatibility with stubs
     try:
         from voluptuous.validators import Any as VolAny  # type: ignore[attr-defined]

@@ -31,6 +31,7 @@ from .const import (
     CONF_WIFI_IOT,
     CONF_UI_API_KEY,
     DATA_RUNNER,
+    DATA_MANUAL_REFRESHERS,
     DATA_UNDO_TIMER,
     DEFAULT_PORT,
     DEFAULT_SITE,
@@ -251,12 +252,13 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
 
     base_name = entry.title or entry.data.get(CONF_HOST) or "UniFi Gateway"
 
-    entry_data = hass.data[DOMAIN][entry.entry_id] = {
+    entry_data: dict[str, Any] = {
         "client": client,
         "coordinator": coordinator,
         "on_result_cb": _noop_result_callback,
         DATA_RUNNER: None,
         DATA_UNDO_TIMER: None,
+        DATA_MANUAL_REFRESHERS: set(),
         "speedtest_entities": list(entity_ids),
         "speedtest_interval_minutes": interval_minutes,
         "device_name": base_name,
@@ -264,6 +266,8 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
         "wifi_iot": wifi_iot,
         "wifi_overrides": {"guest": wifi_guest, "iot": wifi_iot},
     }
+
+    hass.data[DOMAIN][entry.entry_id] = entry_data
 
     async def _dispatch_result(
         success: bool, duration_ms: int, error: str | None, trace_id: str
