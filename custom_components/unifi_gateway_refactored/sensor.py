@@ -2106,13 +2106,34 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         self._schedule_refresh(no_throttle=True)
 
     def _schedule_refresh(self, *, no_throttle: bool = False) -> None:
-        if self.hass is None:
+        hass = self.hass
+        if hass is None:
             return
-        if self._refresh_task is not None and not self._refresh_task.done():
-            return
-        self._refresh_task = self.hass.async_create_task(
-            self._async_refresh(no_throttle=no_throttle)
-        )
+
+        def _schedule_on_loop() -> None:
+            if self._refresh_task is not None and not self._refresh_task.done():
+                return
+
+            coroutine = self._async_refresh(no_throttle=no_throttle)
+            try:
+                self._refresh_task = hass.loop.create_task(coroutine)
+            except RuntimeError as err:
+                coroutine.close()
+                _LOGGER.debug(
+                    "Unable to schedule VPN usage sensor refresh on loop: %s",
+                    err,
+                )
+                self._refresh_task = None
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is hass.loop:
+            _schedule_on_loop()
+        else:
+            hass.loop.call_soon_threadsafe(_schedule_on_loop)
 
     async def _async_refresh(self, *, no_throttle: bool = False) -> None:
         try:
