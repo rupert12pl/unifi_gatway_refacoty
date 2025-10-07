@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from homeassistant.const import Platform
 
 DOMAIN = "unifi_gateway_refactored"
@@ -37,6 +39,9 @@ DEFAULT_SPEEDTEST_ENTITIES = (
 # Monitoring keys
 DATA_RUNNER = "runner"
 DATA_UNDO_TIMER = "undo_timer"
+DATA_MANUAL_REFRESHERS = "manual_refresh_callbacks"
+
+NETWORK_STATUS_UPDATE_INTERVAL = timedelta(seconds=15)
 
 EVT_RUN_START = f"{DOMAIN}.speedtest.start"
 EVT_RUN_END = f"{DOMAIN}.speedtest.end"
