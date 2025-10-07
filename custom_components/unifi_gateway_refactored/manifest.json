@@ -23,5 +23,5 @@
     "custom_components.unifi_gateway_refactored.cloud_client"
   ],
   "logo": "custom_components/unifi_gateway_refactored/logo.svg",
-  "icon": "mdi:router-network"
+  "icon": "custom_components/unifi_gateway_refactored/icon.svg"
 }

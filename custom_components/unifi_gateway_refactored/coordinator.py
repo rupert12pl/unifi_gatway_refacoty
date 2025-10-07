@@ -1167,12 +1167,11 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
 
         # Improved speedtest trigger logic
         interval = self._speedtest_interval
-        should_trigger = False
-        reason: str | None = None
         if interval > 0:
             last_ts = self._speedtest_last_timestamp(speedtest)
             now_ts = time.time()
 
+            should_trigger = False
             if not speedtest:
                 should_trigger = True
                 reason = "missing"
@@ -1186,7 +1185,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 self._client.maybe_start_speedtest(cooldown_sec=cooldown)
                 _LOGGER.info(
                     "Triggered speedtest (reason=%s, interval=%ss, cooldown=%ss)",
-                    reason or "interval",
+                    reason,
                     interval,
                     cooldown
                 )
