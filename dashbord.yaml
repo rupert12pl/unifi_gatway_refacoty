@@ -117,15 +117,26 @@ defaults:
     height: 75
     line_width: 1
     font_size: 70
-    hours_to_show: 72
-    points_per_hour: 10
+    hours_to_show: 48
+    points_per_hour: 6
     align_state: center
     show:
       fill: fade
 
   graph_common_dense: &graph_common_dense
     <<: *graph_common
-    points_per_hour: 20
+    hours_to_show: 24
+    points_per_hour: 12
+
+  tile_network: &tile_network
+    type: tile
+    color: accent
+    show_entity_picture: false
+    features:
+      - type: graph
+        graph: line
+        hours_to_show: 24
+        detail: 1
 
   ring_common: &ring_common
     type: custom:ring-tile
@@ -336,13 +347,9 @@ sections:
     cards:
       - { type: heading, heading: Performance, heading_style: title, icon: cil:docker-watchtower }
 
-      - type: custom:simple-swipe-card
-        card_spacing: 5
-        swipe_direction: vertical
-        auto_hide_pagination: 0
-        loop_mode: loopback
-        enable_auto_swipe: true
-        auto_swipe_interval: 4000
+      - type: grid
+        columns: 3
+        square: false
         cards:
           - <<: *ring_common
             entity: *e_lat_cf
@@ -353,15 +360,11 @@ sections:
           - <<: *ring_common
             entity: *e_lat_ms
             name: Microsoft
-        grid_options: { columns: 6, rows: 3 }
+        grid_options: { columns: 6 }
 
-      - type: custom:simple-swipe-card
-        card_spacing: 5
-        swipe_direction: vertical
-        auto_hide_pagination: 0
-        loop_mode: loopback
-        enable_auto_swipe: true
-        auto_swipe_interval: 4000
+      - type: grid
+        columns: 2
+        square: false
         cards:
           - <<: *ring_common
             entity: *e_udm_cpu
@@ -371,19 +374,15 @@ sections:
             name: RAM
           - <<: *ring_common
             entity: *e_udm_ctmp
-            name: CPU
+            name: CPU Temp
           - <<: *ring_common
             entity: *e_udm_ptmp
-            name: PHY
-        grid_options: { columns: 6, rows: 3 }
+            name: PHY Temp
+        grid_options: { columns: 6 }
 
-      - type: custom:simple-swipe-card
-        card_spacing: 5
-        swipe_direction: vertical
-        auto_hide_pagination: 0
-        loop_mode: loopback
-        enable_auto_swipe: true
-        auto_swipe_interval: 4000
+      - type: grid
+        columns: 2
+        square: false
         cards:
           - <<: *ring_common
             entity: *e_speed_dl
@@ -393,19 +392,16 @@ sections:
             entity: *e_speed_up
             name: Upload
             max: *speed_up_max
-        grid_options: { columns: 6, rows: 3 }
+        grid_options: { columns: 6 }
 
-      - type: custom:simple-swipe-card
-        swipe_direction: vertical
-        auto_hide_pagination: 0
-        loop_mode: infinite
-        enable_auto_swipe: true
-        auto_swipe_interval: 4000
+      - type: grid
+        columns: 3
+        square: false
         cards:
-          - { type: entity, entity: *e_wlan, attribute: num_user, state_color: true, icon: mdi:account-group-outline, grid_options: { columns: 6, rows: 3 } }
-          - { type: entity, entity: *e_alerts, grid_options: { columns: 6, rows: 3 } }
-          - { type: entity, entity: *e_lan, attribute: num_user, state_color: true, icon: mdi:account-group-outline, grid_options: { columns: 6, rows: 3 } }
-        grid_options: { columns: 6, rows: 3 }
+          - { type: entity, entity: *e_wlan, attribute: num_user, name: WLAN users, state_color: true, icon: mdi:account-group-outline }
+          - { type: entity, entity: *e_alerts, name: Alerts }
+          - { type: entity, entity: *e_lan, attribute: num_user, name: LAN users, state_color: true, icon: mdi:account-group-outline }
+        grid_options: { columns: 6 }
 
   # =====================
   # WAN/LAN/WLAN (Entities)
@@ -434,7 +430,8 @@ sections:
       - { type: heading, icon: mdi:lan, heading: LAN, heading_style: subtitle,
           badges: [ { type: entity, entity: *e_lan, show_state: true, show_icon: true, state_content: user_total } ] }
 
-      - type: entities
+      - &lan_infrastructure_entities
+        type: entities
         state_color: false
         show_header_toggle: false
         entities:
@@ -481,18 +478,8 @@ sections:
 
       - { type: heading, icon: phu:ubiquiti-udm-pro, heading: Infrastructure, heading_style: subtitle }
 
-      - type: entities
+      - <<: *lan_infrastructure_entities
         title: Infrastructure
-        state_color: false
-        show_header_toggle: false
-        entities:
-          - { entity: *e_lan, name: Status }
-          - { entity: *e_up_us8,        name: "Uptime US 8",          icon: mdi:lan }
-          - { entity: *e_up_usw_flex,   name: "Uptime USW Flex",      icon: mdi:lan }
-          - { entity: *e_up_usw_flex_m, name: "Uptime USW Flex mini", icon: mdi:lan }
-          - { entity: *e_up_lite8poe,   name: "Uptime USW Lite 8POE", icon: mdi:lan }
-          - { entity: *e_up_udm,        name: "Uptime UDM Pro SE",    icon: mdi:lan }
-          - { entity: *e_lan, name: Switches, <<: *mer_devices }
 
   # =====================
   # VPN — Serwery
@@ -678,15 +665,26 @@ sections:
     cards:
       - { type: heading, heading: WiFi, heading_style: title }
 
-      - type: entities
-        state_color: false
-        show_header_toggle: false
-        entities:
-          - { entity: *e_ram_z }
-          - { entity: *e_ram_ui }
-          - { entity: *e_ram_ui_iot }
-          - { entity: *e_ram5 }
-          - { entity: *e_ram_gu }
+      - type: grid
+        columns: 3
+        square: false
+        cards:
+          - <<: *tile_network
+            entity: *e_ram_z
+            name: RAM-Z
+          - <<: *tile_network
+            entity: *e_ram_ui
+            name: RAM-UI
+          - <<: *tile_network
+            entity: *e_ram_ui_iot
+            name: RAM-UI IoT
+          - <<: *tile_network
+            entity: *e_ram5
+            name: RAM-5G
+          - <<: *tile_network
+            entity: *e_ram_gu
+            name: RAM-Guest
+        grid_options: { columns: 12 }
 
       - <<: *graph_common_dense
         name: Users
