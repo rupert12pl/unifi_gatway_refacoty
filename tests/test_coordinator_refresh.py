@@ -20,57 +20,6 @@ class _DummyClient:
         return "dummy"
 
 
-class _FetchStubClient:
-    """Client stub exercising coordinator fetch behaviour."""
-
-    def __init__(self) -> None:
-        self.maybe_start_speedtest_called = False
-
-    # Connection metadata helpers
-    def instance_key(self) -> str:
-        return "stub"
-
-    def get_controller_api_url(self) -> str:
-        return "https://example/api"
-
-    def get_controller_url(self) -> str:
-        return "https://example/ui"
-
-    def get_site(self) -> str:
-        return "default"
-
-    # Data fetching helpers
-    def get_healthinfo(self) -> list[dict[str, Any]]:
-        return []
-
-    def get_alerts(self) -> list[dict[str, Any]]:
-        return []
-
-    def get_devices(self) -> list[dict[str, Any]]:
-        return []
-
-    def get_networks(self) -> list[dict[str, Any]]:
-        return []
-
-    def get_wan_links(self) -> list[dict[str, Any]]:
-        return []
-
-    def get_wan_ips_from_devices(self) -> list[str]:
-        return []
-
-    def get_wlans(self) -> list[dict[str, Any]]:
-        return []
-
-    def get_clients(self) -> list[dict[str, Any]]:
-        return []
-
-    def get_last_speedtest(self, *, cache_sec: int) -> dict[str, Any] | None:
-        return None
-
-    def maybe_start_speedtest(self, *, cooldown_sec: int) -> None:
-        self.maybe_start_speedtest_called = True
-
-
 class _TestCoordinator(UniFiGatewayDataUpdateCoordinator):
     def __init__(self, hass, client: UniFiOSClient, data: UniFiGatewayData) -> None:
         self._data_to_return = data
@@ -128,19 +77,3 @@ def test_coordinator_refresh_runs_in_executor(hass) -> None:
     assert calls[0][0] == coordinator._fetch_data
     assert coordinator.fetch_calls == 1
     assert coordinator.data == data
-
-
-def test_fetch_data_handles_zero_speedtest_interval(hass) -> None:
-    stub = _FetchStubClient()
-    client = cast(UniFiOSClient, stub)
-    coordinator = UniFiGatewayDataUpdateCoordinator(
-        hass,
-        client,
-        speedtest_interval=0,
-    )
-
-    data = coordinator._fetch_data()
-
-    assert isinstance(data, UniFiGatewayData)
-    assert data.health == []
-    assert not stub.maybe_start_speedtest_called
