@@ -24,6 +24,7 @@ vars:
     # Agregaty
     lan:  &e_lan  sensor.lan
     wlan: &e_wlan sensor.wlan
+    wan:  &e_wan  sensor.wan
 
     # Latencje WAN
     wan_latency_cloudflare: &e_lat_cf  sensor.kat03_udm_cloudflare_wan_latency
@@ -60,6 +61,7 @@ vars:
     ram_ui_iot:  &e_ram_ui_iot  sensor.ram_ui_iot
     ram5:        &e_ram5        sensor.ram5
     ram_gu:      &e_ram_gu      sensor.ram_gu
+    wlan_uptime: &e_wlan_uptime sensor.kat01_u6_ent_uptime
 
     # VPN serwery (zmieniono nazwę vpn_wg_family)
     vpn_wg_family:   &e_vpn_wg_family   sensor.vpn_wireguard_server_kat01_family
@@ -67,6 +69,11 @@ vars:
     vpn_wg_main:     &e_vpn_wg_main     sensor.vpn_wireguard_server_kat01_wireguard
     vpn_wg_family_l: &e_vpn_wg_family_l sensor.vpn_wireguard_server_family_lan
     vpn_uid:         &e_vpn_uid         sensor.vpn_uid_server_kat03_udm
+    vpn_wg_family_tpl:   &tpl_vpn_wg_family   "'sensor.vpn_wireguard_server_kat01_family'"
+    vpn_ovpn_srv_tpl:    &tpl_vpn_ovpn_srv    "'sensor.vpn_openvpn_server_kat01_openvpn'"
+    vpn_wg_main_tpl:     &tpl_vpn_wg_main     "'sensor.vpn_wireguard_server_kat01_wireguard'"
+    vpn_wg_family_l_tpl: &tpl_vpn_wg_family_l "'sensor.vpn_wireguard_server_family_lan'"
+    vpn_uid_tpl:         &tpl_vpn_uid         "'sensor.vpn_uid_server_kat03_udm'"
 
     # VPN klienci
     vpn_cli_es: &e_vpn_cli_es sensor.vpn_openvpn_client_proton_hiszpania
@@ -415,7 +422,7 @@ sections:
           - { entity: *e_lat_go,  name: Google latency,    icon: mdi:google }
           - { entity: *e_lat_ms,  name: Microsoft latency, icon: mdi:microsoft }
           - { entity: *e_lat_cf,  name: Cloudflare latency,icon: phu:cloudflare }
-          - entity: sensor.wan
+          - entity: *e_wan
             name: Gateways
             <<: *mer_devices
             entities:
@@ -446,7 +453,7 @@ sections:
       - type: entities
         entities:
           - { entity: *e_wlan, name: Status }
-          - { entity: sensor.kat01_u6_ent_uptime, name: Uptime, icon: mdi:wifi }
+          - { entity: *e_wlan_uptime, name: Uptime, icon: mdi:wifi }
           - entity: *e_wlan
             name: Users
             icon: mdi:wifi
@@ -549,28 +556,28 @@ sections:
       - type: custom:html-template-card
         ignore_line_breaks: true
         content: >
-          <big><span style="color: grey;"><center>{{ state_attr('sensor.vpn_wireguard_server_kat01_family','vpn_name') }}</center></big>
-          {{ state_attr('sensor.vpn_wireguard_server_kat01_family','connected_clients_html') }}
+          <big><span style="color: grey;"><center>{{ state_attr(*tpl_vpn_wg_family, "vpn_name") }}</center></big>
+          {{ state_attr(*tpl_vpn_wg_family, "connected_clients_html") }}
       - type: custom:html-template-card
         ignore_line_breaks: true
         content: >
-          <big><span style="color: grey;"><center>{{ state_attr('sensor.vpn_openvpn_server_kat01_openvpn','vpn_name') }}</center></big>
-          {{ state_attr('sensor.vpn_openvpn_server_kat01_openvpn','connected_clients_html') }}
+          <big><span style="color: grey;"><center>{{ state_attr(*tpl_vpn_ovpn_srv, "vpn_name") }}</center></big>
+          {{ state_attr(*tpl_vpn_ovpn_srv, "connected_clients_html") }}
       - type: custom:html-template-card
         ignore_line_breaks: true
         content: >
-          <big><span style="color: grey;"><center>{{ state_attr('sensor.vpn_wireguard_server_kat01_wireguard','vpn_name') }}</center></big>
-          {{ state_attr('sensor.vpn_wireguard_server_kat01_wireguard','connected_clients_html') }}
+          <big><span style="color: grey;"><center>{{ state_attr(*tpl_vpn_wg_main, "vpn_name") }}</center></big>
+          {{ state_attr(*tpl_vpn_wg_main, "connected_clients_html") }}
       - type: custom:html-template-card
         ignore_line_breaks: true
         content: >
-          <big><span style="color: grey;"><center>{{ state_attr('sensor.vpn_wireguard_server_family_lan','vpn_name') }}</center></big>
-          {{ state_attr('sensor.vpn_wireguard_server_family_lan','connected_clients_html') }}
+          <big><span style="color: grey;"><center>{{ state_attr(*tpl_vpn_wg_family_l, "vpn_name") }}</center></big>
+          {{ state_attr(*tpl_vpn_wg_family_l, "connected_clients_html") }}
       - type: custom:html-template-card
         ignore_line_breaks: true
         content: >
-          <big><span style="color: grey;"><center>{{ state_attr('sensor.vpn_uid_server_kat03_udm','vpn_name') }}</center></big>
-          {{ state_attr('sensor.vpn_uid_server_kat03_udm','connected_clients_html') }}
+          <big><span style="color: grey;"><center>{{ state_attr(*tpl_vpn_uid, "vpn_name") }}</center></big>
+          {{ state_attr(*tpl_vpn_uid, "connected_clients_html") }}
 
   # =====================
   # VPN — Klienci
