@@ -131,7 +131,6 @@ ManualRefreshCallback = Callable[[], Awaitable[object] | None]
 class NetworkStatusRefreshButton(ButtonEntity):
     _attr_name = "Refresh Network Status"
     _attr_icon = "mdi:refresh"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(
         self,
