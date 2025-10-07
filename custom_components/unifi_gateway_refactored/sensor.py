@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from functools import lru_cache, partial
 import html
 import hashlib
@@ -58,7 +58,13 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from homeassistant.util import Throttle
-from .const import ATTR_GW_MAC, CONF_HOST, DOMAIN
+from .const import (
+    ATTR_GW_MAC,
+    CONF_HOST,
+    DATA_MANUAL_REFRESHERS,
+    DOMAIN,
+    NETWORK_STATUS_UPDATE_INTERVAL,
+)
 from .coordinator import UniFiGatewayData, UniFiGatewayDataUpdateCoordinator
 from .unifi_client import APIError, ConnectivityError, UniFiOSClient
 
@@ -84,7 +90,7 @@ IPWhois: Type[_IPWhoisProtocol] | None = cast(Type[_IPWhoisProtocol] | None, _IP
 _LOGGER = logging.getLogger(__name__)
 
 
-VPN_MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=10)
+VPN_MIN_TIME_BETWEEN_UPDATES = NETWORK_STATUS_UPDATE_INTERVAL
 
 
 def _freeze_state(value: Any) -> Any:
@@ -2001,6 +2007,7 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
         self._server = server
         self._linked_network = linked_network or {}
         self._attr_unique_id = unique_id
+        self._entry_id = entry_id
 
         self._srv_id = server.get("id")
         self._srv_name = server.get("name") or "VPN"
@@ -2082,6 +2089,20 @@ class UniFiGatewayVpnUsageSensor(SensorEntity):
 
             remove_callback(_cancel_refresh_task)
 
+        store = self.hass.data.get(DOMAIN, {}).get(self._entry_id)
+        if isinstance(store, dict):
+            callbacks = store.setdefault(DATA_MANUAL_REFRESHERS, set())
+            callbacks.add(self._manual_refresh_callback)
+
+            if callable(remove_callback):
+                def _remove_manual_callback() -> None:
+                    callbacks.discard(self._manual_refresh_callback)
+
+                remove_callback(_remove_manual_callback)
+
+        self._schedule_refresh(no_throttle=True)
+
+    def _manual_refresh_callback(self) -> None:
         self._schedule_refresh(no_throttle=True)
 
     def _schedule_refresh(self, *, no_throttle: bool = False) -> None:

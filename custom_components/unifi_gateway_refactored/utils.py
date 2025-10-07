@@ -15,6 +15,12 @@ def build_reset_button_unique_id(entry_id: str) -> str:
     return f"{entry_id}_reset_gateway"
 
 
+def build_status_refresh_button_unique_id(entry_id: str) -> str:
+    """Return a stable unique ID for the status refresh button entity."""
+
+    return f"{entry_id}_refresh_network_status"
+
+
 def normalize_mac(mac: str | None) -> str | None:
     """Normalize MAC addresses to lowercase colon-delimited format."""
 
@@ -42,5 +48,6 @@ def normalize_mac(mac: str | None) -> str | None:
 __all__ = [
     "build_speedtest_button_unique_id",
     "build_reset_button_unique_id",
+    "build_status_refresh_button_unique_id",
     "normalize_mac",
 ]
