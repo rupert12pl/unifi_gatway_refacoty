@@ -8,7 +8,17 @@ import re
 import socket
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Collection,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from urllib.parse import urlsplit
 
@@ -349,6 +359,7 @@ class UniFiOSClient:
         json_payload: Any = None,
         data: Any = None,
         timeout: Optional[int] = None,
+        expected_statuses: Optional[Collection[int]] = None,
     ) -> tuple["requests.Response", str]:
         url = self._join(path)
         req_timeout = timeout or self._timeout
@@ -359,6 +370,7 @@ class UniFiOSClient:
             kwargs["json"] = json_payload
         if data is not None:
             kwargs["data"] = data
+        expected_status_codes = set(expected_statuses or ())
         label = self._login_endpoint_label(url)
         _LOGGER.debug("UniFi request %s %s initiated", method, label)
         requests = self._requests_module()
@@ -432,7 +444,7 @@ class UniFiOSClient:
                 body=body_preview,
             )
         if status >= 400:
-            is_expected = status == 404 or (
+            is_expected = status in expected_status_codes or status == 404 or (
                 status == 400
                 and body_preview is not None
                 and "api.err.Invalid" in body_preview
@@ -512,6 +524,7 @@ class UniFiOSClient:
         json_payload: Any = None,
         data: Any = None,
         timeout: Optional[int] = None,
+        expected_statuses: Optional[Collection[int]] = None,
     ) -> Any:
         response, text = self._request(
             method,
@@ -520,6 +533,7 @@ class UniFiOSClient:
             json_payload=json_payload,
             data=data,
             timeout=timeout,
+            expected_statuses=expected_statuses,
         )
         if not text:
             return None
@@ -1259,13 +1273,19 @@ class UniFiOSClient:
                 continue
             try:
                 if method.upper() == "GET":
-                    response = self._request_json("GET", path, timeout=timeout)
+                    response = self._request_json(
+                        "GET",
+                        path,
+                        timeout=timeout,
+                        expected_statuses=(405,),
+                    )
                 else:
                     response = self._request_json(
                         method.upper(),
                         path,
                         json_payload=payload,
                         timeout=timeout,
+                        expected_statuses=(405,),
                     )
                 return response, path
             except APIError as err:
