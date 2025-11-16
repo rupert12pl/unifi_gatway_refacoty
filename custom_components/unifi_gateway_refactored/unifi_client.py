@@ -160,8 +160,19 @@ class UniFiOSClient:
         # Stable instance identifier – must NOT depend on autodetected _base so that
         # Home Assistant keeps existing entities when the controller path changes
         # between /proxy/network, /network and /v2 variants.
-        basis = f"{self._net_base()}|{host}|{site_id}|{instance_hint or ''}"
+        basis = f"{self._scheme}://{host}:{port}|{site_id}|{instance_hint or ''}"
         self._iid = hashlib.sha256(basis.encode()).hexdigest()[:12]
+        self._legacy_iids: set[str] = set()
+        legacy_prefixes = {self._path_prefix, "/proxy/network", "/network", ""}
+        for prefix in legacy_prefixes:
+            net_base = f"{self._scheme}://{host}:{port}"
+            cleaned = str(prefix or "").strip("/")
+            if cleaned:
+                net_base = f"{net_base}/{cleaned}"
+            legacy_basis = f"{net_base}|{host}|{site_id}|{instance_hint or ''}"
+            legacy_iid = hashlib.sha256(legacy_basis.encode()).hexdigest()[:12]
+            if legacy_iid != self._iid:
+                self._legacy_iids.add(legacy_iid)
 
         self._csrf: Optional[str] = None
         if not self._username or not self._password:
@@ -1137,6 +1148,11 @@ class UniFiOSClient:
 
     def instance_key(self) -> str:
         return self._iid
+
+    def legacy_instance_keys(self) -> set[str]:
+        """Return legacy instance identifiers derived from older base selection."""
+
+        return set(self._legacy_iids)
 
     def get_controller_url(self):
         parts = urlsplit(self._base)

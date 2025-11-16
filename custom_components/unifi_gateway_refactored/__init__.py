@@ -295,6 +295,7 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
     )
 
     await _async_migrate_speedtest_button_unique_id(hass, entry)
+    await _async_migrate_instance_prefix_unique_ids(hass, entry, client)
     await _async_migrate_interface_unique_ids(hass, entry, client, coordinator.data)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -377,6 +378,77 @@ async def _async_migrate_speedtest_button_unique_id(
         )
 
 
+async def _async_migrate_instance_prefix_unique_ids(
+    hass: "HomeAssistant", entry: "ConfigEntry", client: UniFiOSClient
+) -> None:
+    """Migrate entities bound to legacy instance keys after base changes."""
+
+    from homeassistant.helpers import entity_registry as er
+    from .sensor import SUBSYSTEM_SENSORS
+
+    try:
+        legacy_keys = set(client.legacy_instance_keys())
+    except Exception:  # pragma: no cover - defensive guard
+        legacy_keys = set()
+
+    new_key = client.instance_key()
+    legacy_keys.discard(new_key)
+    if not legacy_keys:
+        _LOGGER.debug(
+            "No legacy instance keys to migrate for entry %s", entry.entry_id
+        )
+        return
+
+    new_prefix = f"unifigw_{new_key}"
+    mapping: dict[str, str] = {}
+
+    for old_key in legacy_keys:
+        old_prefix = f"unifigw_{old_key}"
+        for subsystem in SUBSYSTEM_SENSORS:
+            mapping[f"{old_prefix}_{subsystem}"] = f"{new_prefix}_{subsystem}"
+        mapping[f"{old_prefix}_alerts"] = f"{new_prefix}_alerts"
+        mapping[f"{old_prefix}_firmware"] = f"{new_prefix}_firmware"
+        for suffix in ("download", "upload", "ping"):
+            mapping[f"{old_prefix}_speedtest_{suffix}"] = (
+                f"{new_prefix}_speedtest_{suffix}"
+            )
+
+    if not mapping:
+        _LOGGER.debug(
+            "Legacy instance key migration skipped (no mapping) for entry %s",
+            entry.entry_id,
+        )
+        return
+
+    migrated = 0
+
+    async def _migrate(entity_entry: "RegistryEntry") -> dict[str, str] | None:
+        nonlocal migrated
+        if entity_entry.config_entry_id != entry.entry_id:
+            return None
+        unique_id = entity_entry.unique_id
+        if not unique_id:
+            return None
+        new_uid = mapping.get(unique_id)
+        if new_uid:
+            migrated += 1
+            return {"new_unique_id": new_uid}
+        return None
+
+    await er.async_migrate_entries(hass, DOMAIN, _migrate)
+
+    if migrated:
+        _LOGGER.info(
+            "Migrated %s entities to stable instance key for entry %s",
+            migrated,
+            entry.entry_id,
+        )
+    else:
+        _LOGGER.debug(
+            "No instance key migrations applied for entry %s", entry.entry_id
+        )
+
+
 async def _async_migrate_interface_unique_ids(
     hass: "HomeAssistant",
     entry: "ConfigEntry",
@@ -389,6 +461,7 @@ async def _async_migrate_interface_unique_ids(
     from .sensor import (
         _wan_identifier_candidates,
         build_lan_unique_id,
+        build_legacy_wan_unique_id,
         build_wan_unique_id,
         build_wlan_unique_id,
     )
@@ -411,6 +484,8 @@ async def _async_migrate_interface_unique_ids(
             old_uid = f"{instance_prefix}_wan_{old_key}_{suffix}"
             new_uid = build_wan_unique_id(entry.entry_id, link, suffix)
             mapping[old_uid] = new_uid
+            legacy_uid = build_legacy_wan_unique_id(entry.entry_id, link, suffix)
+            mapping[legacy_uid] = new_uid
 
     for network in data.lan_networks:
         if not isinstance(network, dict):
