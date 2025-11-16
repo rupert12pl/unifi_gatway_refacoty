@@ -595,6 +595,30 @@ def _sanitize_stable_key(value: str) -> str:
 
 
 def wan_interface_key(link: Dict[str, Any]) -> str:
+    """Return a stable identifier for a WAN link."""
+
+    def _first_nonempty(*keys: str, default: str | None = None) -> str:
+        for key in keys:
+            value = link.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return default or "wan"
+
+    link_id = _first_nonempty("id", "_id")
+    if link_id not in (None, ""):
+        return _sanitize_stable_key(str(link_id))
+
+    ifname = _first_nonempty("ifname", "interface", default=None)
+    if ifname not in (None, ""):
+        return _sanitize_stable_key(str(ifname))
+
+    name = _first_nonempty("name", "display_name", "wan_name", default="wan")
+    return _sanitize_stable_key(str(name))
+
+
+def _legacy_wan_interface_key(link: Dict[str, Any]) -> str:
+    """Return the legacy WAN identifier used in previous releases."""
+
     link_id = str(link.get("id") or link.get("_id") or link.get("ifname") or "wan")
     link_name = link.get("name") or link_id
     identifiers = _wan_identifier_candidates(link_id, link_name, link)
@@ -769,6 +793,10 @@ def _parse_protocol_and_mode(vpn_type_value: Optional[str]) -> Tuple[str, str]:
 
 def build_wan_unique_id(entry_id: str, link: Dict[str, Any], suffix: str) -> str:
     return f"{entry_id}::wan::{wan_interface_key(link)}::{suffix}"
+
+
+def build_legacy_wan_unique_id(entry_id: str, link: Dict[str, Any], suffix: str) -> str:
+    return f"{entry_id}::wan::{_legacy_wan_interface_key(link)}::{suffix}"
 
 
 def build_lan_unique_id(entry_id: str, network: Dict[str, Any]) -> str:
