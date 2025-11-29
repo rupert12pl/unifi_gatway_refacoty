@@ -458,7 +458,10 @@ class UniFiOSClient:
             is_expected = status in expected_status_codes or status == 404 or (
                 status == 400
                 and body_preview is not None
-                and "api.err.Invalid" in body_preview
+                and (
+                    "api.err.Invalid" in body_preview
+                    or "api.err.IdRequired" in body_preview
+                )
             )
             log_func = _LOGGER.debug if is_expected else _LOGGER.error
             log_func(
@@ -763,7 +766,17 @@ class UniFiOSClient:
 
     def get_clients(self) -> List[Dict[str, Any]]:
         for path in ("stat/sta", "stat/associated", "stat/user"):
-            clients = self._get_list(self._site_path(path))
+            try:
+                clients = self._get_list(self._site_path(path))
+            except APIError as err:
+                if err.status_code == 400 and path == "stat/user":
+                    _LOGGER.debug(
+                        "Skipping UniFi clients endpoint %s due to HTTP 400 (likely requires id)",
+                        path,
+                    )
+                    continue
+                raise
+
             if clients:
                 return clients
         return self._get_list(self._site_path("stat/alluser"))
