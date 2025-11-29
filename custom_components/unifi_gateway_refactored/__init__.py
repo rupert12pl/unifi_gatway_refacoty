@@ -294,7 +294,7 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
         entry.entry_id,
     )
 
-    await _async_migrate_speedtest_button_unique_id(hass, entry)
+    await _async_migrate_speedtest_button_unique_id(hass, entry, client)
     await _async_migrate_instance_prefix_unique_ids(hass, entry, client)
     await _async_migrate_interface_unique_ids(hass, entry, client, coordinator.data)
 
@@ -342,9 +342,9 @@ async def async_unload_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> boo
 
 
 async def _async_migrate_speedtest_button_unique_id(
-    hass: "HomeAssistant", entry: "ConfigEntry"
+    hass: "HomeAssistant", entry: "ConfigEntry", client: UniFiOSClient
 ) -> None:
-    """Ensure the Run Speedtest button unique ID is namespaced per config entry."""
+    """Ensure the Run Speedtest button unique ID is namespaced per controller."""
 
     from homeassistant.helpers import entity_registry as er
 
@@ -353,8 +353,10 @@ async def _async_migrate_speedtest_button_unique_id(
     except ImportError:  # pragma: no cover - defensive guard
         return
 
+    controller_id = client.instance_key()
     old_unique_id = "unifi_gateway_refactored_run_speedtest"
-    new_unique_id = build_speedtest_button_unique_id(entry.entry_id)
+    legacy_unique_id = build_speedtest_button_unique_id(entry.entry_id)
+    new_unique_id = build_speedtest_button_unique_id(controller_id)
 
     if old_unique_id == new_unique_id:
         return
@@ -365,7 +367,7 @@ async def _async_migrate_speedtest_button_unique_id(
         nonlocal migrated
         if entity_entry.config_entry_id != entry.entry_id:
             return None
-        if entity_entry.unique_id != old_unique_id:
+        if entity_entry.unique_id not in {old_unique_id, legacy_unique_id}:
             return None
         migrated = True
         return {"new_unique_id": new_unique_id}
@@ -385,12 +387,18 @@ async def _async_migrate_instance_prefix_unique_ids(
 
     from homeassistant.helpers import entity_registry as er
     from .sensor import SUBSYSTEM_SENSORS
+    from .utils import (
+        build_reset_button_unique_id,
+        build_speedtest_button_unique_id,
+        build_status_refresh_button_unique_id,
+    )
 
     try:
         legacy_keys = set(client.legacy_instance_keys())
     except Exception:  # pragma: no cover - defensive guard
         legacy_keys = set()
 
+    legacy_keys.add(entry.entry_id)
     new_key = client.instance_key()
     legacy_keys.discard(new_key)
     if not legacy_keys:
@@ -412,6 +420,22 @@ async def _async_migrate_instance_prefix_unique_ids(
             mapping[f"{old_prefix}_speedtest_{suffix}"] = (
                 f"{new_prefix}_speedtest_{suffix}"
             )
+        mapping[build_speedtest_button_unique_id(old_key)] = build_speedtest_button_unique_id(
+            new_key
+        )
+        mapping[build_reset_button_unique_id(old_key)] = build_reset_button_unique_id(
+            new_key
+        )
+        mapping[
+            build_status_refresh_button_unique_id(old_key)
+        ] = build_status_refresh_button_unique_id(new_key)
+        for suffix in (
+            "speedtest_last_run",
+            "speedtest_last_duration",
+            "speedtest_last_error",
+            "speedtest_last_run_ok",
+        ):
+            mapping[f"{old_key}_{suffix}"] = f"{new_key}_{suffix}"
 
     if not mapping:
         _LOGGER.debug(
@@ -464,13 +488,19 @@ async def _async_migrate_interface_unique_ids(
         build_legacy_wan_unique_id,
         build_wan_unique_id,
         build_wlan_unique_id,
+        lan_interface_key,
+        wlan_interface_key,
+        _legacy_wan_interface_key,
+        wan_interface_key,
     )
 
     if not data:
         return
 
     mapping: dict[str, str] = {}
-    instance_prefix = f"unifigw_{client.instance_key()}"
+    instance_id = client.instance_key()
+    instance_prefix = f"unifigw_{instance_id}"
+    legacy_prefixes = {entry.entry_id, *client.legacy_instance_keys()}
 
     for link in data.wan_links:
         if not isinstance(link, dict):
@@ -482,10 +512,17 @@ async def _async_migrate_interface_unique_ids(
         old_key = hashlib.sha256(canonical.encode()).hexdigest()[:12]
         for suffix in ("status", "ip", "ipv6", "isp"):
             old_uid = f"{instance_prefix}_wan_{old_key}_{suffix}"
-            new_uid = build_wan_unique_id(entry.entry_id, link, suffix)
+            new_uid = build_wan_unique_id(instance_id, link, suffix)
             mapping[old_uid] = new_uid
-            legacy_uid = build_legacy_wan_unique_id(entry.entry_id, link, suffix)
+            legacy_uid = build_legacy_wan_unique_id(instance_id, link, suffix)
             mapping[legacy_uid] = new_uid
+            for legacy_prefix in legacy_prefixes:
+                mapping[
+                    f"{legacy_prefix}::wan::{wan_interface_key(link)}::{suffix}"
+                ] = new_uid
+                mapping[
+                    f"{legacy_prefix}::wan::{_legacy_wan_interface_key(link)}::{suffix}"
+                ] = new_uid
 
     for network in data.lan_networks:
         if not isinstance(network, dict):
@@ -494,8 +531,12 @@ async def _async_migrate_interface_unique_ids(
             network.get("_id") or network.get("id") or network.get("name") or "lan"
         )
         old_uid = f"{instance_prefix}_lan_{net_id}_clients"
-        new_uid = build_lan_unique_id(entry.entry_id, network)
+        new_uid = build_lan_unique_id(instance_id, network)
         mapping[old_uid] = new_uid
+        for legacy_prefix in legacy_prefixes:
+            mapping[
+                f"{legacy_prefix}::lan::{lan_interface_key(network)}::clients"
+            ] = new_uid
 
     for wlan in data.wlans:
         if not isinstance(wlan, dict):
@@ -504,8 +545,12 @@ async def _async_migrate_interface_unique_ids(
         if not ssid:
             continue
         old_uid = f"{instance_prefix}_wlan_{ssid}_clients"
-        new_uid = build_wlan_unique_id(entry.entry_id, wlan)
+        new_uid = build_wlan_unique_id(instance_id, wlan)
         mapping[old_uid] = new_uid
+        for legacy_prefix in legacy_prefixes:
+            mapping[
+                f"{legacy_prefix}::wlan::{wlan_interface_key(wlan)}::clients"
+            ] = new_uid
 
     if not mapping:
         _LOGGER.debug("No interface unique ID migrations required for entry %s", entry.entry_id)

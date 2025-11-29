@@ -27,18 +27,19 @@ async def async_setup_entry(
 ) -> None:
     entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
     client = entry_data.get("client")
-    device_name = entry_data.get("device_name") or entry.title or "UniFi Gateway"
     if client is None:
         raise RuntimeError(
             "UniFi Gateway Dashboard Analyzer client missing during button setup"
         )
+    device_name = entry_data.get("device_name") or entry.title or "UniFi Gateway"
+    controller_id = client.instance_key()
     coordinator = entry_data.get("coordinator")
     async_add_entities(
         [
-            SpeedtestRunButton(hass, entry, client, device_name),
-            GatewayResetButton(hass, entry, client, device_name),
+            SpeedtestRunButton(hass, entry, client, device_name, controller_id),
+            GatewayResetButton(hass, entry, client, device_name, controller_id),
             NetworkStatusRefreshButton(
-                hass, entry, client, coordinator, device_name
+                hass, entry, client, controller_id, coordinator, device_name
             ),
         ],
         True,
@@ -55,13 +56,14 @@ class SpeedtestRunButton(ButtonEntity):
         entry: ConfigEntry,
         client: UniFiOSClient,
         device_name: str,
+        controller_id: str,
     ) -> None:
         self.hass = hass
         self._entry = entry
         self._entry_id = entry.entry_id
         self._client = client
         self._device_name = device_name
-        self._attr_unique_id = build_speedtest_button_unique_id(self._entry_id)
+        self._attr_unique_id = build_speedtest_button_unique_id(controller_id)
 
     async def async_press(self) -> None:
         store = self.hass.data.get(DOMAIN, {})
@@ -99,13 +101,14 @@ class GatewayResetButton(ButtonEntity):
         entry: ConfigEntry,
         client: UniFiOSClient,
         device_name: str,
+        controller_id: str,
     ) -> None:
         self.hass = hass
         self._entry = entry
         self._entry_id = entry.entry_id
         self._client = client
         self._device_name = device_name
-        self._attr_unique_id = build_reset_button_unique_id(self._entry_id)
+        self._attr_unique_id = build_reset_button_unique_id(controller_id)
 
     async def async_press(self) -> None:
         try:
@@ -137,6 +140,7 @@ class NetworkStatusRefreshButton(ButtonEntity):
         hass: HomeAssistant,
         entry: ConfigEntry,
         client: UniFiOSClient,
+        controller_id: str,
         coordinator,
         device_name: str,
     ) -> None:
@@ -146,7 +150,7 @@ class NetworkStatusRefreshButton(ButtonEntity):
         self._client = client
         self._coordinator = coordinator
         self._device_name = device_name
-        self._attr_unique_id = build_status_refresh_button_unique_id(self._entry_id)
+        self._attr_unique_id = build_status_refresh_button_unique_id(controller_id)
 
     async def async_press(self) -> None:
         store = self.hass.data.get(DOMAIN, {})

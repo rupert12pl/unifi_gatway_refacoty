@@ -29,7 +29,7 @@ def test_normalize_speedtest_entity_ids_fallback():
 
 
 def test_build_speedtest_button_unique_id_namespaced():
-    assert build_speedtest_button_unique_id("entry123") == "entry123_run_speedtest"
+    assert build_speedtest_button_unique_id("controller123") == "controller123_run_speedtest"
 
 
 def test_speedtest_runner_normalizes_entity_ids():
