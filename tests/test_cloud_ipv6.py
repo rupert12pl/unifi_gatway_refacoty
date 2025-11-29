@@ -205,7 +205,7 @@ def test_no_ipv6_sets_unknown_reason(hass) -> None:
     asyncio.run(coordinator.async_config_entry_first_refresh())
 
     sensor = UniFiGatewayWanIpv6Sensor(
-        coordinator, client, "entry", data.wan_links[0]
+        coordinator, client, "entry", client.instance_key(), data.wan_links[0]
     )
     assert sensor.native_value is None
     attrs = sensor.extra_state_attributes
@@ -225,7 +225,7 @@ def test_http_error_sets_unavailable_with_reason(hass) -> None:
     asyncio.run(coordinator.async_config_entry_first_refresh())
 
     sensor = UniFiGatewayWanIpv6Sensor(
-        coordinator, client, "entry", data.wan_links[0]
+        coordinator, client, "entry", client.instance_key(), data.wan_links[0]
     )
     attrs = sensor.extra_state_attributes
     assert attrs[ATTR_REASON] == "cloud_status_500"

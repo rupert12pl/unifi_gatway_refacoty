@@ -107,8 +107,9 @@ def test_lan_sensor_reports_ipv6_attribute():
         clients=[{"network_id": "lan-1", "ip": "192.168.1.50"}],
     )
     coordinator = SimpleNamespace(data=data)
+    client = _StubClient()
     sensor = UniFiGatewayLanClientsSensor(
-        coordinator, _StubClient(), "entry-id", dict(network)
+        coordinator, client, "entry-id", client.instance_key(), dict(network)
     )
 
     attrs = sensor.extra_state_attributes
@@ -132,8 +133,9 @@ def test_wlan_sensor_uses_network_ipv6_information():
     }
     data = _make_data(network_map={"net-1": network}, wlans=[wlan])
     coordinator = SimpleNamespace(data=data)
+    client = _StubClient()
     sensor = UniFiGatewayWlanClientsSensor(
-        coordinator, _StubClient(), "entry-id", dict(wlan)
+        coordinator, client, "entry-id", client.instance_key(), dict(wlan)
     )
 
     attrs = sensor.extra_state_attributes
@@ -160,8 +162,9 @@ def test_wan_ipv6_sensor_reports_details():
         wan_ipv6="2001:db8::1",
     )
     coordinator = SimpleNamespace(data=data)
+    client = _StubClient()
     sensor = UniFiGatewayWanIpv6Sensor(
-        coordinator, _StubClient(), "entry-id", dict(link)
+        coordinator, client, "entry-id", client.instance_key(), dict(link)
     )
 
     value = sensor.native_value
@@ -185,8 +188,9 @@ def test_wan_ipv6_sensor_handles_unavailable_state():
         wan_ipv6=None,
     )
     coordinator = SimpleNamespace(data=data)
+    client = _StubClient()
     sensor = UniFiGatewayWanIpv6Sensor(
-        coordinator, _StubClient(), "entry-id", dict(link)
+        coordinator, client, "entry-id", client.instance_key(), dict(link)
     )
 
     assert sensor.native_value is None
@@ -208,8 +212,9 @@ def test_wan_ip_sensor_prefers_ipv4_when_available():
         networks=[{"name": "WAN", "ipv6_interface_type": "dhcpv6"}],
     )
     coordinator = SimpleNamespace(data=data)
+    client = _StubClient()
     sensor = UniFiGatewayWanIpSensor(
-        coordinator, _StubClient(), "entry-id", dict(link)
+        coordinator, client, "entry-id", client.instance_key(), dict(link)
     )
 
     value = sensor.native_value
@@ -228,8 +233,9 @@ def test_wan_ip_sensor_uses_ipv6_when_ipv4_missing():
         networks=[{"name": "WAN", "ipv6_interface_type": "dhcpv6"}],
     )
     coordinator = SimpleNamespace(data=data)
+    client = _StubClient()
     sensor = UniFiGatewayWanIpSensor(
-        coordinator, _StubClient(), "entry-id", dict(link)
+        coordinator, client, "entry-id", client.instance_key(), dict(link)
     )
 
     value = sensor.native_value
@@ -249,8 +255,9 @@ def test_wan_ip_sensor_uses_ipv4_when_ipv6_disabled():
         networks=[{"name": "WAN", "ipv6_interface_type": "disabled"}],
     )
     coordinator = SimpleNamespace(data=data)
+    client = _StubClient()
     sensor = UniFiGatewayWanIpSensor(
-        coordinator, _StubClient(), "entry-id", dict(link)
+        coordinator, client, "entry-id", client.instance_key(), dict(link)
     )
 
     value = sensor.native_value
@@ -265,8 +272,9 @@ def test_wan_ip_sensor_unknown_without_addresses():
         networks=[{"name": "WAN", "ipv6_interface_type": "dhcpv6"}],
     )
     coordinator = SimpleNamespace(data=data)
+    client = _StubClient()
     sensor = UniFiGatewayWanIpSensor(
-        coordinator, _StubClient(), "entry-id", dict(link)
+        coordinator, client, "entry-id", client.instance_key(), dict(link)
     )
 
     value = sensor.native_value
@@ -303,8 +311,9 @@ def test_wan_status_sensor_reports_ip_sources():
     }
     data = _make_data(wan_links=[link], wan_health=[health])
     coordinator = SimpleNamespace(data=data)
+    client = _StubClient()
     sensor = UniFiGatewayWanStatusSensor(
-        coordinator, _StubClient(), "entry-id", dict(link)
+        coordinator, client, "entry-id", client.instance_key(), dict(link)
     )
 
     assert sensor.native_value == "UP"
@@ -334,8 +343,9 @@ def test_wan_status_sensor_includes_adress_ipv6_and_gateway_name():
         wan_ipv6="2001:db8::abcd",
     )
     coordinator = SimpleNamespace(data=data)
+    client = _StubClient()
     sensor = UniFiGatewayWanStatusSensor(
-        coordinator, _StubClient(), "entry-id", dict(link)
+        coordinator, client, "entry-id", client.instance_key(), dict(link)
     )
 
     attrs = sensor.extra_state_attributes
