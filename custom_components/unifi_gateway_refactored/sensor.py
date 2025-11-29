@@ -131,6 +131,7 @@ async def async_setup_entry(
     )
     data = hass.data[DOMAIN][entry.entry_id]
     client: UniFiOSClient = data["client"]
+    instance_id = client.instance_key()
     coordinator: UniFiGatewayDataUpdateCoordinator = data["coordinator"]
 
     base_name = entry.title or entry.data.get(CONF_HOST) or "UniFi Gateway"
@@ -172,11 +173,12 @@ async def async_setup_entry(
     )
 
     runner_state = RunnerState()
-    device_identifier = (DOMAIN, client.instance_key())
+    device_identifier = (DOMAIN, instance_id)
     controller_url = client.get_controller_url()
     monitor_entities = [
         SpeedtestStatusSensor(
             entry.entry_id,
+            instance_id,
             runner_state,
             device_identifier,
             device_name,
@@ -184,6 +186,7 @@ async def async_setup_entry(
         ),
         SpeedtestLastErrorSensor(
             entry.entry_id,
+            instance_id,
             runner_state,
             device_identifier,
             device_name,
@@ -191,6 +194,7 @@ async def async_setup_entry(
         ),
         SpeedtestDurationSensor(
             entry.entry_id,
+            instance_id,
             runner_state,
             device_identifier,
             device_name,
@@ -198,6 +202,7 @@ async def async_setup_entry(
         ),
         SpeedtestLastRunSensor(
             entry.entry_id,
+            instance_id,
             runner_state,
             device_identifier,
             device_name,
@@ -304,18 +309,19 @@ async def async_setup_entry(
                     (UniFiGatewayWanIpv6Sensor, "ipv6"),
                     (UniFiGatewayWanIspSensor, "isp"),
                 ):
-                    unique_id = build_wan_unique_id(entry.entry_id, link, suffix)
+                    unique_id = build_wan_unique_id(instance_id, link, suffix)
                     if unique_id in pending_unique_ids or _should_skip(unique_id):
                         continue
-                    new_entities.append(
-                        cls(
-                            coordinator,
-                            client,
-                            entry.entry_id,
-                            link,
-                            device_name=device_name,
+                        new_entities.append(
+                            cls(
+                                coordinator,
+                                client,
+                                entry.entry_id,
+                                instance_id,
+                                link,
+                                device_name=device_name,
+                            )
                         )
-                    )
                     pending_unique_ids.add(unique_id)
 
             for network in coordinator_data.lan_networks:
@@ -323,7 +329,7 @@ async def async_setup_entry(
                 if key in known_lan:
                     continue
                 known_lan.add(key)
-                unique_id = build_lan_unique_id(entry.entry_id, network)
+                unique_id = build_lan_unique_id(instance_id, network)
                 if unique_id in pending_unique_ids or _should_skip(unique_id):
                     continue
                 new_entities.append(
@@ -331,6 +337,7 @@ async def async_setup_entry(
                         coordinator,
                         client,
                         entry.entry_id,
+                        instance_id,
                         network,
                         device_name=device_name,
                     )
@@ -342,7 +349,7 @@ async def async_setup_entry(
                 if ssid_key in known_wlan:
                     continue
                 known_wlan.add(ssid_key)
-                unique_id = build_wlan_unique_id(entry.entry_id, wlan)
+                unique_id = build_wlan_unique_id(instance_id, wlan)
                 if unique_id in pending_unique_ids or _should_skip(unique_id):
                     continue
                 new_entities.append(
@@ -350,6 +357,7 @@ async def async_setup_entry(
                         coordinator,
                         client,
                         entry.entry_id,
+                        instance_id,
                         wlan,
                         device_name=device_name,
                     )
@@ -398,7 +406,7 @@ async def async_setup_entry(
                 ):
                     continue
 
-                entity_key = build_vpn_server_unique_id(entry.entry_id, server, network)
+                entity_key = build_vpn_server_unique_id(instance_id, server, network)
                 key = vpn_instance_key({"id": entity_key})
                 if key in known_vpn:
                     continue
@@ -455,6 +463,7 @@ class SpeedtestMonitorEntity(SensorEntity):
     def __init__(
         self,
         entry_id: str,
+        instance_id: str,
         state: RunnerState,
         device_identifier: tuple[str, str],
         device_name: str,
@@ -465,6 +474,7 @@ class SpeedtestMonitorEntity(SensorEntity):
         self._device_name = device_name
         self._controller_url = controller_url
         self._entry_id = entry_id
+        self._instance_id = instance_id
         self._last_signature: Any | None = None
 
     @property
@@ -509,13 +519,16 @@ class SpeedtestLastRunSensor(SpeedtestMonitorEntity):
     def __init__(
         self,
         entry_id: str,
+        instance_id: str,
         state: RunnerState,
         device_identifier: tuple[str, str],
         device_name: str,
         controller_url: Optional[str],
     ) -> None:
-        super().__init__(entry_id, state, device_identifier, device_name, controller_url)
-        self._attr_unique_id = f"{entry_id}_speedtest_last_run"
+        super().__init__(
+            entry_id, instance_id, state, device_identifier, device_name, controller_url
+        )
+        self._attr_unique_id = f"{instance_id}_speedtest_last_run"
 
     @property
     def native_value(self):
@@ -530,13 +543,16 @@ class SpeedtestDurationSensor(SpeedtestMonitorEntity):
     def __init__(
         self,
         entry_id: str,
+        instance_id: str,
         state: RunnerState,
         device_identifier: tuple[str, str],
         device_name: str,
         controller_url: Optional[str],
     ) -> None:
-        super().__init__(entry_id, state, device_identifier, device_name, controller_url)
-        self._attr_unique_id = f"{entry_id}_speedtest_last_duration"
+        super().__init__(
+            entry_id, instance_id, state, device_identifier, device_name, controller_url
+        )
+        self._attr_unique_id = f"{instance_id}_speedtest_last_duration"
 
     @property
     def native_value(self):
@@ -550,13 +566,16 @@ class SpeedtestLastErrorSensor(SpeedtestMonitorEntity):
     def __init__(
         self,
         entry_id: str,
+        instance_id: str,
         state: RunnerState,
         device_identifier: tuple[str, str],
         device_name: str,
         controller_url: Optional[str],
     ) -> None:
-        super().__init__(entry_id, state, device_identifier, device_name, controller_url)
-        self._attr_unique_id = f"{entry_id}_speedtest_last_error"
+        super().__init__(
+            entry_id, instance_id, state, device_identifier, device_name, controller_url
+        )
+        self._attr_unique_id = f"{instance_id}_speedtest_last_error"
 
     @property
     def native_value(self):
@@ -570,13 +589,16 @@ class SpeedtestStatusSensor(SpeedtestMonitorEntity):
     def __init__(
         self,
         entry_id: str,
+        instance_id: str,
         state: RunnerState,
         device_identifier: tuple[str, str],
         device_name: str,
         controller_url: Optional[str],
     ) -> None:
-        super().__init__(entry_id, state, device_identifier, device_name, controller_url)
-        self._attr_unique_id = f"{entry_id}_speedtest_last_run_ok"
+        super().__init__(
+            entry_id, instance_id, state, device_identifier, device_name, controller_url
+        )
+        self._attr_unique_id = f"{instance_id}_speedtest_last_run_ok"
 
     @property
     def native_value(self):
@@ -791,28 +813,30 @@ def _parse_protocol_and_mode(vpn_type_value: Optional[str]) -> Tuple[str, str]:
     return protocol, mode
 
 
-def build_wan_unique_id(entry_id: str, link: Dict[str, Any], suffix: str) -> str:
-    return f"{entry_id}::wan::{wan_interface_key(link)}::{suffix}"
+def build_wan_unique_id(instance_id: str, link: Dict[str, Any], suffix: str) -> str:
+    return f"{instance_id}::wan::{wan_interface_key(link)}::{suffix}"
 
 
-def build_legacy_wan_unique_id(entry_id: str, link: Dict[str, Any], suffix: str) -> str:
-    return f"{entry_id}::wan::{_legacy_wan_interface_key(link)}::{suffix}"
+def build_legacy_wan_unique_id(
+    instance_id: str, link: Dict[str, Any], suffix: str
+) -> str:
+    return f"{instance_id}::wan::{_legacy_wan_interface_key(link)}::{suffix}"
 
 
-def build_lan_unique_id(entry_id: str, network: Dict[str, Any]) -> str:
-    return f"{entry_id}::lan::{lan_interface_key(network)}::clients"
+def build_lan_unique_id(instance_id: str, network: Dict[str, Any]) -> str:
+    return f"{instance_id}::lan::{lan_interface_key(network)}::clients"
 
 
-def build_wlan_unique_id(entry_id: str, wlan: Dict[str, Any]) -> str:
-    return f"{entry_id}::wlan::{wlan_interface_key(wlan)}::clients"
+def build_wlan_unique_id(instance_id: str, wlan: Dict[str, Any]) -> str:
+    return f"{instance_id}::wlan::{wlan_interface_key(wlan)}::clients"
 
 
-def build_vpn_unique_id(entry_id: str, tunnel: Dict[str, Any], suffix: str) -> str:
-    return f"{entry_id}::vpn::{vpn_instance_key(tunnel)}::{suffix}"
+def build_vpn_unique_id(instance_id: str, tunnel: Dict[str, Any], suffix: str) -> str:
+    return f"{instance_id}::vpn::{vpn_instance_key(tunnel)}::{suffix}"
 
 
 def build_vpn_server_unique_id(
-    entry_id: str, server: Dict[str, Any], network: Dict[str, Any]
+    instance_id: str, server: Dict[str, Any], network: Dict[str, Any]
 ) -> str:
     pseudo = dict(server)
     if not pseudo.get("id"):
@@ -825,7 +849,7 @@ def build_vpn_server_unique_id(
         )
     if not pseudo.get("name"):
         pseudo["name"] = network.get("name") or "VPN"
-    return build_vpn_unique_id(entry_id, pseudo, "clients")
+    return build_vpn_unique_id(instance_id, pseudo, "clients")
 
 
 def _is_connected(record: Any) -> bool:
@@ -1801,6 +1825,7 @@ class UniFiGatewayWanSensorBase(UniFiGatewaySensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
+        instance_id: str,
         link: Dict[str, Any],
         suffix: str,
         name_suffix: str = "",
@@ -1815,7 +1840,7 @@ class UniFiGatewayWanSensorBase(UniFiGatewaySensorBase):
         )
         canonical = (sorted(self._identifiers) or [self._link_id])[0]
         self._uid_source = canonical
-        unique_id = build_wan_unique_id(entry_id, link, suffix)
+        unique_id = build_wan_unique_id(instance_id, link, suffix)
         super().__init__(
             coordinator,
             client,
@@ -2598,6 +2623,7 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
+        instance_id: str,
         link: Dict[str, Any],
         *,
         device_name: Optional[str] = None,
@@ -2606,6 +2632,7 @@ class UniFiGatewayWanStatusSensor(UniFiGatewayWanSensorBase):
             coordinator,
             client,
             entry_id,
+            instance_id,
             link,
             "status",
             device_name=device_name,
@@ -2798,6 +2825,7 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
+        instance_id: str,
         link: Dict[str, Any],
         *,
         device_name: Optional[str] = None,
@@ -2806,6 +2834,7 @@ class UniFiGatewayWanIpSensor(UniFiGatewayWanSensorBase):
             coordinator,
             client,
             entry_id,
+            instance_id,
             link,
             "ip",
             " IP",
@@ -3010,6 +3039,7 @@ class UniFiGatewayWanIpv6Sensor(UniFiGatewayWanSensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
+        instance_id: str,
         link: Dict[str, Any],
         *,
         device_name: Optional[str] = None,
@@ -3018,6 +3048,7 @@ class UniFiGatewayWanIpv6Sensor(UniFiGatewayWanSensorBase):
             coordinator,
             client,
             entry_id,
+            instance_id,
             link,
             "ipv6",
             " IPv6",
@@ -3073,6 +3104,7 @@ class UniFiGatewayWanIspSensor(UniFiGatewayWanSensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
+        instance_id: str,
         link: Dict[str, Any],
         *,
         device_name: Optional[str] = None,
@@ -3081,6 +3113,7 @@ class UniFiGatewayWanIspSensor(UniFiGatewayWanSensorBase):
             coordinator,
             client,
             entry_id,
+            instance_id,
             link,
             "isp",
             " ISP",
@@ -3171,6 +3204,7 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
+        instance_id: str,
         network: Dict[str, Any],
         *,
         device_name: Optional[str] = None,
@@ -3187,7 +3221,7 @@ class UniFiGatewayLanClientsSensor(UniFiGatewaySensorBase):
         self._ip_network = _to_ip_network(self._subnet)
         self._last_client_count: Optional[int] = None
         self._last_ip_leases: Optional[int] = None
-        unique_id = build_lan_unique_id(entry_id, network)
+        unique_id = build_lan_unique_id(instance_id, network)
         super().__init__(
             coordinator,
             client,
@@ -3294,13 +3328,14 @@ class UniFiGatewayWlanClientsSensor(UniFiGatewaySensorBase):
         coordinator: UniFiGatewayDataUpdateCoordinator,
         client: UniFiOSClient,
         entry_id: str,
+        instance_id: str,
         wlan: Dict[str, Any],
         *,
         device_name: Optional[str] = None,
     ) -> None:
         self._wlan = wlan
         self._ssid = wlan.get("name") or wlan.get("ssid") or "WLAN"
-        unique_id = build_wlan_unique_id(entry_id, wlan)
+        unique_id = build_wlan_unique_id(instance_id, wlan)
         super().__init__(
             coordinator,
             client,
