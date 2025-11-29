@@ -27,12 +27,12 @@ async def async_setup_entry(
 ) -> None:
     entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
     client = entry_data.get("client")
-    device_name = entry_data.get("device_name") or entry.title or "UniFi Gateway"
-    controller_id = client.instance_key() if client else None
     if client is None:
         raise RuntimeError(
             "UniFi Gateway Dashboard Analyzer client missing during button setup"
         )
+    device_name = entry_data.get("device_name") or entry.title or "UniFi Gateway"
+    controller_id = client.instance_key()
     coordinator = entry_data.get("coordinator")
     async_add_entities(
         [

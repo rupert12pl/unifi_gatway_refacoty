@@ -488,6 +488,10 @@ async def _async_migrate_interface_unique_ids(
         build_legacy_wan_unique_id,
         build_wan_unique_id,
         build_wlan_unique_id,
+        lan_interface_key,
+        wlan_interface_key,
+        _legacy_wan_interface_key,
+        wan_interface_key,
     )
 
     if not data:

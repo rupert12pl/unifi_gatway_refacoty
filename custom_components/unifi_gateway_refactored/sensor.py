@@ -312,16 +312,16 @@ async def async_setup_entry(
                     unique_id = build_wan_unique_id(instance_id, link, suffix)
                     if unique_id in pending_unique_ids or _should_skip(unique_id):
                         continue
-                        new_entities.append(
-                            cls(
-                                coordinator,
-                                client,
-                                entry.entry_id,
-                                instance_id,
-                                link,
-                                device_name=device_name,
-                            )
+                    new_entities.append(
+                        cls(
+                            coordinator,
+                            client,
+                            entry.entry_id,
+                            instance_id,
+                            link,
+                            device_name=device_name,
                         )
+                    )
                     pending_unique_ids.add(unique_id)
 
             for network in coordinator_data.lan_networks:
