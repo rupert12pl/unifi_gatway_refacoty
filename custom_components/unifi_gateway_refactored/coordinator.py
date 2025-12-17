@@ -1091,8 +1091,9 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 continue
 
             # Skip duplicate LAN networks based on _id/id/network_id to avoid creating
-            # multiple sensors when the API returns redundant entries for the same network.
-            lan_id = str(nid) if nid else None
+            # multiple sensors when the API returns redundant entries for the same network,
+            # ensuring each LAN is represented only once even if the API repeats it.
+            lan_id = str(net.get("_id") or net.get("id") or net.get("network_id") or "")
             if lan_id and lan_id in seen_lan_ids:
                 continue
             if lan_id:
