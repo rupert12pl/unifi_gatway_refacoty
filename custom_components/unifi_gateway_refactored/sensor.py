@@ -258,30 +258,27 @@ async def async_setup_entry(
                 return
 
             new_entities: List[SensorEntity] = []
-
             entity_registry = er.async_get(hass)
             pending_unique_ids: set[str] = set()
 
             def _should_skip(unique_id: str) -> bool:
-                entity_id = entity_registry.async_get_entity_id(
-                    "sensor", DOMAIN, unique_id
+                """Return True if a sensor with this unique_id already exists in the registry.
+
+                Always skip creation if the unique_id already exists, regardless of which
+                configuration entry owns the entity. This prevents duplicate entities from
+                being added each time the coordinator refreshes.
+                """
+
+                return (
+                    entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+                    is not None
                 )
-                if not entity_id:
-                    return False
-                entry_entry = entity_registry.async_get(entity_id)
-                if entry_entry and entry_entry.config_entry_id != entry.entry_id:
-                    _LOGGER.warning(
-                        "Skipping entity with unique_id %s for entry %s; already owned by %s",
-                        unique_id,
-                        entry.entry_id,
-                        entity_id,
-                    )
-                    return True
-                return False
 
             vpn_server_cache: Dict[str, List[Dict[str, Any]]] = {}
 
-            async def _async_lookup_vpn_servers(net_identifier: str) -> List[Dict[str, Any]]:
+            async def _async_lookup_vpn_servers(
+                net_identifier: str,
+            ) -> List[Dict[str, Any]]:
                 if net_identifier in vpn_server_cache:
                     return vpn_server_cache[net_identifier]
                 try:
@@ -649,20 +646,36 @@ def _legacy_wan_interface_key(link: Dict[str, Any]) -> str:
 
 
 def lan_interface_key(network: Dict[str, Any]) -> str:
+    """Return a stable key for a LAN network.
+
+    Prefer stable identifiers such as _id, id, network_id or VLAN before falling back to a name.
+    This ensures the unique_id does not change simply because the network name changes.
+    """
     token = (
         network.get("_id")
         or network.get("id")
-        or network.get("name")
         or network.get("network_id")
         or network.get("vlan")
+        or network.get("name")
         or "lan"
     )
     return _sanitize_stable_key(str(token))
 
 
 def wlan_interface_key(wlan: Dict[str, Any]) -> str:
-    ssid = wlan.get("name") or wlan.get("ssid") or wlan.get("_id") or wlan.get("id") or "wlan"
-    return _sanitize_stable_key(str(ssid))
+    """Return a stable key for a WLAN/SSID.
+
+    Prefer stable identifiers such as _id or id, or the SSID, before falling back to a name.
+    This ensures the unique_id remains stable even if the SSID or name changes.
+    """
+    token = (
+        wlan.get("_id")
+        or wlan.get("id")
+        or wlan.get("ssid")
+        or wlan.get("name")
+        or "wlan"
+    )
+    return _sanitize_stable_key(str(token))
 
 
 def _normalize_wifi_name(value: Optional[Any]) -> Optional[str]:
