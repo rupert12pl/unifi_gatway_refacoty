@@ -258,24 +258,27 @@ async def async_setup_entry(
                 return
 
             new_entities: List[SensorEntity] = []
-
             entity_registry = er.async_get(hass)
             pending_unique_ids: set[str] = set()
 
+            def _should_skip(unique_id: str) -> bool:
+                """Return True if a sensor with this unique_id already exists in the registry.
 
-def _should_skip(unique_id: str) -> bool:
-    """Return True if a sensor with this unique_id already exists in the registry.
+                Always skip creation if the unique_id already exists, regardless of which
+                configuration entry owns the entity. This prevents duplicate entities from
+                being added each time the coordinator refreshes.
+                """
 
-    Always skip creation if the unique_id already exists, regardless of which
-    configuration entry owns the entity. This prevents duplicate entities from
-    being added each time the coordinator refreshes.
-    """
-    return entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id) is not None
-
+                return (
+                    entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+                    is not None
+                )
 
             vpn_server_cache: Dict[str, List[Dict[str, Any]]] = {}
 
-            async def _async_lookup_vpn_servers(net_identifier: str) -> List[Dict[str, Any]]:
+            async def _async_lookup_vpn_servers(
+                net_identifier: str,
+            ) -> List[Dict[str, Any]]:
                 if net_identifier in vpn_server_cache:
                     return vpn_server_cache[net_identifier]
                 try:
