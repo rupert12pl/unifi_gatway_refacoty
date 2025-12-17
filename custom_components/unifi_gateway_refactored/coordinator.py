@@ -1072,7 +1072,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         network_map: Dict[str, Dict[str, Any]] = {}
         seen_lan_ids: set[str] = set()
         for net in networks:
-            nid = net.get("_id") or net.get("id") or net.get("network_id")
+            nid = net.get("_id") or net.get("id")
             if nid:
                 network_map[str(nid)] = {
                     "id": nid,
