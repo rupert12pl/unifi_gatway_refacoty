@@ -258,22 +258,27 @@ async def async_setup_entry(
                 return
 
             new_entities: List[SensorEntity] = []
-
             entity_registry = er.async_get(hass)
             pending_unique_ids: set[str] = set()
 
-            # Always skip entities that already exist so the same sensor isn't re-added on
-            # subsequent coordinator refreshes, regardless of which config entry created
-            # it; this prevents duplicate entities when the coordinator runs again.
             def _should_skip(unique_id: str) -> bool:
-                """Return True if a sensor with this unique_id already exists in the registry."""
-                return entity_registry.async_get_entity_id(
-                    "sensor", DOMAIN, unique_id
-                ) is not None
+                """Return True if a sensor with this unique_id already exists in the registry.
+
+                Always skip creation if the unique_id already exists, regardless of which
+                configuration entry owns the entity. This prevents duplicate entities from
+                being added each time the coordinator refreshes.
+                """
+
+                return (
+                    entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+                    is not None
+                )
 
             vpn_server_cache: Dict[str, List[Dict[str, Any]]] = {}
 
-            async def _async_lookup_vpn_servers(net_identifier: str) -> List[Dict[str, Any]]:
+            async def _async_lookup_vpn_servers(
+                net_identifier: str,
+            ) -> List[Dict[str, Any]]:
                 if net_identifier in vpn_server_cache:
                     return vpn_server_cache[net_identifier]
                 try:
@@ -641,11 +646,11 @@ def _legacy_wan_interface_key(link: Dict[str, Any]) -> str:
 
 
 def lan_interface_key(network: Dict[str, Any]) -> str:
-    """Return a stable key for a LAN network."""
+    """Return a stable key for a LAN network.
 
-    # Prefer durable identifiers so the sensor unique_id stays stable even when the API
-    # reports different display names across refreshes; this ordering avoids churn when
-    # names change between updates.
+    Prefer stable identifiers such as _id, id, network_id or VLAN before falling back to a name.
+    This ensures the unique_id does not change simply because the network name changes.
+    """
     token = (
         network.get("_id")
         or network.get("id")
@@ -658,11 +663,11 @@ def lan_interface_key(network: Dict[str, Any]) -> str:
 
 
 def wlan_interface_key(wlan: Dict[str, Any]) -> str:
-    """Return a stable key for a WLAN/SSID."""
+    """Return a stable key for a WLAN/SSID.
 
-    # Use stable identifiers first so the sensor unique_id doesn't churn when the API
-    # returns different SSID or display names between updates; ordering tokens this way
-    # prevents new entity IDs from appearing solely because a name changed.
+    Prefer stable identifiers such as _id or id, or the SSID, before falling back to a name.
+    This ensures the unique_id remains stable even if the SSID or name changes.
+    """
     token = (
         wlan.get("_id")
         or wlan.get("id")
