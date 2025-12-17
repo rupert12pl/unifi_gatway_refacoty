@@ -263,21 +263,14 @@ async def async_setup_entry(
             pending_unique_ids: set[str] = set()
 
             def _should_skip(unique_id: str) -> bool:
-                entity_id = entity_registry.async_get_entity_id(
-                    "sensor", DOMAIN, unique_id
+                """Return True if the entity already exists in the registry."""
+
+                # Prevent re-adding sensors on subsequent coordinator updates by
+                # skipping any entity whose unique_id is already registered.
+                return (
+                    entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+                    is not None
                 )
-                if not entity_id:
-                    return False
-                entry_entry = entity_registry.async_get(entity_id)
-                if entry_entry and entry_entry.config_entry_id != entry.entry_id:
-                    _LOGGER.warning(
-                        "Skipping entity with unique_id %s for entry %s; already owned by %s",
-                        unique_id,
-                        entry.entry_id,
-                        entity_id,
-                    )
-                    return True
-                return False
 
             vpn_server_cache: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -649,19 +642,33 @@ def _legacy_wan_interface_key(link: Dict[str, Any]) -> str:
 
 
 def lan_interface_key(network: Dict[str, Any]) -> str:
+    """Return a stable key for a LAN network."""
+
     token = (
         network.get("_id")
         or network.get("id")
-        or network.get("name")
         or network.get("network_id")
         or network.get("vlan")
+        or network.get("name")
         or "lan"
     )
+    # Prefer stable identifiers to avoid changing unique_ids when the API sends
+    # different naming fields, ensuring only one sensor per network is created.
     return _sanitize_stable_key(str(token))
 
 
 def wlan_interface_key(wlan: Dict[str, Any]) -> str:
-    ssid = wlan.get("name") or wlan.get("ssid") or wlan.get("_id") or wlan.get("id") or "wlan"
+    """Return a stable key for a WLAN network."""
+
+    ssid = (
+        wlan.get("_id")
+        or wlan.get("id")
+        or wlan.get("ssid")
+        or wlan.get("name")
+        or "wlan"
+    )
+    # Prefer stable identifiers (IDs/SSIDs) first so the unique_id remains
+    # consistent even if the API varies the provided fields.
     return _sanitize_stable_key(str(ssid))
 
 
