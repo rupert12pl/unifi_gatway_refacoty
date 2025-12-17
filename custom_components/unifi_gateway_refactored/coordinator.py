@@ -1070,8 +1070,9 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         _LOGGER.debug("Retrieved %s networks", len(networks))
         lan_networks: List[Dict[str, Any]] = []
         network_map: Dict[str, Dict[str, Any]] = {}
+        seen_lan_ids: set[str] = set()
         for net in networks:
-            nid = net.get("_id") or net.get("id")
+            nid = net.get("_id") or net.get("id") or net.get("network_id")
             if nid:
                 network_map[str(nid)] = {
                     "id": nid,
@@ -1088,6 +1089,15 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
                 continue
             if "wan" in name.lower():
                 continue
+
+            # Skip duplicate LAN networks based on _id/id/network_id to avoid creating
+            # multiple sensors when the API returns redundant entries for the same network.
+            lan_id = str(nid) if nid else None
+            if lan_id and lan_id in seen_lan_ids:
+                continue
+            if lan_id:
+                seen_lan_ids.add(lan_id)
+
             lan_networks.append(net)
         _LOGGER.debug("Identified %s LAN networks", len(lan_networks))
 
