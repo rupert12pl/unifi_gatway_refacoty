@@ -1069,19 +1069,29 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         networks = self._client.get_networks() or []
         _LOGGER.debug("Retrieved %s networks", len(networks))
         lan_networks: List[Dict[str, Any]] = []
+        seen_lan_ids: set[str] = set()
         network_map: Dict[str, Dict[str, Any]] = {}
         for net in networks:
-            nid = net.get("_id") or net.get("id")
-            if nid:
-                network_map[str(nid)] = {
-                    "id": nid,
-                    "name": net.get("name"),
-                    "vlan": net.get("vlan"),
-                    "subnet": net.get("subnet")
-                    or net.get("ip_subnet")
-                    or net.get("cidr"),
-                    "purpose": net.get("purpose") or net.get("role"),
-                }
+            nid = net.get("_id") or net.get("id") or net.get("network_id")
+            if not nid:
+                continue
+
+            nid_str = str(nid)
+            if nid_str in seen_lan_ids:
+                # Deduplicate LAN entries so we only create one set of sensors per
+                # network even if the API returns duplicates.
+                continue
+            seen_lan_ids.add(nid_str)
+
+            network_map[str(nid)] = {
+                "id": nid,
+                "name": net.get("name"),
+                "vlan": net.get("vlan"),
+                "subnet": net.get("subnet")
+                or net.get("ip_subnet")
+                or net.get("cidr"),
+                "purpose": net.get("purpose") or net.get("role"),
+            }
             purpose = str(net.get("purpose") or net.get("role") or "").lower()
             name = net.get("name") or ""
             if "vpn" in purpose or "wan" in purpose or net.get("is_vpn") or net.get("wan_network"):
