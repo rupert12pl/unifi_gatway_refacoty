@@ -264,7 +264,7 @@ async def async_setup_entry(
 
             # Always skip entities that already exist so the same sensor isn't re-added on
             # subsequent coordinator refreshes, regardless of which config entry created
-            # it.
+            # it; this prevents duplicate entities when the coordinator runs again.
             def _should_skip(unique_id: str) -> bool:
                 """Return True if a sensor with this unique_id already exists in the registry."""
                 return entity_registry.async_get_entity_id(
@@ -644,7 +644,8 @@ def lan_interface_key(network: Dict[str, Any]) -> str:
     """Return a stable key for a LAN network."""
 
     # Prefer durable identifiers so the sensor unique_id stays stable even when the API
-    # reports different display names across refreshes.
+    # reports different display names across refreshes; this ordering avoids churn when
+    # names change between updates.
     token = (
         network.get("_id")
         or network.get("id")
@@ -660,7 +661,8 @@ def wlan_interface_key(wlan: Dict[str, Any]) -> str:
     """Return a stable key for a WLAN/SSID."""
 
     # Use stable identifiers first so the sensor unique_id doesn't churn when the API
-    # returns different SSID or display names between updates.
+    # returns different SSID or display names between updates; ordering tokens this way
+    # prevents new entity IDs from appearing solely because a name changed.
     token = (
         wlan.get("_id")
         or wlan.get("id")
