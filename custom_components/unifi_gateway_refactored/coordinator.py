@@ -477,6 +477,7 @@ class UniFiGatewayDataUpdateCoordinator(DataUpdateCoordinator[UniFiGatewayData])
         if (
             cached_entry
             and cache_key is not None
+            and self._cloud_last_fetch
             and (now - self._cloud_last_fetch) < self._cloud_fetch_interval
         ):
             data.wan_ipv6 = cached_entry[1]
