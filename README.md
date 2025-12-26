@@ -1,24 +1,67 @@
 
 # UniFi Gateway Dashboard Analyzer
 
-Custom integration for Home Assistant that exposes UniFi Gateway metrics with a
-fully UI-driven configuration flow.
+This Home Assistant custom integration surfaces key metrics from your UniFi
+gateway in a simple, aggregated fashion. It exposes high‑level health
+indicators for your WAN, LAN, WLAN and internet connectivity as well as
+firmware status, outstanding alerts and the results of built‑in speed tests.
+
+Unlike some UniFi integrations that enumerate every network, SSID or VPN
+tunnel as a separate entity, **UniFi Gateway Dashboard Analyzer deliberately
+avoids creating per‑network or per‑client entities**. In UniFi OS 10.0.162 the
+controller API can report thousands of pseudo‑networks, which previously led
+to Home Assistant flooding your entity registry with entries like
+`sensor.lan_vlan_none_182`, `sensor.lan_default_3` and similar. In this
+refactored version dynamic discovery has been disabled so that only the
+meaningful, high‑level entities described below are created.
+
+## Available entities
+
+After you set up the integration you will find the following entities in
+Home Assistant.  The entity IDs will be prefixed with the name of your UniFi
+gateway or site.
+
+| Domain  | Entity ID suffix            | Description                                         |
+|--------|-----------------------------|-----------------------------------------------------|
+| sensor | `alerts`                    | Number of active alerts reported by the controller. |
+| sensor | `firmware_upgradable`       | Number of devices with available firmware upgrades. |
+| sensor | `lan`                       | Health status of the gateway’s LAN subsystem.       |
+| sensor | `wan`                       | Health status of the gateway’s WAN subsystem.       |
+| sensor | `wlan`                      | Health status of the gateway’s WLAN subsystem.      |
+| sensor | `www`                       | Health status of internet reachability.             |
+| sensor | `speedtest_download`        | Most recent speed test download throughput (Mbps).  |
+| sensor | `speedtest_upload`          | Most recent speed test upload throughput (Mbps).    |
+| sensor | `speedtest_ping`            | Most recent speed test ping time (ms).              |
+| sensor | `speedtest_last_duration`   | How long the last speed test took (ms).            |
+| sensor | `speedtest_last_error`      | Error message from the last speed test, if any.    |
+| sensor | `speedtest_last_run`        | Timestamp when the last speed test finished.        |
+| sensor | `speedtest_last_run_ok`     | Whether the last speed test completed successfully. |
+| button | `run_speedtest`             | Manually trigger a speed test on the gateway.       |
+| button | `refresh_network_status`    | Request an immediate health status refresh.         |
+| button | `reset_gateway`             | Issue a software reboot of the gateway.             |
+
+These entities provide a concise overview of your network health.  For
+example you can pin the `wan`, `lan`, `wlan` and `www` sensors to a card on
+your dashboard to monitor connectivity status at a glance.  The speedtest
+entities enable automations based on throughput or latency changes, and the
+buttons let you run on‑demand diagnostics or reboot the gateway from within
+Home Assistant.
+
 
 ## Integration guide (English)
 
 ### What this integration does for you
 
-- Presents WAN, LAN, WLAN and internet health metrics from your UniFi Gateway so
-  you can monitor uptime, throughput and alerts from the Home Assistant
-  dashboard.
+- Presents the health status of your UniFi Gateway’s WAN, LAN, WLAN and internet
+  (WWW) subsystems so you can monitor uptime, latency and alerts directly from
+  the Home Assistant dashboard.
 - Tracks firmware status for UniFi devices and highlights upgrades directly in
   Home Assistant.
-- Creates dedicated VPN server sensors that count active sessions and expose a
-  **Connected Clients** attribute listing each user as
-  `Name ~ Source IP | Internal IP | Source Country | Source City | Source ISP`.
-  No other entity includes that attribute, so you immediately know which card
-  to open when reviewing VPN activity.
-- Provides live diagnostic data (controller URLs, current site, last fetched
+- Exposes built‑in speed test results (download, upload, ping, last run and
+  duration) and provides a button to run a new speed test on demand.
+- Provides buttons to refresh the gateway’s network status and to perform a
+  soft reboot of the gateway.
+- Offers live diagnostic data (controller URLs, current site, last fetched
   payloads) that can be shared with support teams when something stops working.
 
 ### How to get started
@@ -32,12 +75,15 @@ fully UI-driven configuration flow.
 
 ### Daily use tips
 
-- Pin the WAN/LAN/WLAN sensors to a dashboard card to keep latency and alert
-  status in view.
-- Use the VPN server sensor state to trigger automations (for example notify
-  when more than five remote workers are connected).
-- Expand the **Connected Clients** attribute on a VPN sensor to see the device
-  name, public IP origin and geolocation details for every active tunnel.
+- Pin the `wan`, `lan`, `wlan` and `www` sensors to a dashboard card to keep
+  an eye on connectivity and alert status.
+- Set up automations based on the speed test entities.  For example you can
+  notify yourself if the download throughput drops below a threshold or if
+  latency spikes.
+- Use the **Run Speedtest** button to initiate a speed test from within
+  Home Assistant whenever you notice slowdowns.
+- Use the **Refresh Network Status** and **Reset Gateway** buttons from the
+  entities list or dashboard to troubleshoot connectivity issues.
 - Download **Diagnostics** from the integration's menu whenever you need a
   snapshot of controller data for troubleshooting.
 
@@ -59,15 +105,16 @@ fully UI-driven configuration flow.
 
 ### Co daje ta integracja
 
-- Udostępnia w Home Assistant wskaźniki WAN, LAN, WLAN i stanu internetu z
-  bramy UniFi, aby łatwo kontrolować dostępność łącza, przepustowość i alarmy.
+- Udostępnia w Home Assistant zagregowane wskaźniki zdrowia dla WAN, LAN, WLAN
+  oraz połączenia z internetem (WWW) bramy UniFi, aby w prosty sposób
+  monitorować dostępność łącza, opóźnienia i alarmy.
 - Śledzi wersje oprogramowania urządzeń UniFi i wskazuje dostępne aktualizacje
   bezpośrednio w Home Assistant.
-- Tworzy osobne sensory serwerów VPN zliczające aktywne sesje oraz dodające
-  atrybut **Connected Clients** w formacie
-  `Nazwa ~ IP źródłowe | IP wewnętrzne | Kraj | Miasto | ISP`. Żadna inna encja
-  nie pokazuje tego atrybutu, więc przeglądanie aktywności VPN jest proste i
-  szybkie.
+- Eksponuje wyniki wbudowanego testu prędkości (pobieranie, wysyłanie, ping,
+  czas trwania i czas ostatniego uruchomienia) oraz udostępnia przycisk do
+  ręcznego uruchomienia testu.
+- Udostępnia przyciski do odświeżenia stanu sieci bramy oraz do jej miękkiego
+  restartu.
 - Umożliwia pobranie diagnostyki (adresy kontrolera, aktualna witryna, ostatnie
   dane) do przekazania zespołowi wsparcia.
 
@@ -82,14 +129,17 @@ fully UI-driven configuration flow.
 
 ### Wskazówki do codziennego użycia
 
-- Dodaj sensory WAN/LAN/WLAN na dashboard, aby mieć stale podgląd opóźnień i
-  stanu alarmów.
-- Wykorzystaj stan sensora serwera VPN w automatyzacjach (np. wyślij powiadomienie,
-  gdy liczba zdalnych użytkowników przekroczy pięć).
-- Rozwiń atrybut **Connected Clients** na sensorze VPN, aby zobaczyć nazwę
-  urządzenia, adres publiczny oraz geolokalizację każdego tunelu.
-- W menu integracji wybierz **Pobierz diagnostykę**, aby zebrać migawkę danych do
-  rozwiązywania problemów.
+- Dodaj sensory `wan`, `lan`, `wlan` i `www` na dashboard, aby mieć stale
+  podgląd opóźnień i stanu alarmów.
+- Konfiguruj automatyzacje w oparciu o sensory z testu prędkości – np.
+  powiadomienie gdy prędkość pobierania spadnie poniżej ustalonego progu lub
+  gdy ping wzrośnie.
+- Używaj przycisku **Uruchom test prędkości** z poziomu Home Assistant,
+  gdy zauważysz spowolnienia łącza.
+- Skorzystaj z przycisków **Odśwież status sieci** i **Zrestartuj bramę**
+  dostępnych w encjach, aby szybko rozwiązać problemy z łącznością.
+- W menu integracji wybierz **Pobierz diagnostykę**, aby zebrać migawkę danych
+  do rozwiązywania problemów.
 
 ### Chmura WAN IPv6
 
